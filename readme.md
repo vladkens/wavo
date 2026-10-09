@@ -25,15 +25,15 @@ and `tokens`; `pcm` is 16 kHz mono `f32`.
 
 ## Speed
 
-Apple M2, same Q8_0 GGUF, transcribe.cpp on Metal. Warm is the median of 10 calls.
+Apple M2, same Q8_0 GGUF, transcribe.cpp on Metal. Warm is the median of 10–20 calls.
 
 | Clip | wavo warm | transcribe.cpp warm | wavo first call | transcribe.cpp first call |
 |---|---|---|---|---|
-| 4.5 s | 45 ms | 44 ms | 71–84 ms | 59–70 ms |
-| 11 s | 102–104 ms | 103 ms | 131–135 ms | 103–118 ms |
-| 34 s | 340–350 ms | 312–326 ms | 372–388 ms | 319–331 ms |
+| 4.5 s | 43–44 ms | 44–45 ms | 48–49 ms | 48–73 ms |
+| 11 s | 96 ms | 102–103 ms | 101 ms | 103–124 ms |
+| 34 s | 297–298 ms | 312–326 ms | 305 ms | 319–353 ms |
 
-Model load: wavo 0.07 s, transcribe.cpp 0.13 s. Peak memory: wavo 0.9 GB, transcribe.cpp
-0.33 GB. Details: [docs/perf.md](docs/perf.md).
+Model load: wavo 0.08–0.11 s, transcribe.cpp 0.13–0.17 s. Peak memory: wavo 0.31–0.34 GB,
+transcribe.cpp 0.34–0.35 GB. Details: [docs/perf.md](docs/perf.md).
 
 Built by coding agents; the rules are in [agents.md](agents.md).

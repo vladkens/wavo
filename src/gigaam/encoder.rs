@@ -45,14 +45,15 @@ struct Arena {
   groups: Vec<BindGroup>,
 }
 
+/// Buffers are reused across roles to keep the arena small: `h` holds the FFN hidden layer, the
+/// im2col columns and v; `qk` the first conv's output and the pointwise1 output; `y` the attention
+/// output.
 struct Buffers {
   mel: Buffer,
-  col: Buffer,
   x: Buffer,
   y: Buffer,
   yr: Buffer,
   qk: Buffer,
-  v: Buffer,
   s: Buffer,
   h: Buffer,
   joint: Buffer,
@@ -75,10 +76,10 @@ impl Encoder {
       gpu.linear(&w.collect::<Result<Vec<_>>>()?, &b.collect::<Result<Vec<_>>>()?)
     };
     let norm = |p: &str| -> Result<Norm> {
-      Ok(gpu.norm(&g.tensor(&format!("{p}.weight"), &[d])?, &g.tensor(&format!("{p}.bias"), &[d])?))
+      gpu.norm(&g.tensor(&format!("{p}.weight"), &[d])?, &g.tensor(&format!("{p}.bias"), &[d])?)
     };
     let f32s = |name: &str, dims: &[usize]| -> Result<Buffer> {
-      Ok(gpu.upload(&g.tensor(name, dims)?.to_f32()))
+      gpu.upload(&g.tensor(name, dims)?.to_f32()?)
     };
     let block = |i: usize| {
       let p = |name: &str| format!("enc.blocks.{i}.{name}");
@@ -121,11 +122,13 @@ impl Encoder {
     let mel_frames = mel.len() / self.cfg.mels;
     let frames = half(half(mel_frames));
     let mut arena = self.arena.lock().unwrap_or_else(PoisonError::into_inner);
-    if arena.as_ref().is_some_and(|a| a.frames < frames) {
-      *arena = None;
-    }
-    let Arena { bufs, groups, .. } =
-      arena.get_or_insert_with(|| Arena::new(gpu, &self.cfg, frames.next_multiple_of(64)));
+    let Arena { bufs, groups, .. } = match arena.take() {
+      Some(a) if a.frames >= frames => arena.insert(a),
+      old => {
+        drop(old);
+        arena.insert(Arena::new(gpu, &self.cfg, frames.next_multiple_of(64))?)
+      }
+    };
     gpu.write(&bufs.mel, mel);
     let len = frames * self.cfg.joint;
     gpu.run(groups, &bufs.joint, &bufs.read, len, |p| self.record(p, bufs, mel_frames))
@@ -136,10 +139,10 @@ impl Encoder {
     let (d, hd) = (c.d, c.d / c.heads);
     let t1 = half(mel_frames);
     let t = half(t1);
-    p.im2col(&b.mel, &b.col, mel_frames, c.mels, t1);
-    p.gemm(&b.col, &self.conv0, &b.h, t1, Epilogue::Relu);
-    p.im2col(&b.h, &b.col, t1, d, t);
-    p.gemm(&b.col, &self.conv2, &b.x, t, Epilogue::Relu);
+    p.im2col(&b.mel, &b.h, mel_frames, c.mels, t1);
+    p.gemm(&b.h, &self.conv0, &b.qk, t1, Epilogue::Relu);
+    p.im2col(&b.qk, &b.h, t1, d, t);
+    p.gemm(&b.h, &self.conv2, &b.x, t, Epilogue::Relu);
 
     let (mut x, mut y) = (&b.x, &b.y);
     for k in &self.blocks {
@@ -149,9 +152,9 @@ impl Encoder {
 
       p.layer_norm_rope(x, &k.norm_attn, y, &b.rope, &b.yr, t, d, hd);
       p.gemm(&b.yr, &k.qk, &b.qk, t, Epilogue::Bias);
-      p.gemm(y, &k.v, &b.v, t, Epilogue::Bias);
-      p.attention(&b.qk, &b.v, &b.s, &b.yr, t, c.heads, hd);
-      p.gemm(&b.yr, &k.out, x, t, Epilogue::Residual(1.0));
+      p.gemm(y, &k.v, &b.h, t, Epilogue::Bias);
+      p.attention(&b.qk, &b.h, &b.s, y, t, c.heads, hd);
+      p.gemm(y, &k.out, x, t, Epilogue::Residual(1.0));
 
       p.layer_norm(x, &k.norm_conv, y, t, d);
       p.gemm(y, &k.pw1, &b.qk, t, Epilogue::Bias);
@@ -171,7 +174,7 @@ impl Encoder {
 }
 
 impl Arena {
-  fn new(gpu: &Gpu, c: &Config, frames: usize) -> Self {
+  fn new(gpu: &Gpu, c: &Config, frames: usize) -> Result<Self> {
     let (d, hd) = (c.d, c.d / c.heads);
     // Per position: hd / 2 cosines, then hd / 2 sines. Computed in f64 because Metal's fast-math
     // sin/cos are inaccurate for large angles.
@@ -185,18 +188,18 @@ impl Arena {
       .collect();
     let bufs = Buffers {
       mel: gpu.buffer(4 * frames * c.mels),
-      col: gpu.buffer(frames * 5 * d.max(2 * c.mels)),
       x: gpu.buffer(frames * d),
       y: gpu.buffer(frames * d),
       yr: gpu.buffer(frames * d),
+      // Also the first conv's output: 2·frames rows of d.
       qk: gpu.buffer(frames * 2 * d),
-      v: gpu.buffer(frames * d),
       s: gpu.buffer(gpu.scores_len(frames, c.heads, hd)),
-      h: gpu.buffer(frames * c.d_ff.max(2 * d)),
+      // Also the im2col columns of both convs: frames rows of 5·d, 2·frames rows of 5·mels.
+      h: gpu.buffer(frames * c.d_ff.max(5 * d).max(10 * c.mels)),
       joint: gpu.buffer(frames * c.joint),
       read: gpu.readback(frames * c.joint),
-      rope: gpu.upload(&rope),
+      rope: gpu.upload(&rope)?,
     };
-    Self { frames, bufs, groups: Vec::new() }
+    Ok(Self { frames, bufs, groups: Vec::new() })
   }
 }

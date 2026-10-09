@@ -2,6 +2,7 @@
 //! Log-mel features: periodic Hann window and HTK filterbank from the GGUF, FFT 320, hop 160,
 //! full frames only (`center=False`), power spectrum, `ln(clamp(mel, 1e-9, 1e9))`.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use rustfft::num_complex::Complex;
@@ -19,38 +20,50 @@ pub struct Frontend {
   window: Vec<f32>,
   /// `[mels][BINS]`
   filters: Vec<f32>,
+  /// Per filter, its nonzero bins widened to `dot`'s 16-bin chunks, or to the end when they reach
+  /// the tail: each bin keeps its lane and the zero weights outside add exact zeros, so the sum
+  /// equals `dot` over the whole row.
+  spans: Vec<Range<usize>>,
   fft: Arc<dyn Fft<f32>>,
 }
 
 impl Frontend {
   pub fn new(g: &Gguf, mels: usize) -> Result<Self> {
+    let filters = g.tensor("frontend.mel_filterbank", &[BINS, mels])?.to_f32()?;
+    let spans = (filters.as_chunks::<BINS>().0.iter())
+      .map(|f| {
+        let lo = f.iter().position(|&w| w != 0.0).unwrap_or(0) / 16 * 16;
+        let hi = f.iter().rposition(|&w| w != 0.0).map_or(0, |i| i + 1);
+        let hi = if hi > BINS / 16 * 16 { BINS } else { hi.next_multiple_of(16) };
+        lo..hi.max(lo)
+      })
+      .collect();
     Ok(Self {
       mels,
-      window: g.tensor("frontend.window", &[N_FFT])?.to_f32(),
-      filters: g.tensor("frontend.mel_filterbank", &[BINS, mels])?.to_f32(),
+      window: g.tensor("frontend.window", &[N_FFT])?.to_f32()?,
+      filters,
+      spans,
       fft: FftPlanner::new().plan_fft_forward(N_FFT),
     })
   }
 
   /// Features of 16 kHz PCM, time-major `[frames][mels]`.
   pub fn compute(&self, pcm: &[f32]) -> Vec<f32> {
-    if pcm.len() < N_FFT {
-      return Vec::new();
-    }
-    let frames = (pcm.len() - N_FFT) / HOP + 1;
-    let mut spectrum: Vec<Complex<f32>> = (0..frames * N_FFT)
-      .map(|i| Complex::new(pcm[i / N_FFT * HOP + i % N_FFT] * self.window[i % N_FFT], 0.0))
-      .collect();
-    self.fft.process(&mut spectrum);
-
-    let mut out = Vec::with_capacity(frames * self.mels);
+    let mut out = Vec::with_capacity(pcm.len() / HOP * self.mels);
+    let mut frame = [Complex::default(); N_FFT];
+    let mut scratch = vec![Complex::default(); self.fft.get_inplace_scratch_len()];
     let mut power = [0f32; BINS];
-    for frame in spectrum.as_chunks::<N_FFT>().0 {
-      for (p, x) in power.iter_mut().zip(frame) {
+    for pcm in pcm.windows(N_FFT).step_by(HOP) {
+      for ((x, s), w) in frame.iter_mut().zip(pcm).zip(&self.window) {
+        *x = Complex::new(s * w, 0.0);
+      }
+      self.fft.process_with_scratch(&mut frame, &mut scratch);
+      for (p, x) in power.iter_mut().zip(&frame) {
         *p = x.norm_sqr();
       }
-      for filter in self.filters.as_chunks::<BINS>().0 {
-        out.push(super::dot(filter, &power).clamp(1e-9, 1e9).ln());
+      for (filter, span) in self.filters.as_chunks::<BINS>().0.iter().zip(&self.spans) {
+        let mel = super::dot(&filter[span.clone()], &power[span.clone()]);
+        out.push(mel.clamp(1e-9, 1e9).ln());
       }
     }
     out

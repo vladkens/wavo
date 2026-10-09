@@ -22,8 +22,13 @@ var<immediate> p: Params;
 @group(0) @binding(2) var<storage, read_write> c: array<f32>;
 // F32 as bits, F16 as pairs, Q8_0 as 4 int8 per word.
 @group(0) @binding(3) var<storage, read> w: array<u32>;
-// Q8_0 block scales (any buffer for other types).
-@group(0) @binding(4) var<storage, read> scales: array<f32>;
+// Q8_0 block scales as f16 pairs (any buffer for other types).
+@group(0) @binding(4) var<storage, read> scales: array<u32>;
+
+fn scale(block: u32) -> f32 {
+  let s = unpack2x16float(scales[block / 2u]);
+  return select(s.x, s.y, (block & 1u) == 1u);
+}
 
 // [64][32] tiles of a and W; the padded row stride avoids shared-memory bank conflicts.
 const S: u32 = 33u;
@@ -78,7 +83,7 @@ fn gemm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
       switch WTYPE {
         case 0u: { v = bitcast<vec4<f32>>(vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u])); }
         case 1u: { v = vec4(unpack2x16float(w[x / 2u]), unpack2x16float(w[x / 2u + 1u])); }
-        default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scales[x / 32u]; }
+        default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
       }
       let o = e / 32u * S + e % 32u;
       wt[o] = v.x;

@@ -174,7 +174,7 @@ fn conv_glu(
 
 // Flash attention with online softmax: qk is [t][q | k] (2·ch wide), v and o are [t][ch], heads of
 // head_dim ≤ 64 and a multiple of 8. Each subgroup owns 16 queries of one head and walks all keys
-// in blocks of 32 on its own, loading q, k and v fragments straight from memory; only its scores
+// in blocks of 64 on its own, loading q, k and v fragments straight from memory; only its scores
 // and output accumulator live in shared memory. Rows of qk and v past t up to the next multiple of
 // 64 are read (and masked) so must hold finite values: the arena's spare rows do.
 
@@ -182,8 +182,8 @@ fn conv_glu(
 @group(0) @binding(1) var<storage, read> att_v: array<f32>;
 @group(0) @binding(2) var<storage, read_write> att_o: array<f32>;
 
-// Per subgroup [16][32] scores, then probabilities.
-var<workgroup> sp: array<f32, 2048>;
+// Per subgroup [16][64] scores, then probabilities.
+var<workgroup> sp: array<f32, 4096>;
 // Per subgroup [16][head_dim] output accumulator.
 var<workgroup> acc: array<f32, 4096>;
 
@@ -209,7 +209,7 @@ fn attention(
   let qa = q0 * qs + wg.y * hd;
   let ka = p.ch + wg.y * hd;
   let va = wg.y * hd;
-  let sb = sg * 512u;
+  let sb = sg * 1024u;
   let ab = sg * 1024u;
   for (var i = sl; i < 16u * hd; i += 32u) {
     acc[ab + i] = 0.0;
@@ -220,86 +220,127 @@ fn attention(
   for (var r = 0u; r < 16u; r++) {
     m[r] = -3.0e38;
   }
-  for (var j0 = 0u; j0 < p.t; j0 += 32u) {
-    var s00: CM;
-    var s01: CM;
-    var s02: CM;
-    var s03: CM;
-    var s10: CM;
-    var s11: CM;
-    var s12: CM;
-    var s13: CM;
-    for (var d = 0u; d < hd; d += 8u) {
-      let a0 = coopLoadT<AM>(&att_qk[qa + d], qs);
-      let a1 = coopLoadT<AM>(&att_qk[qa + 8u * qs + d], qs);
-      // Column-major loads of k rows give kᵀ.
-      let b0 = coopLoad<BM>(&att_qk[j0 * qs + ka + d], qs);
-      let b1 = coopLoad<BM>(&att_qk[(j0 + 8u) * qs + ka + d], qs);
-      let b2 = coopLoad<BM>(&att_qk[(j0 + 16u) * qs + ka + d], qs);
-      let b3 = coopLoad<BM>(&att_qk[(j0 + 24u) * qs + ka + d], qs);
-      s00 = coopMultiplyAdd(a0, b0, s00);
-      s01 = coopMultiplyAdd(a0, b1, s01);
-      s02 = coopMultiplyAdd(a0, b2, s02);
-      s03 = coopMultiplyAdd(a0, b3, s03);
-      s10 = coopMultiplyAdd(a1, b0, s10);
-      s11 = coopMultiplyAdd(a1, b1, s11);
-      s12 = coopMultiplyAdd(a1, b2, s12);
-      s13 = coopMultiplyAdd(a1, b3, s13);
+  for (var j0 = 0u; j0 < p.t; j0 += 64u) {
+    subgroupBarrier();
+    // Scores for two halves of 32 keys each.
+    for (var half = 0u; half < 64u; half += 32u) {
+      let kb = (j0 + half) * qs + ka;
+      var s00: CM;
+      var s01: CM;
+      var s02: CM;
+      var s03: CM;
+      var s10: CM;
+      var s11: CM;
+      var s12: CM;
+      var s13: CM;
+      for (var d = 0u; d < hd; d += 8u) {
+        let a0 = coopLoadT<AM>(&att_qk[qa + d], qs);
+        let a1 = coopLoadT<AM>(&att_qk[qa + 8u * qs + d], qs);
+        // Column-major loads of k rows give kᵀ.
+        let b0 = coopLoad<BM>(&att_qk[kb + d], qs);
+        let b1 = coopLoad<BM>(&att_qk[kb + 8u * qs + d], qs);
+        let b2 = coopLoad<BM>(&att_qk[kb + 16u * qs + d], qs);
+        let b3 = coopLoad<BM>(&att_qk[kb + 24u * qs + d], qs);
+        s00 = coopMultiplyAdd(a0, b0, s00);
+        s01 = coopMultiplyAdd(a0, b1, s01);
+        s02 = coopMultiplyAdd(a0, b2, s02);
+        s03 = coopMultiplyAdd(a0, b3, s03);
+        s10 = coopMultiplyAdd(a1, b0, s10);
+        s11 = coopMultiplyAdd(a1, b1, s11);
+        s12 = coopMultiplyAdd(a1, b2, s12);
+        s13 = coopMultiplyAdd(a1, b3, s13);
+      }
+      let o = sb + half;
+      coopStoreT(s00, &sp[o], 64u);
+      coopStoreT(s01, &sp[o + 8u], 64u);
+      coopStoreT(s02, &sp[o + 16u], 64u);
+      coopStoreT(s03, &sp[o + 24u], 64u);
+      coopStoreT(s10, &sp[o + 512u], 64u);
+      coopStoreT(s11, &sp[o + 520u], 64u);
+      coopStoreT(s12, &sp[o + 528u], 64u);
+      coopStoreT(s13, &sp[o + 536u], 64u);
     }
     subgroupBarrier();
-    coopStoreT(s00, &sp[sb], 32u);
-    coopStoreT(s01, &sp[sb + 8u], 32u);
-    coopStoreT(s02, &sp[sb + 16u], 32u);
-    coopStoreT(s03, &sp[sb + 24u], 32u);
-    coopStoreT(s10, &sp[sb + 256u], 32u);
-    coopStoreT(s11, &sp[sb + 264u], 32u);
-    coopStoreT(s12, &sp[sb + 272u], 32u);
-    coopStoreT(s13, &sp[sb + 280u], 32u);
-    subgroupBarrier();
-    // Online softmax, one row at a time with lane = key, then rescale that output row.
-    let valid = j0 + sl < p.t;
+    // Online softmax, one row at a time with lanes on keys sl and sl + 32, then rescale that row.
+    let valid0 = j0 + sl < p.t;
+    let valid1 = j0 + 32u + sl < p.t;
     for (var r = 0u; r < 16u; r++) {
-      var s = -3.0e38;
-      if (valid) {
-        s = sp[sb + r * 32u + sl] * p.scale;
+      let i = sb + r * 64u + sl;
+      var s0 = -3.0e38;
+      var s1 = -3.0e38;
+      if (valid0) {
+        s0 = sp[i] * p.scale;
       }
-      let m_new = max(m[r], subgroupMax(s));
-      let alpha = exp(m[r] - m_new);
-      var e = 0.0;
-      if (valid) {
-        e = exp(s - m_new);
+      if (valid1) {
+        s1 = sp[i + 32u] * p.scale;
       }
-      sp[sb + r * 32u + sl] = e;
-      l[r] = l[r] * alpha + subgroupAdd(e);
+      let m_new = max(m[r], subgroupMax(max(s0, s1)));
+      var e0 = 0.0;
+      var e1 = 0.0;
+      if (valid0) {
+        e0 = exp(s0 - m_new);
+      }
+      if (valid1) {
+        e1 = exp(s1 - m_new);
+      }
+      sp[i] = e0;
+      sp[i + 32u] = e1;
+      // The same in all lanes. Once the row max settles, the output needs no rescale.
+      if (m_new != m[r]) {
+        let alpha = exp(m[r] - m_new);
+        l[r] *= alpha;
+        for (var c = sl; c < hd; c += 32u) {
+          acc[ab + r * hd + c] *= alpha;
+        }
+      }
+      l[r] += subgroupAdd(e0 + e1);
       m[r] = m_new;
-      for (var c = sl; c < hd; c += 32u) {
-        acc[ab + r * hd + c] *= alpha;
-      }
     }
     subgroupBarrier();
-    let p00 = coopLoadT<AM>(&sp[sb], 32u);
-    let p01 = coopLoadT<AM>(&sp[sb + 8u], 32u);
-    let p02 = coopLoadT<AM>(&sp[sb + 16u], 32u);
-    let p03 = coopLoadT<AM>(&sp[sb + 24u], 32u);
-    let p10 = coopLoadT<AM>(&sp[sb + 256u], 32u);
-    let p11 = coopLoadT<AM>(&sp[sb + 264u], 32u);
-    let p12 = coopLoadT<AM>(&sp[sb + 272u], 32u);
-    let p13 = coopLoadT<AM>(&sp[sb + 280u], 32u);
+    let p00 = coopLoadT<AM>(&sp[sb], 64u);
+    let p01 = coopLoadT<AM>(&sp[sb + 8u], 64u);
+    let p02 = coopLoadT<AM>(&sp[sb + 16u], 64u);
+    let p03 = coopLoadT<AM>(&sp[sb + 24u], 64u);
+    let p04 = coopLoadT<AM>(&sp[sb + 32u], 64u);
+    let p05 = coopLoadT<AM>(&sp[sb + 40u], 64u);
+    let p06 = coopLoadT<AM>(&sp[sb + 48u], 64u);
+    let p07 = coopLoadT<AM>(&sp[sb + 56u], 64u);
+    let p10 = coopLoadT<AM>(&sp[sb + 512u], 64u);
+    let p11 = coopLoadT<AM>(&sp[sb + 520u], 64u);
+    let p12 = coopLoadT<AM>(&sp[sb + 528u], 64u);
+    let p13 = coopLoadT<AM>(&sp[sb + 536u], 64u);
+    let p14 = coopLoadT<AM>(&sp[sb + 544u], 64u);
+    let p15 = coopLoadT<AM>(&sp[sb + 552u], 64u);
+    let p16 = coopLoadT<AM>(&sp[sb + 560u], 64u);
+    let p17 = coopLoadT<AM>(&sp[sb + 568u], 64u);
+    let vb = j0 * p.ch + va;
     for (var c = 0u; c < hd; c += 8u) {
       var o0 = coopLoadT<CM>(&acc[ab + c], hd);
       var o1 = coopLoadT<CM>(&acc[ab + 8u * hd + c], hd);
-      let v0 = coopLoadT<BM>(&att_v[j0 * p.ch + va + c], p.ch);
-      let v1 = coopLoadT<BM>(&att_v[(j0 + 8u) * p.ch + va + c], p.ch);
-      let v2 = coopLoadT<BM>(&att_v[(j0 + 16u) * p.ch + va + c], p.ch);
-      let v3 = coopLoadT<BM>(&att_v[(j0 + 24u) * p.ch + va + c], p.ch);
+      let v0 = coopLoadT<BM>(&att_v[vb + c], p.ch);
+      let v1 = coopLoadT<BM>(&att_v[vb + 8u * p.ch + c], p.ch);
+      let v2 = coopLoadT<BM>(&att_v[vb + 16u * p.ch + c], p.ch);
+      let v3 = coopLoadT<BM>(&att_v[vb + 24u * p.ch + c], p.ch);
+      let v4 = coopLoadT<BM>(&att_v[vb + 32u * p.ch + c], p.ch);
+      let v5 = coopLoadT<BM>(&att_v[vb + 40u * p.ch + c], p.ch);
+      let v6 = coopLoadT<BM>(&att_v[vb + 48u * p.ch + c], p.ch);
+      let v7 = coopLoadT<BM>(&att_v[vb + 56u * p.ch + c], p.ch);
       o0 = coopMultiplyAdd(p00, v0, o0);
       o0 = coopMultiplyAdd(p01, v1, o0);
       o0 = coopMultiplyAdd(p02, v2, o0);
       o0 = coopMultiplyAdd(p03, v3, o0);
+      o0 = coopMultiplyAdd(p04, v4, o0);
+      o0 = coopMultiplyAdd(p05, v5, o0);
+      o0 = coopMultiplyAdd(p06, v6, o0);
+      o0 = coopMultiplyAdd(p07, v7, o0);
       o1 = coopMultiplyAdd(p10, v0, o1);
       o1 = coopMultiplyAdd(p11, v1, o1);
       o1 = coopMultiplyAdd(p12, v2, o1);
       o1 = coopMultiplyAdd(p13, v3, o1);
+      o1 = coopMultiplyAdd(p14, v4, o1);
+      o1 = coopMultiplyAdd(p15, v5, o1);
+      o1 = coopMultiplyAdd(p16, v6, o1);
+      o1 = coopMultiplyAdd(p17, v7, o1);
       coopStoreT(o0, &acc[ab + c], hd);
       coopStoreT(o1, &acc[ab + 8u * hd + c], hd);
     }

@@ -1,10 +1,10 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! GGUF v3 reader: metadata plus F32/F16/Q8_0 tensor views over the file bytes.
+//! GGUF v3 reader: metadata from the header, F32/F16/Q8_0 tensors streamed from the file.
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use half::f16;
 
@@ -54,42 +54,42 @@ struct Info {
 }
 
 pub struct Gguf {
-  bytes: Vec<u8>,
+  path: PathBuf,
+  /// The start of the file, at least the header; tensors inside it are read from here.
+  head: Vec<u8>,
   meta: HashMap<String, Value>,
   tensors: HashMap<String, Info>,
   data: usize,
 }
 
-/// A tensor inside the file. `dims` are in ggml order: `dims[0]` is the contiguous axis, so a
-/// linear weight `[in, out]` is row-major `[out][in]`.
+/// A tensor in the file. `dims` are in ggml order: `dims[0]` is the contiguous axis, so a linear
+/// weight `[in, out]` is row-major `[out][in]`.
 pub struct Tensor<'a> {
   pub dims: &'a [usize],
   pub ty: Type,
-  pub bytes: &'a [u8],
+  gguf: &'a Gguf,
+  start: usize,
+  size: usize,
 }
 
 impl Gguf {
-  /// Reads the file in 8 parallel chunks, which is several times faster from the page cache.
+  /// Reads the header only; tensor data is read when used.
   pub fn open(path: &Path) -> Result<Self> {
     let len = std::fs::metadata(path)?.len() as usize;
-    let mut bytes = vec![0; len];
-    std::thread::scope(|s| {
-      let chunks = bytes.chunks_mut(len.div_ceil(8).max(1)).enumerate();
-      let threads: Vec<_> = (chunks.map(|(i, chunk)| {
-        s.spawn(move || -> std::io::Result<()> {
-          let mut file = File::open(path)?;
-          file.seek(SeekFrom::Start((i * len.div_ceil(8)) as u64))?;
-          file.read_exact(chunk)
-        })
-      }))
-      .collect();
-      threads.into_iter().try_for_each(|t| t.join().unwrap())
-    })?;
-    Self::parse(bytes)
+    // The header is usually far below 1 MiB; read more of the file if it doesn't fit.
+    let mut n = len.min(1 << 20);
+    loop {
+      let mut head = vec![0; n];
+      File::open(path)?.read_exact(&mut head)?;
+      match Self::parse(head, len, path.into()) {
+        Err(_) if n < len => n = len.min(n * 4),
+        r => return r,
+      }
+    }
   }
 
-  pub fn parse(bytes: Vec<u8>) -> Result<Self> {
-    let mut r = Reader { bytes: &bytes, pos: 0 };
+  fn parse(head: Vec<u8>, len: usize, path: PathBuf) -> Result<Self> {
+    let mut r = Reader { bytes: &head, pos: 0 };
     if r.take(4)? != b"GGUF" {
       bail!("not a GGUF file");
     }
@@ -126,12 +126,11 @@ impl Gguf {
     };
     let data = r.pos.next_multiple_of(align);
     for (name, t) in &tensors {
-      let end = data + t.offset + t.ty.size(t.dims.iter().product());
-      if end > bytes.len() {
+      if data + t.offset + t.ty.size(t.dims.iter().product()) > len {
         bail!("tensor {name} is out of file bounds");
       }
     }
-    Ok(Self { bytes, meta, tensors, data })
+    Ok(Self { path, head, meta, tensors, data })
   }
 
   fn get(&self, key: &str) -> Result<&Value> {
@@ -173,9 +172,8 @@ impl Gguf {
     if t.dims != dims {
       bail!("tensor {name}: shape {:?}, expected {dims:?}", t.dims);
     }
-    let start = self.data + t.offset;
-    let bytes = &self.bytes[start..start + t.ty.size(dims.iter().product())];
-    Ok(Tensor { dims: &t.dims, ty: t.ty, bytes })
+    let (start, size) = (self.data + t.offset, t.ty.size(dims.iter().product()));
+    Ok(Tensor { dims: &t.dims, ty: t.ty, gguf: self, start, size })
   }
 }
 
@@ -184,9 +182,27 @@ impl Tensor<'_> {
     self.dims.iter().product()
   }
 
-  pub fn to_f32(&self) -> Vec<f32> {
-    let b = self.bytes;
-    match self.ty {
+  /// Calls `f(offset, bytes)` on consecutive pieces of the tensor's data of up to `chunk` bytes.
+  pub fn read(&self, chunk: usize, mut f: impl FnMut(usize, &[u8])) -> Result<()> {
+    if let Some(bytes) = self.gguf.head.get(self.start..self.start + self.size) {
+      bytes.chunks(chunk).enumerate().for_each(|(i, c)| f(i * chunk, c));
+      return Ok(());
+    }
+    let mut file = File::open(&self.gguf.path)?;
+    file.seek(SeekFrom::Start(self.start as u64))?;
+    let mut buf = vec![0; chunk.min(self.size)];
+    for offset in (0..self.size).step_by(chunk) {
+      let piece = &mut buf[..chunk.min(self.size - offset)];
+      file.read_exact(piece)?;
+      f(offset, piece);
+    }
+    Ok(())
+  }
+
+  pub fn to_f32(&self) -> Result<Vec<f32>> {
+    let mut b = Vec::with_capacity(self.size);
+    self.read(self.size.max(1), |_, piece| b.extend_from_slice(piece))?;
+    Ok(match self.ty {
       Type::F32 => b.as_chunks().0.iter().map(|&c| f32::from_le_bytes(c)).collect(),
       Type::F16 => b.as_chunks().0.iter().map(|&c| f16::from_le_bytes(c).to_f32()).collect(),
       Type::Q8_0 => (b.as_chunks::<34>().0.iter())
@@ -195,7 +211,21 @@ impl Tensor<'_> {
           block[2..].iter().map(move |&q| q as i8 as f32 * d)
         })
         .collect(),
+    })
+  }
+}
+
+#[cfg(test)]
+impl Gguf {
+  /// An in-memory file holding `(name, ggml dims, type, data)` tensors, for tests.
+  pub(crate) fn with_tensors(tensors: &[(&str, &[usize], Type, &[u8])]) -> Self {
+    let mut head = Vec::new();
+    let mut infos = HashMap::new();
+    for &(name, dims, ty, data) in tensors {
+      infos.insert(name.to_string(), Info { dims: dims.to_vec(), ty, offset: head.len() });
+      head.extend_from_slice(data);
     }
+    Self { path: PathBuf::new(), head, meta: HashMap::new(), tensors: infos, data: 0 }
   }
 }
 
@@ -298,26 +328,35 @@ mod tests {
     f
   }
 
+  fn parse(f: Vec<u8>) -> Result<Gguf> {
+    let len = f.len();
+    Gguf::parse(f, len, PathBuf::new())
+  }
+
   #[test]
   fn reads_metadata_and_tensors() {
-    let g = Gguf::parse(sample()).unwrap();
+    let g = parse(sample()).unwrap();
     assert_eq!(g.u32("a.n").unwrap(), 7);
     assert_eq!(g.strs("a.tokens").unwrap(), ["▁x", "y"]);
     assert!(g.u32("missing").is_err());
 
-    assert_eq!(g.tensor("w", &[2, 1]).unwrap().to_f32(), [1.5, -2.0]);
+    assert_eq!(g.tensor("w", &[2, 1]).unwrap().to_f32().unwrap(), [1.5, -2.0]);
     assert!(g.tensor("w", &[1, 2]).is_err());
 
     let q = g.tensor("q", &[32]).unwrap();
     assert_eq!(q.ty, Type::Q8_0);
     let expected: Vec<f32> = (0..32).map(|i| (i - 16) as f32 * 0.5).collect();
-    assert_eq!(q.to_f32(), expected);
+    assert_eq!(q.to_f32().unwrap(), expected);
+
+    let mut pieces = Vec::new();
+    q.read(16, |offset, piece| pieces.push((offset, piece.len()))).unwrap();
+    assert_eq!(pieces, [(0, 16), (16, 16), (32, 2)]);
   }
 
   #[test]
   fn rejects_truncated_files() {
     let mut f = sample();
     f.truncate(f.len() - 1);
-    assert!(Gguf::parse(f).is_err());
+    assert!(parse(f).is_err());
   }
 }

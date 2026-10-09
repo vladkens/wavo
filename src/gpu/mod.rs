@@ -3,11 +3,8 @@
 //! Each kernel has a portable version; a fast one (subgroups, cooperative matrices) replaces it
 //! when the device supports it and a probe dispatch of that pipeline succeeds.
 
-use std::borrow::Cow;
 use std::sync::mpsc;
 
-use half::f16;
-use wgpu::util::DeviceExt;
 pub use wgpu::{BindGroup, Buffer};
 
 use crate::error::{Result, bail};
@@ -18,6 +15,9 @@ type Pipeline = wgpu::ComputePipeline;
 pub struct Gpu {
   device: wgpu::Device,
   queue: wgpu::Queue,
+  /// Usage of weight buffers. On unified memory they are also `MAP_WRITE`, so filling their
+  /// mapping writes the buffer itself: no staging copy at load, none queued for the first call.
+  weights: wgpu::BufferUsages,
   kernels: Kernels,
   fast: Fast,
 }
@@ -45,7 +45,7 @@ struct Fast {
 }
 
 /// A linear layer `y = x·Wᵀ + b` with `W` row-major `[n][k]`, kept in its GGUF type. Q8_0 is
-/// stored as int8 data (4 per u32, row-major) plus one f32 scale per 32-weight block.
+/// stored as int8 data (4 per u32, row-major) plus one f16 scale per 32-weight block.
 pub struct Linear {
   n: usize,
   k: usize,
@@ -92,9 +92,18 @@ impl Gpu {
           && p.ab_type == wgpu::CooperativeScalarType::F32
           && p.cr_type == wgpu::CooperativeScalarType::F32
       });
+    let mappable = adapter.get_info().device_type == wgpu::DeviceType::IntegratedGpu
+      && adapter.features().contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
+    let mut features = wgpu::Features::IMMEDIATES;
+    if fast {
+      features |= coop;
+    }
+    if mappable {
+      features |= wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
+    }
     let supported = adapter.limits();
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-      required_features: wgpu::Features::IMMEDIATES | if fast { coop } else { Default::default() },
+      required_features: features,
       required_limits: wgpu::Limits {
         max_immediate_size: 32,
         max_buffer_size: supported.max_buffer_size,
@@ -123,7 +132,11 @@ impl Gpu {
       softmax: pipeline(&device, &ops, "softmax", &[]),
       values: pipeline(&device, &ops, "values", &[]),
     };
-    let mut gpu = Self { device, queue, kernels, fast: Fast::default() };
+    let mut weights = wgpu::BufferUsages::STORAGE;
+    if mappable {
+      weights |= wgpu::BufferUsages::MAP_WRITE;
+    }
+    let mut gpu = Self { device, queue, weights, kernels, fast: Fast::default() };
     if fast {
       gpu.fast = gpu.fast_kernels();
     }
@@ -185,16 +198,22 @@ impl Gpu {
     })
   }
 
-  pub fn upload(&self, data: &[f32]) -> Buffer {
-    self.upload_bytes(bytemuck::cast_slice(data))
+  /// A weight buffer of `size` bytes, mapped for the caller to fill and unmap.
+  fn mapped(&self, size: usize) -> Buffer {
+    self.device.create_buffer(&wgpu::BufferDescriptor {
+      label: None,
+      size: size.max(4).next_multiple_of(4) as u64,
+      usage: self.weights,
+      mapped_at_creation: true,
+    })
   }
 
-  fn upload_bytes(&self, contents: &[u8]) -> Buffer {
-    self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-      label: None,
-      contents,
-      usage: wgpu::BufferUsages::STORAGE,
-    })
+  pub fn upload(&self, data: &[f32]) -> Result<Buffer> {
+    let buffer = self.mapped(data.len() * 4);
+    let bytes: &[u8] = bytemuck::cast_slice(data);
+    buffer.get_mapped_range_mut(..)?.slice(..bytes.len()).copy_from_slice(bytes);
+    buffer.unmap();
+    Ok(buffer)
   }
 
   pub fn write(&self, buffer: &Buffer, data: &[f32]) {
@@ -212,33 +231,59 @@ impl Gpu {
     if !n.is_multiple_of(64) || !k.is_multiple_of(32) {
       bail!("linear layer {k}→{n}: needs k % 32 == 0 and n % 64 == 0");
     }
-    let bytes: Cow<[u8]> = match weights {
-      [w] => Cow::Borrowed(w.bytes),
-      _ => Cow::Owned(weights.iter().flat_map(|w| w.bytes).copied().collect()),
-    };
+    // The file is streamed in pieces of 8192 Q8_0 blocks straight into the mapped buffers.
+    const PIECE: usize = 34 << 13;
     let (ty, weight, scales) = match w0.ty {
-      Type::F32 => (0, self.upload_bytes(&bytes), None),
-      Type::F16 => (1, self.upload_bytes(&bytes), None),
-      Type::Q8_0 => {
-        let blocks = bytes.as_chunks::<34>().0;
-        let scales: Vec<f32> =
-          blocks.iter().map(|b| f16::from_le_bytes([b[0], b[1]]).to_f32()).collect();
-        let mut data = Vec::with_capacity(blocks.len() * 32);
-        for b in blocks {
-          data.extend_from_slice(&b[2..]);
+      Type::F32 | Type::F16 => {
+        let (ty, width) = if w0.ty == Type::F32 { (0, 4) } else { (1, 2) };
+        let weight = self.mapped(n * k * width);
+        let mut view = weight.get_mapped_range_mut(..)?;
+        let mut at = 0;
+        for w in weights {
+          w.read(PIECE, |i, piece| {
+            view.slice(at + i..at + i + piece.len()).copy_from_slice(piece)
+          })?;
+          at += w.len() * width;
         }
-        (2, self.upload_bytes(&data), Some(self.upload(&scales)))
+        drop(view);
+        weight.unmap();
+        (ty, weight, None)
+      }
+      Type::Q8_0 => {
+        let (data, scales) = (self.mapped(n * k), self.mapped(n * k / 16));
+        let (mut dv, mut sv) = (data.get_mapped_range_mut(..)?, scales.get_mapped_range_mut(..)?);
+        let (mut d, mut s) =
+          (Vec::with_capacity(PIECE / 34 * 32), Vec::with_capacity(PIECE / 34 * 2));
+        let mut block = 0;
+        for w in weights {
+          w.read(PIECE, |i, piece| {
+            d.clear();
+            s.clear();
+            for b in piece.as_chunks::<34>().0 {
+              s.extend_from_slice(&b[..2]);
+              d.extend_from_slice(&b[2..]);
+            }
+            let first = block + i / 34;
+            dv.slice(first * 32..first * 32 + d.len()).copy_from_slice(&d);
+            sv.slice(first * 2..first * 2 + s.len()).copy_from_slice(&s);
+          })?;
+          block += w.len() / 32;
+        }
+        drop((dv, sv));
+        data.unmap();
+        scales.unmap();
+        (2, data, Some(scales))
       }
     };
-    let bias: Vec<f32> = biases.iter().flat_map(|b| b.to_f32()).collect();
+    let bias = biases.iter().map(|b| b.to_f32()).collect::<Result<Vec<_>>>()?.concat();
     if bias.len() != n {
       bail!("linear layer {k}→{n}: bias has {} values", bias.len());
     }
-    Ok(Linear { n, k, ty, weight, scales, bias: self.upload(&bias) })
+    Ok(Linear { n, k, ty, weight, scales, bias: self.upload(&bias)? })
   }
 
-  pub fn norm(&self, g: &Tensor, b: &Tensor) -> Norm {
-    Norm { g: self.upload(&g.to_f32()), b: self.upload(&b.to_f32()) }
+  pub fn norm(&self, g: &Tensor, b: &Tensor) -> Result<Norm> {
+    Ok(Norm { g: self.upload(&g.to_f32()?)?, b: self.upload(&b.to_f32()?)? })
   }
 
   fn flash(&self, head_dim: usize) -> Option<&Pipeline> {
@@ -452,7 +497,10 @@ impl Pass<'_> {
 mod tests {
   use std::sync::OnceLock;
 
+  use half::f16;
+
   use super::*;
+  use crate::gguf::Gguf;
 
   /// The portable path, then the fast one.
   fn gpus() -> &'static [Gpu; 2] {
@@ -481,8 +529,15 @@ mod tests {
       .collect()
   }
 
-  fn tensor<'a>(dims: &'a [usize], ty: Type, bytes: &'a [u8]) -> Tensor<'a> {
-    Tensor { dims, ty, bytes }
+  fn up(gpu: &Gpu, data: &[f32]) -> Buffer {
+    gpu.upload(data).unwrap()
+  }
+
+  fn norm(gpu: &Gpu, g: &[f32], b: &[f32]) -> Norm {
+    let dims = [g.len()];
+    let (g, b) = (bytemuck::cast_slice(g), bytemuck::cast_slice(b));
+    let file = Gguf::with_tensors(&[("g", &dims, Type::F32, g), ("b", &dims, Type::F32, b)]);
+    gpu.norm(&file.tensor("g", &dims).unwrap(), &file.tensor("b", &dims).unwrap()).unwrap()
   }
 
   /// Runs `record` with an output buffer that starts as `init`, and returns the output.
@@ -532,16 +587,25 @@ mod tests {
       })
       .collect();
     let epilogues = [Epilogue::Bias, Epilogue::Silu, Epilogue::Relu, Epilogue::Residual(0.5)];
+    // Each weight is stored as two halves stacked along n, like q over k.
+    let (wd, bd) = ([k, n / 2], [n / 2]);
+    let (b1, b2) = bytemuck::cast_slice::<f32, u8>(&bias).split_at(n * 2);
     for (ty, bytes) in [(Type::F32, f32s), (Type::F16, &f16s), (Type::Q8_0, &q8)] {
-      let wf = tensor(&[k, n], ty, bytes).to_f32();
+      let (w1, w2) = bytes.split_at(bytes.len() / 2);
+      let file = Gguf::with_tensors(&[
+        ("w1", &wd, ty, w1),
+        ("w2", &wd, ty, w2),
+        ("b1", &bd, Type::F32, b1),
+        ("b2", &bd, Type::F32, b2),
+      ]);
+      let t = |name| file.tensor(name, if name.starts_with('w') { &wd } else { &bd }).unwrap();
+      let wf = [t("w1").to_f32().unwrap(), t("w2").to_f32().unwrap()].concat();
       for gpu in gpus() {
-        let (wd, bd) = ([k, n], [n]);
-        let b = tensor(&bd, Type::F32, bytemuck::cast_slice(&bias));
-        let l = gpu.linear(&[tensor(&wd, ty, bytes)], &[b]).unwrap();
+        let l = gpu.linear(&[t("w1"), t("w2")], &[t("b1"), t("b2")]).unwrap();
         for m in [1, 37, 70] {
           let a = random(m * k, 3);
           let c = random(m * n, 4);
-          let ab = gpu.upload(&a);
+          let ab = up(gpu, &a);
           for e in epilogues {
             let want: Vec<f32> = (0..m * n)
               .map(|i| {
@@ -577,11 +641,8 @@ mod tests {
       })
       .collect();
     for gpu in gpus() {
-      let n = gpu.norm(
-        &tensor(&[cols], Type::F32, bytemuck::cast_slice(&g)),
-        &tensor(&[cols], Type::F32, bytemuck::cast_slice(&b)),
-      );
-      let (xb, rb) = (gpu.upload(&x), gpu.upload(&rope));
+      let n = norm(gpu, &g, &b);
+      let (xb, rb) = (up(gpu, &x), up(gpu, &rope));
       let zeros = vec![0.0; rows * cols];
       assert_close(&run(gpu, &zeros, |p, y| p.layer_norm(&xb, &n, y, rows, cols)), &y);
       let yb = gpu.buffer(rows * cols);
@@ -603,7 +664,7 @@ mod tests {
       })
       .collect();
     for gpu in gpus() {
-      let xb = gpu.upload(&x);
+      let xb = up(gpu, &x);
       let got = run(gpu, &vec![0.0; want.len()], |p, col| p.im2col(&xb, col, t_in, ch, t_out));
       assert_close(&got, &want);
     }
@@ -625,11 +686,8 @@ mod tests {
       .collect();
     let want: Vec<f32> = layer_norm(&dw, &g, &b).into_iter().map(silu).collect();
     for gpu in gpus() {
-      let n = gpu.norm(
-        &tensor(&[ch], Type::F32, bytemuck::cast_slice(&g)),
-        &tensor(&[ch], Type::F32, bytemuck::cast_slice(&b)),
-      );
-      let (hb, wbuf, bbuf) = (gpu.upload(&h), gpu.upload(&w), gpu.upload(&wb));
+      let n = norm(gpu, &g, &b);
+      let (hb, wbuf, bbuf) = (up(gpu, &h), up(gpu, &w), up(gpu, &wb));
       let got = run(gpu, &vec![0.0; t * ch], |p, y| p.conv_glu(&hb, &wbuf, &bbuf, &n, y, t, ch));
       assert_close(&got, &want);
     }
@@ -662,7 +720,7 @@ mod tests {
         }
       }
       for gpu in gpus() {
-        let (qb, vb) = (gpu.upload(&qk), gpu.upload(&v));
+        let (qb, vb) = (up(gpu, &qk), up(gpu, &v));
         let s = gpu.buffer(gpu.scores_len(t, heads, hd));
         let got = run(gpu, &vec![0.0; t * d], |p, o| p.attention(&qb, &vb, &s, o, t, heads, hd));
         assert_close(&got, &want);

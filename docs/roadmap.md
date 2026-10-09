@@ -7,7 +7,7 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       reader, CPU frontend, GPU encoder, CPU RNN-T greedy decoder. Weights stay Q8_0/F16 on the
       GPU. Fixtures `ru`, `ru-short`, `ru-long` match exactly; first benchmark against the
       reference recorded in `docs/perf.md`.
-- [ ] **2. GigaAM v3 e2e-rnnt, fast.** On Apple Silicon: warm faster than transcribe.cpp Metal on
+- [x] **2. GigaAM v3 e2e-rnnt, fast.** On Apple Silicon: warm faster than transcribe.cpp Metal on
       all three clips, load ≤ 0.25 s, small peak memory. Work through `docs/perf.md` → "Not tried
       yet", re-profiling with GPU timestamps after big changes. Decision point: if warm is still
       slower than the reference once that list is exhausted, stop and report to the user before

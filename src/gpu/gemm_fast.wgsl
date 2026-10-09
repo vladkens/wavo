@@ -21,7 +21,13 @@ var<immediate> p: Params;
 @group(0) @binding(1) var<storage, read> bias: array<f32>;
 @group(0) @binding(2) var<storage, read_write> c: array<f32>;
 @group(0) @binding(3) var<storage, read> w: array<u32>;
-@group(0) @binding(4) var<storage, read> scales: array<f32>;
+// Q8_0 block scales as f16 pairs.
+@group(0) @binding(4) var<storage, read> scales: array<u32>;
+
+fn scale(block: u32) -> f32 {
+  let s = unpack2x16float(scales[block / 2u]);
+  return select(s.x, s.y, (block & 1u) == 1u);
+}
 
 alias AM = coop_mat8x8<f32, A>;
 alias BM = coop_mat8x8<f32, B>;
@@ -51,7 +57,7 @@ fn load_w(n0: u32, k0: u32, i: u32) {
   switch WTYPE {
     case 0u: { v = bitcast<vec4<f32>>(vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u])); }
     case 1u: { v = vec4(unpack2x16float(w[x / 2u]), unpack2x16float(w[x / 2u + 1u])); }
-    default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scales[x / 32u]; }
+    default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
   }
   let o = 512u + (i % 16u / 8u) * 512u + (i / 128u) * 64u + (i % 8u) * 8u + i / 16u % 8u;
   tile[o] = v.x;
