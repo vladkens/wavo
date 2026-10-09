@@ -1,6 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! RNN-T greedy decoding on the CPU: embedding + one LSTM layer as the predictor, joint network
-//! `out(relu(enc + pred(h)))`. The encoder side of the joint is projected on the GPU.
+//! Greedy decoding on the CPU. RNN-T: embedding + one LSTM layer as the predictor, joint network
+//! `out(relu(enc + pred(h)))`; the encoder side of the joint is projected on the GPU. CTC: argmax
+//! per frame over logits computed on the GPU, then collapse.
 
 use super::matmul;
 use crate::error::Result;
@@ -130,4 +131,26 @@ impl Decoder {
       })
       .collect()
   }
+}
+
+/// Greedy CTC over `logits` `[frames][classes]`: per-frame argmax (ties go to the lowest id; the
+/// reference takes it after a log-softmax, which only shifts each row), repeats of the previous
+/// frame's label dropped, then blanks. Returns `(token, frame)` pairs; a token's frame is the
+/// first of its run.
+pub fn ctc(logits: &[f32], classes: usize, blank: usize) -> Vec<(u32, u32)> {
+  let mut out = Vec::new();
+  let mut prev = None;
+  for (t, row) in logits.chunks_exact(classes).enumerate() {
+    let mut best = (0, row[0]);
+    for (v, &x) in row.iter().enumerate().skip(1) {
+      if x > best.1 {
+        best = (v, x);
+      }
+    }
+    if prev != Some(best.0) && best.0 != blank {
+      out.push((best.0 as u32, t as u32));
+    }
+    prev = Some(best.0);
+  }
+  out
 }

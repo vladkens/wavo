@@ -24,6 +24,11 @@ var<immediate> p: Params;
 // Q8_0 block scales as f16 pairs.
 @group(0) @binding(4) var<storage, read> scales: array<u32>;
 
+// W rounded to f16, see gemm.wgsl.
+fn to_half4(v: vec4<f32>) -> vec4<f32> {
+  return vec4(unpack2x16float(pack2x16float(v.xy)), unpack2x16float(pack2x16float(v.zw)));
+}
+
 fn scale(block: u32) -> f32 {
   let s = unpack2x16float(scales[block / 2u]);
   return select(s.x, s.y, (block & 1u) == 1u);
@@ -59,6 +64,7 @@ fn load_w(n0: u32, k0: u32, i: u32) {
     case 1u: { v = vec4(unpack2x16float(w[x / 2u]), unpack2x16float(w[x / 2u + 1u])); }
     default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
   }
+  v = to_half4(v);
   let o = 512u + (i % 16u / 8u) * 512u + (i / 128u) * 64u + (i % 8u) * 8u + i / 16u % 8u;
   tile[o] = v.x;
   tile[o + 8u] = v.y;

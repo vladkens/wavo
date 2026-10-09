@@ -1,7 +1,10 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 // Linear layer c = epilogue(a·Wᵀ + bias): `a` is row-major [m][k] F32, W is [n][k] in its GGUF
 // type. A workgroup computes a 64×64 tile of c, each thread 4×4 outputs strided by 16. K advances
-// 32 per step (one Q8_0 block). n % 64 == 0 and k % 32 == 0.
+// 32 per step (one Q8_0 block). n % 64 == 0 and k % 32 == 0. W is rounded to f16 after
+// dequantization, as the reference's Metal matmul (`kernel_mul_mm`) does; without it, near-ties
+// (one CTC frame of e2e-ctc on ru-short) fall on the other side. The reference also rounds `a`,
+// which costs ~2% here and no fixture needs.
 
 // Weight type, one pipeline each: 0: F32, 1: F16, 2: Q8_0.
 override WTYPE: u32;
@@ -24,6 +27,10 @@ var<immediate> p: Params;
 @group(0) @binding(3) var<storage, read> w: array<u32>;
 // Q8_0 block scales as f16 pairs (any buffer for other types).
 @group(0) @binding(4) var<storage, read> scales: array<u32>;
+
+fn to_half(x: f32) -> f32 {
+  return unpack2x16float(pack2x16float(vec2(x, 0.0))).x;
+}
 
 fn scale(block: u32) -> f32 {
   let s = unpack2x16float(scales[block / 2u]);
@@ -86,10 +93,10 @@ fn gemm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
         default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
       }
       let o = e / 32u * S + e % 32u;
-      wt[o] = v.x;
-      wt[o + 1u] = v.y;
-      wt[o + 2u] = v.z;
-      wt[o + 3u] = v.w;
+      wt[o] = to_half(v.x);
+      wt[o + 1u] = to_half(v.y);
+      wt[o + 2u] = to_half(v.z);
+      wt[o + 3u] = to_half(v.w);
     }
     workgroupBarrier();
     for (var kk = 0u; kk < 32u; kk++) {

@@ -12,7 +12,7 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       yet", re-profiling with GPU timestamps after big changes. Decision point: if warm is still
       slower than the reference once that list is exhausted, stop and report to the user before
       porting more models.
-- [ ] **3. Other GigaAM v3 variants.** `e2e-ctc` (CTC head), then `rnnt` and `ctc` (33-char
+- [x] **3. Other GigaAM v3 variants.** `e2e-ctc` (CTC head), then `rnnt` and `ctc` (33-char
       vocab).
 - [ ] **4. Parakeet TDT V2.** FastConformer, relative positional attention, TDT decoder. Fixtures
       `jfk`, `dots`, `jobs-silence`. Then make it fast the same way.

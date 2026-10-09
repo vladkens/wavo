@@ -1,6 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! GigaAM v3 with the RNN-T head (e2e-rnnt): log-mel frontend on the CPU, Conformer encoder with
-//! rotary attention on the GPU, greedy RNN-T decoding on the CPU.
+//! GigaAM v3: log-mel frontend on the CPU, Conformer encoder with rotary attention on the GPU, and
+//! one of two heads: RNN-T (greedy decoding on the CPU) or CTC (logits as the encoder's last GEMM,
+//! greedy collapse on the CPU). The e2e variants use SentencePiece pieces, the others characters.
 
 mod decoder;
 mod encoder;
@@ -21,48 +22,52 @@ struct Config {
   heads: usize,
   d_ff: usize,
   mels: usize,
-  joint: usize,
   /// RoPE base: GigaAM passes `pos_emb_max_len` (5000) as theta.
   theta: f64,
+}
+
+enum Head {
+  /// The encoder outputs the joint's encoder projection.
+  Rnnt(Box<Decoder>),
+  /// The encoder outputs the logits.
+  Ctc { blank: usize },
 }
 
 pub struct Gigaam {
   gpu: Gpu,
   frontend: Frontend,
   encoder: Encoder,
-  decoder: Decoder,
+  head: Head,
   vocab: Vec<String>,
 }
 
 impl Gigaam {
   pub fn load(g: &Gguf) -> Result<Self> {
-    for (key, want) in [
-      ("general.architecture", "gigaam"),
-      ("stt.gigaam.head_kind", "rnnt"),
-      ("stt.gigaam.encoder.self_attention_model", "rotary"),
-      ("stt.gigaam.encoder.conv_norm_type", "layer_norm"),
-      ("stt.gigaam.joint.activation", "relu"),
-    ] {
+    let check_str = |key: &str, allowed: &[&str]| -> Result<()> {
       let got = g.str(key)?;
-      if got != want {
-        bail!("{key} is {got:?}, only {want:?} is supported");
+      if !allowed.contains(&got) {
+        bail!("{key} is {got:?}, only {allowed:?} supported");
       }
-    }
-    for (key, want) in [
-      ("stt.gigaam.encoder.conv_kernel", 5),
-      ("stt.gigaam.encoder.subs_kernel_size", 5),
-      ("stt.gigaam.encoder.subsampling_factor", 4),
-      ("stt.gigaam.predictor.n_layers", 1),
-      ("stt.frontend.sample_rate", 16000),
-      ("stt.frontend.n_fft", frontend::N_FFT as u32),
-      ("stt.frontend.win_length", frontend::N_FFT as u32),
-      ("stt.frontend.hop_length", 160),
-    ] {
+      Ok(())
+    };
+    let check_u32 = |key: &str, want: u32| -> Result<()> {
       let got = g.u32(key)?;
       if got != want {
         bail!("{key} is {got}, only {want} is supported");
       }
-    }
+      Ok(())
+    };
+    check_str("general.architecture", &["gigaam"])?;
+    check_str("stt.gigaam.encoder.self_attention_model", &["rotary"])?;
+    check_str("stt.gigaam.encoder.conv_norm_type", &["layer_norm"])?;
+    check_str("tokenizer.ggml.model", &["bpe", "char"])?;
+    check_u32("stt.gigaam.encoder.conv_kernel", 5)?;
+    check_u32("stt.gigaam.encoder.subs_kernel_size", 5)?;
+    check_u32("stt.gigaam.encoder.subsampling_factor", 4)?;
+    check_u32("stt.frontend.sample_rate", 16000)?;
+    check_u32("stt.frontend.n_fft", frontend::N_FFT as u32)?;
+    check_u32("stt.frontend.win_length", frontend::N_FFT as u32)?;
+    check_u32("stt.frontend.hop_length", 160)?;
     let u = |key: &str| g.u32(&format!("stt.gigaam.{key}")).map(|v| v as usize);
     let cfg = Config {
       layers: u("encoder.n_layers")?,
@@ -70,33 +75,42 @@ impl Gigaam {
       heads: u("encoder.n_heads")?,
       d_ff: u("encoder.d_ff")?,
       mels: g.u32("stt.frontend.num_mels")? as usize,
-      joint: u("joint.hidden")?,
       theta: u("encoder.pos_emb_max_len")? as f64,
     };
-    let head_dim = cfg.d / cfg.heads;
-    if !cfg.d.is_multiple_of(cfg.heads)
-      || cfg.d > 1024
-      || head_dim > 128
-      || !head_dim.is_multiple_of(2)
-    {
-      bail!("unsupported attention shape: d_model {}, {} heads", cfg.d, cfg.heads);
+    let (d, head_dim) = (cfg.d, cfg.d / cfg.heads);
+    if !d.is_multiple_of(cfg.heads) || d > 1024 || head_dim > 128 || !head_dim.is_multiple_of(2) {
+      bail!("unsupported attention shape: d_model {d}, {} heads", cfg.heads);
     }
     let vocab: Vec<String> =
       g.strs("tokenizer.ggml.tokens")?.into_iter().map(String::from).collect();
-    let classes = u("joint.num_classes")?;
     let blank = g.u32("tokenizer.ggml.blank_token_id")? as usize;
-    if vocab.len() != classes || u("predictor.vocab")? != classes || blank >= classes {
+    let kind = g.str("stt.gigaam.head_kind")?;
+    let classes = match kind {
+      "rnnt" => u("joint.num_classes")?,
+      "ctc" => u("head.num_classes")?,
+      _ => bail!("stt.gigaam.head_kind is {kind:?}, only \"rnnt\" and \"ctc\" are supported"),
+    };
+    if vocab.len() != classes || blank >= classes {
       bail!("vocabulary of {} tokens, {classes} classes, blank {blank}", vocab.len());
     }
 
     let gpu = Gpu::new()?;
     let frontend = Frontend::new(g, cfg.mels)?;
-    let decoder = Decoder::new(g, u("predictor.hidden")?, cfg.joint, classes, blank)?;
-    let encoder = Encoder::new(&gpu, g, cfg)?;
+    let (head, encoder) = if kind == "rnnt" {
+      check_str("stt.gigaam.joint.activation", &["relu"])?;
+      check_u32("stt.gigaam.predictor.n_layers", 1)?;
+      check_u32("stt.gigaam.predictor.vocab", classes as u32)?;
+      let joint = u("joint.hidden")?;
+      let decoder = Decoder::new(g, u("predictor.hidden")?, joint, classes, blank)?;
+      (Head::Rnnt(Box::new(decoder)), Encoder::new(&gpu, g, cfg, ("joint.enc", &[d, joint]))?)
+    } else {
+      check_u32("stt.gigaam.head.feat_in", d as u32)?;
+      (Head::Ctc { blank }, Encoder::new(&gpu, g, cfg, ("head.ctc", &[1, d, classes]))?)
+    };
     // The GPU's first use of the pipelines and the weight memory costs 20–40 ms whatever the input
     // length: pay it here on 8 silent frames instead of in the first call.
     encoder.run(&gpu, &vec![0.0; 8 * frontend.mels])?;
-    Ok(Self { gpu, frontend, encoder, decoder, vocab })
+    Ok(Self { gpu, frontend, encoder, head, vocab })
   }
 
   pub fn transcribe(&self, pcm: &[f32]) -> Result<Transcript> {
@@ -105,9 +119,14 @@ impl Gigaam {
       return Ok(Transcript::default());
     }
     let enc = self.encoder.run(&self.gpu, &mel)?;
-    let tokens: Vec<Token> = (self.decoder.decode(&enc).into_iter())
+    let ids = match &self.head {
+      Head::Rnnt(decoder) => decoder.decode(&enc),
+      Head::Ctc { blank } => decoder::ctc(&enc, self.vocab.len(), *blank),
+    };
+    let tokens: Vec<Token> = (ids.into_iter())
       .map(|(id, frame)| Token { id, piece: self.vocab[id as usize].clone(), frame })
       .collect();
+    // Character vocabularies have a plain space and no `▁`.
     let text = tokens.iter().map(|t| t.piece.as_str()).collect::<String>().replace('▁', " ");
     let text = text.strip_prefix(' ').unwrap_or(&text).to_string();
     Ok(Transcript { text, tokens })

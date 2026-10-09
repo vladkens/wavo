@@ -56,6 +56,13 @@ pub struct Linear {
   bias: Buffer,
 }
 
+impl Linear {
+  /// Output columns: the rows of `W` padded to a multiple of 64.
+  pub fn width(&self) -> usize {
+    self.n
+  }
+}
+
 /// LayerNorm gain and bias.
 pub struct Norm {
   g: Buffer,
@@ -221,16 +228,20 @@ impl Gpu {
   }
 
   /// Uploads weights `[.., n_i]` of one type and inner size, stacked along n, with their biases.
+  /// The GEMM computes 64 outputs at a time, so the rows are padded with zeros to a multiple of
+  /// 64; the extra outputs are `epilogue(0)`.
   pub fn linear(&self, weights: &[Tensor], biases: &[Tensor]) -> Result<Linear> {
     let w0 = &weights[0];
     let k = w0.len() / w0.dims.last().unwrap();
-    let n = weights.iter().map(|w| w.dims.last().unwrap()).sum::<usize>();
+    let rows = weights.iter().map(|w| w.dims.last().unwrap()).sum::<usize>();
     if weights.iter().any(|w| w.ty != w0.ty || w.len() / w.dims.last().unwrap() != k) {
       bail!("stacked weights differ in type or shape");
     }
-    if !n.is_multiple_of(64) || !k.is_multiple_of(32) {
-      bail!("linear layer {k}→{n}: needs k % 32 == 0 and n % 64 == 0");
+    if !k.is_multiple_of(32) {
+      bail!("linear layer {k}→{rows}: needs k % 32 == 0");
     }
+    // Buffers start zeroed, so the padding rows only need the space.
+    let n = rows.next_multiple_of(64);
     // The file is streamed in pieces of 8192 Q8_0 blocks straight into the mapped buffers.
     const PIECE: usize = 34 << 13;
     let (ty, weight, scales) = match w0.ty {
@@ -275,10 +286,11 @@ impl Gpu {
         (2, data, Some(scales))
       }
     };
-    let bias = biases.iter().map(|b| b.to_f32()).collect::<Result<Vec<_>>>()?.concat();
-    if bias.len() != n {
-      bail!("linear layer {k}→{n}: bias has {} values", bias.len());
+    let mut bias = biases.iter().map(|b| b.to_f32()).collect::<Result<Vec<_>>>()?.concat();
+    if bias.len() != rows {
+      bail!("linear layer {k}→{rows}: bias has {} values", bias.len());
     }
+    bias.resize(n, 0.0);
     Ok(Linear { n, k, ty, weight, scales, bias: self.upload(&bias)? })
   }
 
@@ -574,7 +586,8 @@ mod tests {
 
   #[test]
   fn gemm() {
-    let (n, k) = (128, 96);
+    // 100 rows: the GEMM pads them to 128 output columns, which come out as epilogue(0).
+    let (n, k, width) = (100, 96, 128);
     let w = random(n * k, 1);
     let bias = random(n, 2);
     let f32s: &[u8] = bytemuck::cast_slice(&w);
@@ -599,18 +612,23 @@ mod tests {
         ("b2", &bd, Type::F32, b2),
       ]);
       let t = |name| file.tensor(name, if name.starts_with('w') { &wd } else { &bd }).unwrap();
-      let wf = [t("w1").to_f32().unwrap(), t("w2").to_f32().unwrap()].concat();
+      // The GEMM rounds W to f16.
+      let half = |x: &f32| f16::from_f32(*x).to_f32();
+      let wf: Vec<f32> = [t("w1").to_f32().unwrap(), t("w2").to_f32().unwrap()].concat();
+      let wf: Vec<f32> = wf.iter().map(half).collect();
       for gpu in gpus() {
         let l = gpu.linear(&[t("w1"), t("w2")], &[t("b1"), t("b2")]).unwrap();
+        assert_eq!(l.width(), width);
         for m in [1, 37, 70] {
           let a = random(m * k, 3);
-          let c = random(m * n, 4);
+          let c = random(m * width, 4);
           let ab = up(gpu, &a);
           for e in epilogues {
-            let want: Vec<f32> = (0..m * n)
+            let want: Vec<f32> = (0..m * width)
               .map(|i| {
-                let (r, j) = (i / n, i % n);
-                let v = bias[j] + (0..k).map(|x| a[r * k + x] * wf[j * k + x]).sum::<f32>();
+                let (r, j) = (i / width, i % width);
+                let dot = |j: usize| (0..k).map(|x| a[r * k + x] * wf[j * k + x]).sum::<f32>();
+                let v = if j < n { bias[j] + dot(j) } else { 0.0 };
                 match e {
                   Epilogue::Bias => v,
                   Epilogue::Silu => silu(v),

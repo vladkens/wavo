@@ -22,7 +22,7 @@ pub struct Transcript {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
   pub id: u32,
-  /// SentencePiece piece, `▁` marks a word start.
+  /// Vocabulary piece: a SentencePiece piece (`▁` marks a word start) or a character.
   pub piece: String,
   /// Encoder frame where the token was emitted (40 ms per frame for GigaAM).
   pub frame: u32,

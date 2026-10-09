@@ -43,17 +43,35 @@ fn read_fixture(path: &Path) -> (String, Vec<(String, u32)>) {
   (text.to_string(), tokens)
 }
 
-#[test]
-fn gigaam_v3_e2e_rnnt() {
-  let name = "gigaam-v3-e2e-rnnt";
+fn check(name: &str) {
   let root = Path::new(env!("CARGO_MANIFEST_DIR"));
   let model = wavo::Model::load(model_path(name)).unwrap();
   for sample in ["ru", "ru-short", "ru-long"] {
     let pcm = read_wav(&root.join(format!("3rd/transcribe.cpp/samples/{sample}.wav")));
     let (text, tokens) = read_fixture(&root.join(format!("tests/fixtures/{name}/{sample}.txt")));
     let got = model.transcribe(&pcm).unwrap();
-    assert_eq!(got.text, text, "{sample}: text");
+    assert_eq!(got.text, text, "{name} {sample}: text");
     let got: Vec<(String, u32)> = got.tokens.into_iter().map(|t| (t.piece, t.frame)).collect();
-    assert_eq!(got, tokens, "{sample}: tokens");
+    assert_eq!(got, tokens, "{name} {sample}: tokens");
   }
+}
+
+#[test]
+fn gigaam_v3_e2e_rnnt() {
+  check("gigaam-v3-e2e-rnnt");
+}
+
+#[test]
+fn gigaam_v3_e2e_ctc() {
+  check("gigaam-v3-e2e-ctc");
+}
+
+#[test]
+fn gigaam_v3_rnnt() {
+  check("gigaam-v3-rnnt");
+}
+
+#[test]
+fn gigaam_v3_ctc() {
+  check("gigaam-v3-ctc");
 }

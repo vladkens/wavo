@@ -43,13 +43,15 @@ after a shader change loads in 0.2–0.4 s while Metal compiles and caches the n
 How it runs: the GGUF header is read at load and each tensor is streamed from the file straight
 into weight buffers that are mapped on unified memory (no staging copy); weights stay Q8_0/F16
 on the GPU. Load ends with an encoder run on 8 silent frames to pay the GPU's first use of
-pipelines and weights. Per call: CPU log-mel (rustfft, one frame at a time), then the whole encoder as one compute
-pass over an arena sized for the longest input so far, with bind groups cached per dispatch.
-Fast kernels (cooperative-matrix GEMM with Q8_0/F16 dequantized while staging, barrier-free
-flash attention, one subgroup per row for LayerNorm and the conv module) each turn on after a
-probe dispatch; portable WGSL kernels run otherwise. The joint's encoder projection is the last
-GEMM; the RNN-T loop (LSTM, joint, argmax) runs on one CPU thread with NEON tiles that score
-two frames per pass over the joint weights.
+pipelines and weights. Per call: CPU log-mel (rustfft, one frame at a time), then the whole
+encoder as one compute pass over an arena sized for the longest input so far, with bind groups
+cached per dispatch. Fast kernels (cooperative-matrix GEMM with Q8_0/F16 dequantized while
+staging and rounded to f16 like the reference's, barrier-free flash attention, one subgroup per
+row for LayerNorm and the conv module) each turn on after a probe dispatch; portable WGSL
+kernels run otherwise. The head's linear layer is the last GEMM: the joint's encoder projection
+for RNN-T, the logits (rows padded to 64) for CTC. The RNN-T loop (LSTM, joint, argmax) runs on
+one CPU thread with NEON tiles that score two frames per pass over the joint weights; CTC is an
+argmax and collapse per frame.
 
 ### Profile (2026-10-09, GPU timestamps per dispatch, warm, ms per call)
 
@@ -83,6 +85,22 @@ timestamps, which inflates the GPU span ~5%; CPU timers in the normal single-pas
   → GPU, ~285 MB) with the first submit, not at load. Peak memory held the whole GGUF read into
   memory, the Q8_0 repack copies and wgpu's staging buffers next to the GPU weights. Both are
   fixed; see the Log.
+
+## Current state: other GigaAM v3 variants (phase 3)
+
+Warm median, first call and peak footprint per clip (ru / ru-short / ru-long), wavo vs
+`transcribe-bench` on the same GGUF, measured back to back as above (load average 4–7, a
+Spotlight indexer on one core):
+
+| Variant | Warm wavo | Warm reference | First call wavo | First call reference | Peak wavo | Peak reference |
+|---|---|---|---|---|---|---|
+| e2e-ctc | 42.0 / 85.1 / 273.4 ms | 50.9 / 95.3 / 318.5 ms | 48 / 89 / 274 ms | 54 / 101 / 323 ms | 289 / 293 / 314 MiB | 314 / 315 / 323 MiB |
+| rnnt | 42.3 / 95.5 / 295.4 ms | 43.3 / 98.2 / 311.3 ms | 48 / 99–102 / 301 ms | 64 / 100–113 / 305 ms | 292 / 298 / 319 MiB | 319 / 321 / 329 MiB |
+| ctc | 39.4 / 84.7 / 268.3 ms | 41.6 / 92.2 / 295.9 ms | 43 / 88 / 273 ms | 60 / 95 / 316 ms | 288 / 292 / 314 MiB | 313 / 315 / 323 MiB |
+
+Load with the file in the page cache: wavo 76–126 ms, reference 120–186 ms (a cold first read of
+a new GGUF took wavo 0.19–0.47 s). The CTC variants have no decoder loop; their reference reads
+the encoder output back and runs the head and a log-softmax on the CPU.
 
 ## Research history: `research` branch (all weights expanded to F32)
 
@@ -191,6 +209,18 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
 
+- 2026-10-09, GigaAM variants, GEMM rounds dequantized W to f16, as the reference's
+  `kernel_mul_mm` does. Without it e2e-ctc ru-short emits one token a frame late: at frame 116
+  the reference has 13.4252 for the token and 13.4183 for blank, wavo 13.4093 and 13.4172 (mean
+  |Δ logits| 0.0026). With a and W both rounded: 13.4250 vs 13.4171, mean 0.0016, all argmaxes
+  equal. W only: all four models' fixtures exact (e2e-rnnt unchanged), warm e2e-rnnt ru 43.7 /
+  43.5 vs 43.8 / 43.5 ms without, ru-long B/A/B 296.0 / 295.2 / 296.4 ms. Kept. Rounding a as
+  well: +1.0 ms on ru (44.9 / 44.5 ms), no fixture needs it, rejected. Rounding with integer ops
+  instead of `pack2x16float`: +2.4 ms (W) / +4 ms (both) on ru, rejected.
+- 2026-10-09, GigaAM variants, e2e-ctc, rnnt and ctc as heads of the shared encoder: CTC logits
+  as the last GEMM (257 or 34 rows padded to 64 at load: `Gpu::linear` pads any layer with zero
+  rows, the encoder drops the padding columns at readback), greedy collapse on the CPU; the
+  charwise RNN-T reuses the decoder (34 classes). Bench in "Current state" above.
 - 2026-10-09, GigaAM, small encoder experiments on ru (encoder wall time with a temporary timer;
   the machine drifts by ±1 ms over minutes, so only back-to-back runs count). All rejected:
   - 48 extra one-workgroup im2col dispatches: 39.9–40.4 vs 39.8–40.5 ms, so a dispatch boundary

@@ -1,7 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Conformer encoder on the GPU: two conv1d (kernel 5, stride 2) + ReLU subsampling, then blocks of
-//! FFN/2, rotary self-attention, conv module, FFN/2 and LayerNorm, then the joint's encoder
-//! projection. All dispatches of a call go into one compute pass over a preallocated arena.
+//! FFN/2, rotary self-attention, conv module, FFN/2 and LayerNorm, then the head's linear layer
+//! (the RNN-T joint's encoder projection or the CTC logits). All dispatches of a call go into one
+//! compute pass over a preallocated arena.
 
 use std::sync::{Mutex, PoisonError};
 
@@ -15,7 +16,9 @@ pub struct Encoder {
   conv0: Linear,
   conv2: Linear,
   blocks: Vec<Block>,
-  joint: Linear,
+  head: Linear,
+  /// The head's outputs; its GEMM computes them padded to `head.width()`.
+  outputs: usize,
   arena: Mutex<Option<Arena>>,
 }
 
@@ -56,7 +59,7 @@ struct Buffers {
   qk: Buffer,
   s: Buffer,
   h: Buffer,
-  joint: Buffer,
+  out: Buffer,
   read: Buffer,
   rope: Buffer,
 }
@@ -67,7 +70,8 @@ fn half(t: usize) -> usize {
 }
 
 impl Encoder {
-  pub fn new(gpu: &Gpu, g: &Gguf, cfg: Config) -> Result<Self> {
+  /// `head` names the last linear layer and gives its weight's dims.
+  pub fn new(gpu: &Gpu, g: &Gguf, cfg: Config, head: (&str, &[usize])) -> Result<Self> {
     let (d, f) = (cfg.d, cfg.d_ff);
     let linear = |names: &[String], dims: &[usize]| {
       let n = dims[dims.len() - 1];
@@ -110,28 +114,32 @@ impl Encoder {
       conv0: linear(&["enc.pre_encode.conv.0".into()], &[5, cfg.mels, d])?,
       conv2: linear(&["enc.pre_encode.conv.2".into()], &[5, d, d])?,
       blocks,
-      joint: linear(&["joint.enc".into()], &[d, cfg.joint])?,
+      head: linear(&[head.0.into()], head.1)?,
+      outputs: head.1[head.1.len() - 1],
       cfg,
       arena: Mutex::new(None),
     })
   }
 
-  /// Encodes `mel` `[mel frames][mels]` and returns the joint's encoder projection
-  /// `[frames][joint]`.
+  /// Encodes `mel` `[mel frames][mels]` and returns the head's outputs `[frames][outputs]`.
   pub fn run(&self, gpu: &Gpu, mel: &[f32]) -> Result<Vec<f32>> {
     let mel_frames = mel.len() / self.cfg.mels;
-    let frames = half(half(mel_frames));
+    let (frames, width) = (half(half(mel_frames)), self.head.width());
     let mut arena = self.arena.lock().unwrap_or_else(PoisonError::into_inner);
     let Arena { bufs, groups, .. } = match arena.take() {
       Some(a) if a.frames >= frames => arena.insert(a),
       old => {
         drop(old);
-        arena.insert(Arena::new(gpu, &self.cfg, frames.next_multiple_of(64))?)
+        arena.insert(Arena::new(gpu, &self.cfg, width, frames.next_multiple_of(64))?)
       }
     };
     gpu.write(&bufs.mel, mel);
-    let len = frames * self.cfg.joint;
-    gpu.run(groups, &bufs.joint, &bufs.read, len, |p| self.record(p, bufs, mel_frames))
+    let out = gpu
+      .run(groups, &bufs.out, &bufs.read, frames * width, |p| self.record(p, bufs, mel_frames))?;
+    if width == self.outputs {
+      return Ok(out);
+    }
+    Ok(out.chunks_exact(width).flat_map(|row| &row[..self.outputs]).copied().collect())
   }
 
   fn record(&self, p: &mut Pass, b: &Buffers, mel_frames: usize) {
@@ -169,12 +177,12 @@ impl Encoder {
       p.layer_norm(x, &k.norm_out, y, t, d);
       std::mem::swap(&mut x, &mut y);
     }
-    p.gemm(x, &self.joint, &b.joint, t, Epilogue::Bias);
+    p.gemm(x, &self.head, &b.out, t, Epilogue::Bias);
   }
 }
 
 impl Arena {
-  fn new(gpu: &Gpu, c: &Config, frames: usize) -> Result<Self> {
+  fn new(gpu: &Gpu, c: &Config, width: usize, frames: usize) -> Result<Self> {
     let (d, hd) = (c.d, c.d / c.heads);
     // Per position: hd / 2 cosines, then hd / 2 sines. Computed in f64 because Metal's fast-math
     // sin/cos are inaccurate for large angles.
@@ -196,8 +204,8 @@ impl Arena {
       s: gpu.buffer(gpu.scores_len(frames, c.heads, hd)),
       // Also the im2col columns of both convs: frames rows of 5·d, 2·frames rows of 5·mels.
       h: gpu.buffer(frames * c.d_ff.max(5 * d).max(10 * c.mels)),
-      joint: gpu.buffer(frames * c.joint),
-      read: gpu.readback(frames * c.joint),
+      out: gpu.buffer(frames * width),
+      read: gpu.readback(frames * width),
       rope: gpu.upload(&rope)?,
     };
     Ok(Self { frames, bufs, groups: Vec::new() })
