@@ -5,6 +5,14 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+anyhow = "1.0.104"
+bytemuck = "1.25.2"
+half = "2.7.1"
+hound = "3.5.1"
+pollster = "1.0.1"
+rustfft = "6.4.1"
+thiserror = "2.0.21"
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl", "metal"] }
 
 [profile.release]
 debug = 1
