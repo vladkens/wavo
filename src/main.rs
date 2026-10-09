@@ -25,7 +25,7 @@ fn transcribe(model: &str, audio: &str, tokens: bool) -> Result<()> {
   println!("{}", transcript.text);
   if tokens {
     for t in &transcript.tokens {
-      println!("{:>6} {:>6} {}", t.frame, t.id, t.piece);
+      println!("{:>7} {:>6} {}", t.start_ms, t.id, t.piece);
     }
   }
   Ok(())

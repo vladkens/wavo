@@ -3,7 +3,7 @@
 //! `out(relu(enc + pred(h)))`; the encoder side of the joint is projected on the GPU. CTC: argmax
 //! per frame over logits computed on the GPU, then collapse.
 
-use super::matmul;
+use crate::cpu::{matmul, rows4};
 use crate::error::Result;
 use crate::gguf::Gguf;
 
@@ -39,11 +39,6 @@ struct State {
 impl Decoder {
   pub fn new(g: &Gguf, hidden: usize, joint: usize, vocab: usize, blank: usize) -> Result<Self> {
     let t = |name: &str, dims: &[usize]| g.tensor(name, dims).and_then(|t| t.to_f32());
-    // `matmul` takes rows in multiples of 4: pad with zero rows, whose outputs are ignored.
-    let rows4 = |mut w: Vec<f32>, k: usize| {
-      w.resize((w.len() / k).next_multiple_of(4) * k, 0.0);
-      w
-    };
     Ok(Self {
       hidden,
       joint,

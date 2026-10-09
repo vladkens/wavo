@@ -30,8 +30,12 @@ struct Kernels {
   im2col: Pipeline,
   conv_glu: Pipeline,
   scores: Pipeline,
+  pos_scores: Pipeline,
   softmax: Pipeline,
   values: Pipeline,
+  depthwise: Pipeline,
+  first_depthwise: Pipeline,
+  flatten: Pipeline,
 }
 
 #[derive(Default)]
@@ -63,10 +67,24 @@ impl Linear {
   }
 }
 
-/// LayerNorm gain and bias.
+/// LayerNorm gain and bias, or a per-channel affine `x·g + b`.
 pub struct Norm {
   g: Buffer,
   b: Buffer,
+}
+
+/// A depthwise conv's weight `[ch][taps]` and bias.
+pub struct Depthwise {
+  w: Buffer,
+  b: Buffer,
+}
+
+/// The norm after the Conformer conv module's depthwise conv.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ConvNorm {
+  LayerNorm,
+  /// `x·g + b`: BatchNorm folded at load.
+  Affine,
 }
 
 #[derive(Clone, Copy)]
@@ -129,15 +147,21 @@ impl Gpu {
 
     let gemm = module(&device, include_str!("gemm.wgsl"));
     let ops = module(&device, include_str!("ops.wgsl"));
+    let attention = module(&device, include_str!("attention.wgsl"));
+    let spatial = module(&device, include_str!("spatial.wgsl"));
     let kernels = Kernels {
       gemm: gemms(&device, &gemm),
       layer_norm: pipeline(&device, &ops, "layer_norm", &[]),
       layer_norm_rope: pipeline(&device, &ops, "layer_norm_rope", &[]),
       im2col: pipeline(&device, &ops, "im2col", &[]),
       conv_glu: pipeline(&device, &ops, "conv_glu", &[]),
-      scores: pipeline(&device, &ops, "scores", &[]),
+      scores: pipeline(&device, &attention, "scores", &[]),
+      pos_scores: pipeline(&device, &attention, "pos_scores", &[]),
       softmax: pipeline(&device, &ops, "softmax", &[]),
-      values: pipeline(&device, &ops, "values", &[]),
+      values: pipeline(&device, &attention, "values", &[]),
+      depthwise: pipeline(&device, &spatial, "depthwise", &[]),
+      first_depthwise: pipeline(&device, &spatial, "first_depthwise", &[]),
+      flatten: pipeline(&device, &spatial, "flatten", &[]),
     };
     let mut weights = wgpu::BufferUsages::STORAGE;
     if mappable {
@@ -170,7 +194,7 @@ impl Gpu {
       let refs: Vec<&Buffer> = buffers.iter().collect();
       let read = self.readback(2);
       let r = self.run(&mut Vec::new(), &buffers[out], &read, 2, |p| {
-        p.run(&k, &refs, &[0; 5][..params], [1, 1, 1]);
+        p.run(&k, &refs, &[0; 6][..params], [1, 1, 1]);
       });
       matches!(r.as_deref(), Ok([32.0, 4.0])).then_some(k)
     };
@@ -178,7 +202,7 @@ impl Gpu {
       gemm: gemm.into_iter().map(|k| probe(k, 5, 2, 5)).collect(),
       layer_norm: probe(layer_norm, 4, 3, 4),
       layer_norm_rope: probe(layer_norm_rope, 6, 3, 4),
-      conv_glu: probe(conv_glu, 6, 5, 4),
+      conv_glu: probe(conv_glu, 6, 5, 6),
       attention: probe(attention, 3, 2, 4),
     }
   }
@@ -227,10 +251,10 @@ impl Gpu {
     self.queue.write_buffer(buffer, 0, bytemuck::cast_slice(data));
   }
 
-  /// Uploads weights `[.., n_i]` of one type and inner size, stacked along n, with their biases.
-  /// The GEMM computes 64 outputs at a time, so the rows are padded with zeros to a multiple of
-  /// 64; the extra outputs are `epilogue(0)`.
-  pub fn linear(&self, weights: &[Tensor], biases: &[Tensor]) -> Result<Linear> {
+  /// Uploads weights `[.., n_i]` of one type and inner size, stacked along n, with the bias of
+  /// the stacked rows, or zeros when `bias` is empty. The GEMM computes 64 outputs at a time, so
+  /// the rows are padded with zeros to a multiple of 64; the extra outputs are `epilogue(0)`.
+  pub fn linear(&self, weights: &[Tensor], bias: &[f32]) -> Result<Linear> {
     let w0 = &weights[0];
     let k = w0.len() / w0.dims.last().unwrap();
     let rows = weights.iter().map(|w| w.dims.last().unwrap()).sum::<usize>();
@@ -286,16 +310,20 @@ impl Gpu {
         (2, data, Some(scales))
       }
     };
-    let mut bias = biases.iter().map(|b| b.to_f32()).collect::<Result<Vec<_>>>()?.concat();
-    if bias.len() != rows {
+    if !bias.is_empty() && bias.len() != rows {
       bail!("linear layer {k}→{rows}: bias has {} values", bias.len());
     }
-    bias.resize(n, 0.0);
-    Ok(Linear { n, k, ty, weight, scales, bias: self.upload(&bias)? })
+    let mut padded = vec![0.0; n];
+    padded[..bias.len()].copy_from_slice(bias);
+    Ok(Linear { n, k, ty, weight, scales, bias: self.upload(&padded)? })
   }
 
-  pub fn norm(&self, g: &Tensor, b: &Tensor) -> Result<Norm> {
-    Ok(Norm { g: self.upload(&g.to_f32()?)?, b: self.upload(&b.to_f32()?)? })
+  pub fn norm(&self, g: &[f32], b: &[f32]) -> Result<Norm> {
+    Ok(Norm { g: self.upload(g)?, b: self.upload(b)? })
+  }
+
+  pub fn depthwise(&self, w: &[f32], b: &[f32]) -> Result<Depthwise> {
+    Ok(Depthwise { w: self.upload(w)?, b: self.upload(b)? })
   }
 
   fn flash(&self, head_dim: usize) -> Option<&Pipeline> {
@@ -338,6 +366,19 @@ impl Gpu {
     read.unmap();
     Ok(data)
   }
+}
+
+/// Output length of a stride-2 conv with kernel 3 and padding 1 (or kernel 5 and padding 2).
+pub fn half(n: usize) -> usize {
+  (n - 1) / 2 + 1
+}
+
+/// attention.wgsl's params: `[stride, v_stride, v_offset, relative]` after t, ch, head_dim and the
+/// scale.
+fn attention_params(t: usize, ch: usize, head_dim: usize, rest: [usize; 4]) -> [u32; 8] {
+  let scale = 1.0 / (head_dim as f32).sqrt();
+  let [a, b, c, d] = rest.map(|v| v as u32);
+  [t as u32, ch as u32, head_dim as u32, scale.to_bits(), a, b, c, d]
 }
 
 fn module(device: &wgpu::Device, source: &str) -> wgpu::ShaderModule {
@@ -456,22 +497,24 @@ impl Pass<'_> {
     self.run(k, &[x, col], &[t_in as u32, ch as u32], [(ch * 5).div_ceil(256), t_out, 1]);
   }
 
-  /// Conformer conv module between the pointwise convs: GLU, depthwise conv (kernel 5) + bias,
-  /// LayerNorm, SiLU. `h` is `[t][2·ch]`, `y` is `[t][ch]`.
+  /// Conformer conv module between the pointwise convs: GLU, depthwise conv (odd `kernel`,
+  /// centred) + bias, `norm`, SiLU. `h` is `[t][2·ch]`, `y` is `[t][ch]`.
   #[allow(clippy::too_many_arguments)]
   pub fn conv_glu(
     &mut self,
     h: &Buffer,
-    dw: &Buffer,
-    dw_b: &Buffer,
+    dw: &Depthwise,
+    kernel: usize,
     n: &Norm,
+    norm: ConvNorm,
     y: &Buffer,
     t: usize,
     ch: usize,
   ) {
     let gpu = self.gpu;
-    let buffers = [h, dw, dw_b, &n.g, &n.b, y];
-    let params = [t as u32, ch as u32];
+    let buffers = [h, &dw.w, &dw.b, &n.g, &n.b, y];
+    let layer_norm = (norm == ConvNorm::LayerNorm) as u32;
+    let params = [t as u32, ch as u32, 0, 0, kernel as u32, layer_norm];
     match &gpu.fast.conv_glu {
       Some(k) => self.run(k, &buffers, &params, [t.div_ceil(4), 1, 1]),
       None => self.run(&gpu.kernels.conv_glu, &buffers, &params, [t, 1, 1]),
@@ -492,16 +535,91 @@ impl Pass<'_> {
     heads: usize,
     head_dim: usize,
   ) {
-    let gpu = self.gpu;
-    let scale = 1.0 / (head_dim as f32).sqrt();
-    let params = [t as u32, (heads * head_dim) as u32, head_dim as u32, scale.to_bits()];
-    if let Some(k) = gpu.flash(head_dim) {
-      return self.run(k, &[qk, v, o], &params, [t.div_ceil(64), heads, 1]);
+    let ch = heads * head_dim;
+    let params = attention_params(t, ch, head_dim, [2 * ch, ch, 0, 0]);
+    if let Some(k) = self.gpu.flash(head_dim) {
+      return self.run(k, &[qk, v, o], &params[..4], [t.div_ceil(64), heads, 1]);
     }
-    let (k, tiles) = (&gpu.kernels, t.div_ceil(16));
-    self.run(&k.scores, &[qk, s], &params, [tiles, tiles, heads]);
-    self.run(&k.softmax, &[s], &params, [t, heads, 1]);
-    self.run(&k.values, &[s, v, o], &params, [tiles, heads, 1]);
+    self.scores_softmax_values([qk, qk, v], s, o, t, heads, &params);
+  }
+
+  /// Multi-head attention with relative positions: `qkv` is `[t][q + u | k | v | q + v]`, `pos`
+  /// the projected positions `[2t − 1][heads · head_dim]` (row r is position t − 1 − r), `ps`
+  /// holds `heads · t · (2t − 1)` floats and `s` `heads · t · t`. Score (i, j) is
+  /// `((q + u)_i·k_j + (q + v)_i·pos[j − i + t − 1]) / √head_dim`.
+  #[allow(clippy::too_many_arguments)]
+  pub fn relative_attention(
+    &mut self,
+    qkv: &Buffer,
+    pos: &Buffer,
+    ps: &Buffer,
+    s: &Buffer,
+    o: &Buffer,
+    t: usize,
+    heads: usize,
+    head_dim: usize,
+  ) {
+    let ch = heads * head_dim;
+    let params = attention_params(t, ch, head_dim, [4 * ch, 4 * ch, 2 * ch, 1]);
+    let k = &self.gpu.kernels.pos_scores;
+    self.run(k, &[qkv, pos, ps], &params, [(2 * t - 1).div_ceil(16), t.div_ceil(16), heads]);
+    self.scores_softmax_values([qkv, ps, qkv], s, o, t, heads, &params);
+  }
+
+  /// The portable attention: scores from `[qk, ps]` into `s`, softmax, values from `v` into `o`.
+  fn scores_softmax_values(
+    &mut self,
+    [qk, ps, v]: [&Buffer; 3],
+    s: &Buffer,
+    o: &Buffer,
+    t: usize,
+    heads: usize,
+    params: &[u32],
+  ) {
+    let (k, tiles) = (&self.gpu.kernels, t.div_ceil(16));
+    self.run(&k.scores, &[qk, ps, s], params, [tiles, tiles, heads]);
+    self.run(&k.softmax, &[s], &params[..1], [t, heads, 1]);
+    self.run(&k.values, &[s, v, o], params, [tiles, heads, 1]);
+  }
+
+  /// Depthwise 3×3 conv, stride 2, padding 1, + bias over `x` `[t][f][ch]` into `y`
+  /// `[⌈t/2⌉][⌈f/2⌉][ch]`.
+  pub fn depthwise(
+    &mut self,
+    x: &Buffer,
+    dw: &Depthwise,
+    y: &Buffer,
+    t: usize,
+    f: usize,
+    ch: usize,
+  ) {
+    let k = &self.gpu.kernels.depthwise;
+    self.run(k, &[x, &dw.w, &dw.b, y], &[t as u32, f as u32, ch as u32], [half(f), half(t), 1]);
+  }
+
+  /// `depthwise` over ReLU(`first` + bias), a 3×3 stride-2 conv from the one-channel image `x`
+  /// `[t][f]` to ch channels, whose output is never stored. `y` is `[⌈t/4⌉][⌈f/4⌉][ch]`.
+  #[allow(clippy::too_many_arguments)]
+  pub fn first_depthwise(
+    &mut self,
+    x: &Buffer,
+    first: &Depthwise,
+    dw: &Depthwise,
+    y: &Buffer,
+    t: usize,
+    f: usize,
+    ch: usize,
+  ) {
+    let k = &self.gpu.kernels.first_depthwise;
+    let buffers = [x, &dw.w, &dw.b, y, &first.w, &first.b];
+    let grid = [half(half(f)), half(half(t)), 1];
+    self.run(k, &buffers, &[t as u32, f as u32, ch as u32], grid);
+  }
+
+  /// `x` `[t][f][ch]` to `y` `[t][ch · f]`, channel-major.
+  pub fn flatten(&mut self, x: &Buffer, y: &Buffer, t: usize, f: usize, ch: usize) {
+    let k = &self.gpu.kernels.flatten;
+    self.run(k, &[x, y], &[t as u32, f as u32, ch as u32], [t, 1, 1]);
   }
 }
 
@@ -543,13 +661,6 @@ mod tests {
 
   fn up(gpu: &Gpu, data: &[f32]) -> Buffer {
     gpu.upload(data).unwrap()
-  }
-
-  fn norm(gpu: &Gpu, g: &[f32], b: &[f32]) -> Norm {
-    let dims = [g.len()];
-    let (g, b) = (bytemuck::cast_slice(g), bytemuck::cast_slice(b));
-    let file = Gguf::with_tensors(&[("g", &dims, Type::F32, g), ("b", &dims, Type::F32, b)]);
-    gpu.norm(&file.tensor("g", &dims).unwrap(), &file.tensor("b", &dims).unwrap()).unwrap()
   }
 
   /// Runs `record` with an output buffer that starts as `init`, and returns the output.
@@ -601,43 +712,40 @@ mod tests {
       .collect();
     let epilogues = [Epilogue::Bias, Epilogue::Silu, Epilogue::Relu, Epilogue::Residual(0.5)];
     // Each weight is stored as two halves stacked along n, like q over k.
-    let (wd, bd) = ([k, n / 2], [n / 2]);
-    let (b1, b2) = bytemuck::cast_slice::<f32, u8>(&bias).split_at(n * 2);
+    let wd = [k, n / 2];
     for (ty, bytes) in [(Type::F32, f32s), (Type::F16, &f16s), (Type::Q8_0, &q8)] {
       let (w1, w2) = bytes.split_at(bytes.len() / 2);
-      let file = Gguf::with_tensors(&[
-        ("w1", &wd, ty, w1),
-        ("w2", &wd, ty, w2),
-        ("b1", &bd, Type::F32, b1),
-        ("b2", &bd, Type::F32, b2),
-      ]);
-      let t = |name| file.tensor(name, if name.starts_with('w') { &wd } else { &bd }).unwrap();
+      let file = Gguf::with_tensors(&[("w1", &wd, ty, w1), ("w2", &wd, ty, w2)]);
+      let t = |name| file.tensor(name, &wd).unwrap();
       // The GEMM rounds W to f16.
       let half = |x: &f32| f16::from_f32(*x).to_f32();
       let wf: Vec<f32> = [t("w1").to_f32().unwrap(), t("w2").to_f32().unwrap()].concat();
       let wf: Vec<f32> = wf.iter().map(half).collect();
-      for gpu in gpus() {
-        let l = gpu.linear(&[t("w1"), t("w2")], &[t("b1"), t("b2")]).unwrap();
-        assert_eq!(l.width(), width);
-        for m in [1, 37, 70] {
-          let a = random(m * k, 3);
-          let c = random(m * width, 4);
-          let ab = up(gpu, &a);
-          for e in epilogues {
-            let want: Vec<f32> = (0..m * width)
-              .map(|i| {
-                let (r, j) = (i / width, i % width);
-                let dot = |j: usize| (0..k).map(|x| a[r * k + x] * wf[j * k + x]).sum::<f32>();
-                let v = if j < n { bias[j] + dot(j) } else { 0.0 };
-                match e {
-                  Epilogue::Bias => v,
-                  Epilogue::Silu => silu(v),
-                  Epilogue::Relu => v.max(0.0),
-                  Epilogue::Residual(alpha) => c[i] + alpha * v,
-                }
-              })
-              .collect();
-            assert_close(&run(gpu, &c, |p, out| p.gemm(&ab, &l, out, m, e)), &want);
+      // With the bias, and without: zeros.
+      for (bias, b) in [(&bias, &bias[..]), (&vec![0.0; n], &[][..])] {
+        for gpu in gpus() {
+          let l = gpu.linear(&[t("w1"), t("w2")], b).unwrap();
+          assert_eq!(l.width(), width);
+          for m in [1, 37, 70] {
+            let a = random(m * k, 3);
+            let c = random(m * width, 4);
+            let ab = up(gpu, &a);
+            for e in epilogues {
+              let want: Vec<f32> = (0..m * width)
+                .map(|i| {
+                  let (r, j) = (i / width, i % width);
+                  let dot = |j: usize| (0..k).map(|x| a[r * k + x] * wf[j * k + x]).sum::<f32>();
+                  let v = if j < n { bias[j] + dot(j) } else { 0.0 };
+                  match e {
+                    Epilogue::Bias => v,
+                    Epilogue::Silu => silu(v),
+                    Epilogue::Relu => v.max(0.0),
+                    Epilogue::Residual(alpha) => c[i] + alpha * v,
+                  }
+                })
+                .collect();
+              assert_close(&run(gpu, &c, |p, out| p.gemm(&ab, &l, out, m, e)), &want);
+            }
           }
         }
       }
@@ -659,7 +767,7 @@ mod tests {
       })
       .collect();
     for gpu in gpus() {
-      let n = norm(gpu, &g, &b);
+      let n = gpu.norm(&g, &b).unwrap();
       let (xb, rb) = (up(gpu, &x), up(gpu, &rope));
       let zeros = vec![0.0; rows * cols];
       assert_close(&run(gpu, &zeros, |p, y| p.layer_norm(&xb, &n, y, rows, cols)), &y);
@@ -692,22 +800,29 @@ mod tests {
   fn conv_glu() {
     let (t, ch) = (37, 192);
     let h = random(t * 2 * ch, 10);
-    let (w, wb) = (random(ch * 5, 11), random(ch, 12));
     let (g, b) = (random(ch, 13), random(ch, 14));
     let glu = |s: usize, c: usize| h[s * 2 * ch + c] / (1.0 + (-h[s * 2 * ch + ch + c]).exp());
-    let dw: Vec<f32> = (0..t * ch)
-      .map(|i| {
-        let (r, c) = (i / ch, i % ch);
-        let taps = (0..5).filter(|k| (r + k).wrapping_sub(2) < t);
-        wb[c] + taps.map(|k| w[c * 5 + k] * glu(r + k - 2, c)).sum::<f32>()
-      })
-      .collect();
-    let want: Vec<f32> = layer_norm(&dw, &g, &b).into_iter().map(silu).collect();
-    for gpu in gpus() {
-      let n = norm(gpu, &g, &b);
-      let (hb, wbuf, bbuf) = (up(gpu, &h), up(gpu, &w), up(gpu, &wb));
-      let got = run(gpu, &vec![0.0; t * ch], |p, y| p.conv_glu(&hb, &wbuf, &bbuf, &n, y, t, ch));
-      assert_close(&got, &want);
+    for (kernel, norm) in [(5, ConvNorm::LayerNorm), (9, ConvNorm::Affine)] {
+      let (w, wb) = (random(ch * kernel, 11), random(ch, 12));
+      let pad = kernel / 2;
+      let dw: Vec<f32> = (0..t * ch)
+        .map(|i| {
+          let (r, c) = (i / ch, i % ch);
+          let taps = (0..kernel).filter(|k| (r + k).wrapping_sub(pad) < t);
+          wb[c] + taps.map(|k| w[c * kernel + k] * glu(r + k - pad, c)).sum::<f32>()
+        })
+        .collect();
+      let want: Vec<f32> = match norm {
+        ConvNorm::LayerNorm => layer_norm(&dw, &g, &b),
+        ConvNorm::Affine => dw.iter().enumerate().map(|(i, x)| x * g[i % ch] + b[i % ch]).collect(),
+      };
+      let want: Vec<f32> = want.into_iter().map(silu).collect();
+      for gpu in gpus() {
+        let (n, dw, hb) = (gpu.norm(&g, &b).unwrap(), gpu.depthwise(&w, &wb).unwrap(), up(gpu, &h));
+        let got =
+          run(gpu, &vec![0.0; t * ch], |p, y| p.conv_glu(&hb, &dw, kernel, &n, norm, y, t, ch));
+        assert_close(&got, &want);
+      }
     }
   }
 
@@ -743,6 +858,87 @@ mod tests {
         let got = run(gpu, &vec![0.0; t * d], |p, o| p.attention(&qb, &vb, &s, o, t, heads, hd));
         assert_close(&got, &want);
       }
+    }
+  }
+
+  #[test]
+  fn relative_attention() {
+    let (t, heads, hd) = (37, 2, 40);
+    let d = heads * hd;
+    let (qkv, pos) = (random(t * 4 * d, 17), random((2 * t - 1) * d, 18));
+    let scale = 1.0 / (hd as f32).sqrt();
+    let dot = |a: &[f32], b: &[f32]| a[..hd].iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+    let mut want = vec![0.0; t * d];
+    for h in 0..heads {
+      for i in 0..t {
+        let row = |j: usize, part: usize| &qkv[j * 4 * d + part * d + h * hd..];
+        let s: Vec<f32> = (0..t)
+          .map(|j| {
+            (dot(row(i, 0), row(j, 1)) + dot(row(i, 3), &pos[(j + t - 1 - i) * d + h * hd..]))
+              * scale
+          })
+          .collect();
+        let mx = s.iter().fold(f32::MIN, |m, x| m.max(*x));
+        let e: Vec<f32> = s.iter().map(|x| (x - mx).exp()).collect();
+        let sum: f32 = e.iter().sum();
+        for c in 0..hd {
+          want[i * d + h * hd + c] = (0..t).map(|j| e[j] / sum * row(j, 2)[c]).sum();
+        }
+      }
+    }
+    for gpu in gpus() {
+      let (qb, pb) = (up(gpu, &qkv), up(gpu, &pos));
+      let (ps, s) = (gpu.buffer(heads * t * (2 * t - 1)), gpu.buffer(heads * t * t));
+      let got = run(gpu, &vec![0.0; t * d], |p, o| {
+        p.relative_attention(&qb, &pb, &ps, &s, o, t, heads, hd)
+      });
+      assert_close(&got, &want);
+    }
+  }
+
+  /// 3×3 stride-2 conv with padding 1 per channel over `x` `[t][f][ch]`, `w` `[ch][9]`.
+  fn depthwise(x: &[f32], w: &[f32], b: &[f32], t: usize, f: usize, ch: usize) -> Vec<f32> {
+    let fo = half(f);
+    (0..half(t) * fo * ch)
+      .map(|e| {
+        let (r, j, c) = (e / (fo * ch), e / ch % fo, e % ch);
+        let taps = (0..9).filter_map(|k| {
+          let (ti, fi) = ((2 * r + k / 3).checked_sub(1)?, (2 * j + k % 3).checked_sub(1)?);
+          (ti < t && fi < f).then(|| w[c * 9 + k] * x[(ti * f + fi) * ch + c])
+        });
+        b[c] + taps.sum::<f32>()
+      })
+      .collect()
+  }
+
+  #[test]
+  fn subsampling() {
+    let (t, f, ch) = (13, 11, 5);
+    let mel = random(t * f, 19);
+    let ws: Vec<_> = (0..6).map(|i| random(ch * 9, 20 + i)).collect();
+    let [w0, b0, w2, b2, w5, b5] =
+      std::array::from_fn(|i| &ws[i][..if i % 2 == 0 { ch * 9 } else { ch }]);
+    let wide: Vec<f32> = mel.iter().flat_map(|&v| std::iter::repeat_n(v, ch)).collect();
+    let first: Vec<f32> =
+      depthwise(&wide, w0, b0, t, f, ch).into_iter().map(|v| v.max(0.0)).collect();
+    let want = depthwise(&first, w2, b2, half(t), half(f), ch);
+    let x = random(t * f * ch, 26);
+    let want5 = depthwise(&x, w5, b5, t, f, ch);
+    let flat: Vec<f32> =
+      (0..t * f * ch).map(|e| x[(e / (f * ch) * f + e % f) * ch + e % (f * ch) / f]).collect();
+    for gpu in gpus() {
+      let [c0, c2, c5] = [(w0, b0), (w2, b2), (w5, b5)].map(|(w, b)| gpu.depthwise(w, b).unwrap());
+      let (mb, xb) = (up(gpu, &mel), up(gpu, &x));
+      let n = want.len();
+      assert_close(
+        &run(gpu, &vec![0.0; n], |p, y| p.first_depthwise(&mb, &c0, &c2, y, t, f, ch)),
+        &want,
+      );
+      assert_close(
+        &run(gpu, &vec![0.0; want5.len()], |p, y| p.depthwise(&xb, &c5, y, t, f, ch)),
+        &want5,
+      );
+      assert_close(&run(gpu, &vec![0.0; flat.len()], |p, y| p.flatten(&xb, y, t, f, ch)), &flat);
     }
   }
 }

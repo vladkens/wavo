@@ -16,7 +16,7 @@ const HOP: usize = 160;
 const BINS: usize = N_FFT / 2 + 1;
 
 pub struct Frontend {
-  pub mels: usize,
+  mels: usize,
   window: Vec<f32>,
   /// `[mels][BINS]`
   filters: Vec<f32>,
@@ -62,7 +62,7 @@ impl Frontend {
         *p = x.norm_sqr();
       }
       for (filter, span) in self.filters.as_chunks::<BINS>().0.iter().zip(&self.spans) {
-        let mel = super::dot(&filter[span.clone()], &power[span.clone()]);
+        let mel = crate::cpu::dot(&filter[span.clone()], &power[span.clone()]);
         out.push(mel.clamp(1e-9, 1e9).ln());
       }
     }

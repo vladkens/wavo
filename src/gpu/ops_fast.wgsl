@@ -11,6 +11,9 @@ struct Params {
   ch: u32,
   head_dim: u32,
   scale: f32,
+  // conv_glu: the depthwise kernel size, and 1 for LayerNorm or 0 for the affine x·g + b.
+  kernel: u32,
+  layer_norm: u32,
 }
 
 var<immediate> p: Params;
@@ -144,14 +147,15 @@ fn conv_glu(
   let r = wg.x * 4u + sg;
   let t = min(r, p.t - 1u);
   let row = sg * 1024u;
+  let pad = p.kernel / 2u;
   var s = 0.0;
   for (var i = sl; i < p.ch; i += 32u) {
     var acc = conv_b[i];
-    for (var k = 0u; k < 5u; k++) {
+    for (var k = 0u; k < p.kernel; k++) {
       let src = t + k;
-      if (src >= 2u && src - 2u < p.t) {
-        let base = (src - 2u) * 2u * p.ch;
-        acc += conv_w[i * 5u + k] * conv_h[base + i] / (1.0 + exp(-conv_h[base + p.ch + i]));
+      if (src >= pad && src - pad < p.t) {
+        let base = (src - pad) * 2u * p.ch;
+        acc += conv_w[i * p.kernel + k] * conv_h[base + i] / (1.0 + exp(-conv_h[base + p.ch + i]));
       }
     }
     rows[row + i] = acc;
@@ -166,7 +170,10 @@ fn conv_glu(
   let rstd = inverseSqrt(subgroupAdd(q) / f32(p.ch) + 1e-5);
   if (r < p.t) {
     for (var i = sl; i < p.ch; i += 32u) {
-      let y = (rows[row + i] - mean) * rstd * conv_g[i] + conv_beta[i];
+      var y = rows[row + i] * conv_g[i] + conv_beta[i];
+      if (p.layer_norm != 0u) {
+        y = (rows[row + i] - mean) * rstd * conv_g[i] + conv_beta[i];
+      }
       conv_y[t * p.ch + i] = y / (1.0 + exp(-y));
     }
   }

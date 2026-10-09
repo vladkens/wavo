@@ -2,18 +2,21 @@
 
 Apple M2 (8 CPU / 24 GiB), macOS 27, wgpu 30.0.1 Metal. Times are warm medians without model
 load unless stated. GigaAM clips: `ru` 4.5 s, `ru-short` 11 s, `ru-long` 33.8 s. Parakeet clips:
-`jfk` 11 s, `dots` 35.3 s.
+`jfk` 11 s, `dots` 35.3 s, `jobs-silence` 5.3 s.
 
 ## Targets: transcribe.cpp Metal (commit 5bb2deb, same Q8_0 GGUF)
 
 | Model | Warm | Load | First call | Peak footprint |
 |---|---|---|---|---|
 | GigaAM v3 e2e-rnnt | 44–45 / 102–103 / 312–326 ms | 0.13–0.17 s | 48–73 / 103–124 / 319–353 ms | 322 / 324 / 334 MiB |
-| Parakeet TDT V2 | jfk 203 ms, dots 820 ms | 0.26 s | — | — |
+| Parakeet TDT V2 | 209–213 / 799–821 / 95–97 ms | 0.26–0.27 s | 262–284 / 720–926 / 110 ms | 820 / 834 / 815 MiB |
 
-GigaAM measured 2026-10-09 with `transcribe-bench` (warm: `--warmup 1 --iters 10`, median of
-`wall_ms`; first call: fresh process, `--warmup 0 --iters 1`; footprint: `/usr/bin/time -l` of
-that process). Ranges are repeated runs on a machine with load average 3–5.
+GigaAM measured 2026-10-09, Parakeet (jfk / dots / jobs-silence) 2026-10-10, with
+`transcribe-bench` (warm: `--warmup 1 --iters 10`, median of `wall_ms`; first call: fresh
+process, `--warmup 0 --iters 1`; footprint: `/usr/bin/time -l` of that process). Ranges are
+repeated runs on a machine with load average 3–5. Parakeet's reference decoder (ggml on CPU
+threads) takes 168–570 ms per call on dots next to a steady ~530 ms encoder, so its warm minimum
+(192 / 702–709 / 94 ms) sits far below its median.
 
 The same C++ build on F32-expanded weights: GigaAM 45 / 110 / 368 ms. So Q8 storage itself buys
 0–14% warm speed. Its big wins are memory and load time.
@@ -101,6 +104,40 @@ Spotlight indexer on one core):
 Load with the file in the page cache: wavo 76–126 ms, reference 120–186 ms (a cold first read of
 a new GGUF took wavo 0.19–0.47 s). The CTC variants have no decoder loop; their reference reads
 the encoder output back and runs the head and a log-softmax on the CPU.
+
+## Current state: Parakeet TDT V2 (phase 4)
+
+| Clip | Warm median / min | First call | Load | Peak footprint |
+|---|---|---|---|---|
+| jfk | 180.6–180.9 / 179.5–179.9 ms | 185.7–188.8 ms | 163–187 ms | 809–811 MiB |
+| dots | 756.4–763.4 / 751.0–753.5 ms | 763.6–765.3 ms | 159–177 ms | 874–880 MiB |
+| jobs-silence | 93.9–94.1 / 93.6–93.8 ms | 98.6–99.5 ms | 161–182 ms | 797–801 MiB |
+
+`wavo bench -n 20` and `/usr/bin/time -l wavo MODEL AUDIO`, each clip as wavo / reference / wavo
+back to back, twice (load average 3–5); the reference numbers are in "Targets". Warm median is
+13–15% / 4–8% / 1–3% faster and load is below the reference on all clips (0.16–0.19 vs
+0.26–0.27 s), first call on jfk and jobs-silence. But on dots the reference's warm minimum
+(702–709 ms) and its best first call (720 ms, worst 926 ms) beat wavo's 751 / 764 ms, and wavo's
+peak footprint is 40–46 MiB above the reference's 834 MiB (its arena holds two [2T][32][256]
+subsampling buffers and the [8][T][2T − 1] position scores). Max RSS is below the reference on
+all clips (784–800 vs 848–867 MiB).
+
+Where the time goes (temporary timers, warm, ms; jfk / dots / jobs-silence): mel 2.7 / 8.8 /
+1.3, encoder (GPU, with upload and readback) 154 / 619 / 91, decoder 23 / 128 / 1.7. The
+reference spends ~159–170 / ~530 ms in its encoder and 49–93 / 168–570 ms in its decoder. So on
+dots the encoder is ~17% slower than the reference's: Parakeet's head_dim of 128 runs the
+portable attention (scores, softmax and values through memory, plus the materialized position
+scores), not the flash kernel.
+
+How it runs: the shared Conformer block (`src/conformer.rs`) with relative attention: one GEMM
+for `[q + u | k | v | q + v]` (weights q, k, v, q; biases `pos_bias_u`, 0, 0, `pos_bias_v`),
+`P = linear_pos(pos_emb)` per block, position scores `(q + v)·P` per head, then the portable
+scores (adding the shifted position score), softmax and values. The sinusoidal table is cached
+on the CPU for the longest T so far and its 2T − 1 rows are written per call. Subsampling: conv0
++ ReLU fused into the first depthwise conv (conv0's output is never stored), pointwise convs and
+the projection through the GEMM, a flatten kernel to `[t][c·16 + f]`. The joint's encoder
+projection is the last GEMM; the TDT loop and two LSTM layers run on one CPU thread with the
+NEON tiles. BatchNorm is folded into a per-channel affine at load.
 
 ## Research history: `research` branch (all weights expanded to F32)
 
@@ -208,6 +245,12 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 ## Log
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
+
+- 2026-10-10, Parakeet TDT V2, phase 4 baseline recorded in "Current state" and "Targets" above
+  (fixtures exact on the first run, no reference roundings needed). Shared core for it (Conformer
+  block, relative attention, conv_glu kernel size and affine mode, attention kernels in their own
+  module): GigaAM e2e-rnnt warm unchanged, ru 43.1 / 43.3 / 43.2 ms and ru-long 296.1 / 296.3 /
+  296.1 ms A/B/A, then 43.2 / 43.1 / 43.2 / 43.2 and 296.0 / 295.7 / 295.4 / 295.6 ms B/C/B/C.
 
 - 2026-10-09, GigaAM variants, GEMM rounds dequantized W to f16, as the reference's
   `kernel_mul_mm` does. Without it e2e-ctc ru-short emits one token a frame late: at frame 116

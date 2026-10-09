@@ -2,6 +2,7 @@
 //! GGUF v3 reader: metadata from the header, F32/F16/Q8_0 tensors streamed from the file.
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -38,13 +39,48 @@ impl Type {
 }
 
 #[derive(Debug)]
-enum Value {
-  Uint(u64),
+pub enum Value {
+  /// Any integer type: no model reads a u64 above `i64::MAX`.
   Int(i64),
+  Float(f64),
+  Bool(bool),
   Str(String),
   Array(Vec<Value>),
-  /// Floats and bools, which no model reads.
-  Other,
+}
+
+/// A metadata type that models read: `u32`, `i32`, `f32`, `bool` or `&str`.
+pub trait Meta<'a>: Sized {
+  fn from(v: &'a Value) -> Option<Self>;
+}
+
+impl Meta<'_> for u32 {
+  fn from(v: &Value) -> Option<Self> {
+    if let Value::Int(v) = *v { v.try_into().ok() } else { None }
+  }
+}
+
+impl Meta<'_> for i32 {
+  fn from(v: &Value) -> Option<Self> {
+    if let Value::Int(v) = *v { v.try_into().ok() } else { None }
+  }
+}
+
+impl Meta<'_> for f32 {
+  fn from(v: &Value) -> Option<Self> {
+    if let Value::Float(v) = *v { Some(v as f32) } else { None }
+  }
+}
+
+impl Meta<'_> for bool {
+  fn from(v: &Value) -> Option<Self> {
+    if let Value::Bool(v) = *v { Some(v) } else { None }
+  }
+}
+
+impl<'a> Meta<'a> for &'a str {
+  fn from(v: &'a Value) -> Option<Self> {
+    if let Value::Str(s) = v { Some(s) } else { None }
+  }
 }
 
 struct Info {
@@ -121,7 +157,7 @@ impl Gguf {
     }
 
     let align = match meta.get("general.alignment") {
-      Some(Value::Uint(a)) => *a as usize,
+      Some(Value::Int(a)) => *a as usize,
       _ => 32,
     };
     let data = r.pos.next_multiple_of(align);
@@ -133,37 +169,43 @@ impl Gguf {
     Ok(Self { path, head, meta, tensors, data })
   }
 
-  fn get(&self, key: &str) -> Result<&Value> {
+  fn value(&self, key: &str) -> Result<&Value> {
     match self.meta.get(key) {
       Some(v) => Ok(v),
       None => bail!("missing metadata {key}"),
     }
   }
 
-  pub fn u32(&self, key: &str) -> Result<u32> {
-    match self.get(key)? {
-      Value::Uint(v) => Ok(*v as u32),
-      Value::Int(v) => Ok(*v as u32),
-      v => bail!("metadata {key}: expected an integer, got {v:?}"),
+  /// The metadata value `key` as a `T`.
+  pub fn get<'a, T: Meta<'a>>(&'a self, key: &str) -> Result<T> {
+    let v = self.value(key)?;
+    match T::from(v) {
+      Some(v) => Ok(v),
+      None => bail!("metadata {key}: expected {}, got {v:?}", std::any::type_name::<T>()),
     }
   }
 
-  pub fn str(&self, key: &str) -> Result<&str> {
-    match self.get(key)? {
-      Value::Str(s) => Ok(s),
-      v => bail!("metadata {key}: expected a string, got {v:?}"),
+  /// Fails unless the metadata value `key` is one of `allowed`.
+  pub fn check<'a, T: Meta<'a> + PartialEq + Debug>(
+    &'a self,
+    key: &str,
+    allowed: &[T],
+  ) -> Result<()> {
+    let got = self.get::<T>(key)?;
+    if !allowed.contains(&got) {
+      bail!("{key} is {got:?}, only {allowed:?} supported");
     }
+    Ok(())
   }
 
-  pub fn strs(&self, key: &str) -> Result<Vec<&str>> {
-    let Value::Array(items) = self.get(key)? else { bail!("metadata {key}: expected an array") };
-    items
-      .iter()
-      .map(|v| match v {
-        Value::Str(s) => Ok(s.as_str()),
-        v => bail!("metadata {key}: expected strings, got {v:?}"),
-      })
-      .collect()
+  /// The metadata array `key` as `T`s.
+  pub fn array<'a, T: Meta<'a>>(&'a self, key: &str) -> Result<Vec<T>> {
+    let Value::Array(items) = self.value(key)? else { bail!("metadata {key}: expected an array") };
+    let items = items.iter().map(T::from).collect::<Option<_>>();
+    let Some(items) = items else {
+      bail!("metadata {key}: expected an array of {}", std::any::type_name::<T>())
+    };
+    Ok(items)
   }
 
   /// The tensor `name`, which must have exactly the ggml-order `dims`.
@@ -260,23 +302,23 @@ impl<'a> Reader<'a> {
 
   fn value(&mut self, ty: u32) -> Result<Value> {
     Ok(match ty {
-      0 => Value::Uint(self.array::<1>()?[0] as u64),
+      0 => Value::Int(self.array::<1>()?[0] as i64),
       1 => Value::Int(self.array::<1>()?[0] as i8 as i64),
-      2 => Value::Uint(u16::from_le_bytes(self.array()?) as u64),
+      2 => Value::Int(u16::from_le_bytes(self.array()?) as i64),
       3 => Value::Int(i16::from_le_bytes(self.array()?) as i64),
-      4 => Value::Uint(self.u32()? as u64),
+      4 => Value::Int(self.u32()? as i64),
       5 => Value::Int(i32::from_le_bytes(self.array()?) as i64),
-      6 => self.take(4).map(|_| Value::Other)?,
-      7 => self.take(1).map(|_| Value::Other)?,
+      6 => Value::Float(f32::from_le_bytes(self.array()?) as f64),
+      7 => Value::Bool(self.array::<1>()?[0] != 0),
       8 => Value::Str(self.string()?),
       9 => {
         let item = self.u32()?;
         let n = self.u64()? as usize;
         Value::Array((0..n).map(|_| self.value(item)).collect::<Result<_>>()?)
       }
-      10 => Value::Uint(self.u64()?),
+      10 => Value::Int(self.u64()? as i64),
       11 => Value::Int(i64::from_le_bytes(self.array()?)),
-      12 => self.take(8).map(|_| Value::Other)?,
+      12 => Value::Float(f64::from_le_bytes(self.array()?)),
       _ => bail!("unknown GGUF value type {ty}"),
     })
   }
@@ -291,12 +333,13 @@ mod tests {
     out.extend(s.as_bytes());
   }
 
-  /// A file with one u32, one string array and an F32 + a Q8_0 tensor.
+  /// A file with a u32, a string array, a bool, a negative i32, an i32 array and an f32, and an
+  /// F32 + a Q8_0 tensor.
   fn sample() -> Vec<u8> {
     let mut f = b"GGUF".to_vec();
     f.extend(3u32.to_le_bytes());
     f.extend(2u64.to_le_bytes());
-    f.extend(2u64.to_le_bytes());
+    f.extend(6u64.to_le_bytes());
     string(&mut f, "a.n");
     f.extend(4u32.to_le_bytes());
     f.extend(7u32.to_le_bytes());
@@ -306,6 +349,20 @@ mod tests {
     f.extend(2u64.to_le_bytes());
     string(&mut f, "▁x");
     string(&mut f, "y");
+    string(&mut f, "a.flag");
+    f.extend(7u32.to_le_bytes());
+    f.push(1);
+    string(&mut f, "a.left");
+    f.extend(5u32.to_le_bytes());
+    f.extend((-1i32).to_le_bytes());
+    string(&mut f, "a.durations");
+    f.extend(9u32.to_le_bytes());
+    f.extend(5u32.to_le_bytes());
+    f.extend(3u64.to_le_bytes());
+    [0i32, 2, -4].iter().for_each(|v| f.extend(v.to_le_bytes()));
+    string(&mut f, "a.alpha");
+    f.extend(6u32.to_le_bytes());
+    f.extend(0.97f32.to_le_bytes());
 
     string(&mut f, "w");
     f.extend(2u32.to_le_bytes());
@@ -336,9 +393,17 @@ mod tests {
   #[test]
   fn reads_metadata_and_tensors() {
     let g = parse(sample()).unwrap();
-    assert_eq!(g.u32("a.n").unwrap(), 7);
-    assert_eq!(g.strs("a.tokens").unwrap(), ["▁x", "y"]);
-    assert!(g.u32("missing").is_err());
+    assert_eq!(g.get::<u32>("a.n").unwrap(), 7);
+    assert_eq!(g.get::<i32>("a.n").unwrap(), 7);
+    assert!(g.get::<u32>("missing").is_err());
+    assert!(g.get::<&str>("a.n").is_err());
+    assert_eq!(g.array::<&str>("a.tokens").unwrap(), ["▁x", "y"]);
+    assert!(g.get::<bool>("a.flag").unwrap());
+    assert_eq!(g.get::<i32>("a.left").unwrap(), -1);
+    assert!(g.get::<u32>("a.left").is_err());
+    assert_eq!(g.array::<i32>("a.durations").unwrap(), [0, 2, -4]);
+    assert!(g.array::<u32>("a.durations").is_err());
+    assert_eq!(g.get::<f32>("a.alpha").unwrap(), 0.97);
 
     assert_eq!(g.tensor("w", &[2, 1]).unwrap().to_f32().unwrap(), [1.5, -2.0]);
     assert!(g.tensor("w", &[1, 2]).is_err());

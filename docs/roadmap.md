@@ -14,9 +14,12 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       porting more models.
 - [x] **3. Other GigaAM v3 variants.** `e2e-ctc` (CTC head), then `rnnt` and `ctc` (33-char
       vocab).
-- [ ] **4. Parakeet TDT V2.** FastConformer, relative positional attention, TDT decoder. Fixtures
-      `jfk`, `dots`, `jobs-silence`. Then make it fast the same way.
-- [ ] **5. Parakeet TDT V3.** Same architecture with a bigger vocab/joint. Fixtures `jfk`,
-      `ru-short`, `uk-short`.
+- [x] **4. Parakeet TDT V2, correct.** `parakeet-tdt-0.6b-v2`: FastConformer, relative
+      positional attention, TDT decoder. Fixtures `jfk`, `dots`, `jobs-silence` match exactly;
+      first benchmark against the reference recorded in `docs/perf.md`.
+- [ ] **5. Parakeet TDT V2, fast.** Warm, first call, load and peak memory at least on par with
+      transcribe.cpp, the same way as phase 2.
+- [ ] **6. Parakeet TDT V3.** `parakeet-tdt-0.6b-v3`: same architecture with a bigger vocab/joint.
+      Fixtures `jfk`, `ru-short`, `uk-short`.
 
 Later, only on request: Whisper, streaming, platforms beyond a working wgpu fallback.
