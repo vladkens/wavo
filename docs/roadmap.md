@@ -21,5 +21,11 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       transcribe.cpp, the same way as phase 2.
 - [x] **6. Parakeet TDT V3.** `parakeet-tdt-0.6b-v3`: same architecture with a bigger vocab/joint.
       Fixtures `jfk`, `ru-short`, `uk-short`.
+- [x] **7. Ollama-like CLI.** `wavo pull/list/rm` by short name in the Hugging Face cache,
+      compatible with `hf`; `wavo run [MODEL] AUDIO` on wav, mp3, m4a, flac and ogg resampled to
+      16 kHz, as text, `--json` or `--srt`, never downloading; `wavo bench` kept. The CLI is the
+      default `cli` feature; with `--no-default-features` the library stays pure Rust with the
+      same API. Long-audio time and memory measured, no chunking yet.
+- [ ] **8. Linux and Windows.** Vulkan / DX12 through wgpu, tested on real machines.
 
-Later, only on request: Whisper, streaming, platforms beyond a working wgpu fallback.
+Later, only on request: Whisper, streaming.

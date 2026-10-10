@@ -14,6 +14,7 @@ prepare:
 check:
 	cargo +nightly fmt --check
 	cargo clippy $(CARGO_FLAGS) --all-targets -- -D warnings
+	cargo clippy $(CARGO_FLAGS) --no-default-features --all-targets -- -D warnings
 	cargo check $(CARGO_FLAGS)
 
 test:

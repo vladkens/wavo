@@ -93,6 +93,34 @@ sanity check, not a reference for speed.
 - First call is below the reference everywhere except rnnt ru-short and ru-long (within 0.5%).
   Load is 35–45% below, peak footprint 14–40 MiB below.
 
+## Long audio: one pass, no chunking (2026-10-10, phase 7)
+
+On the M2, `wavo run` and `transcribe-cli` once each per file under `/usr/bin/time -l`: process
+wall time with load and decoding, peak footprint in MiB. Russian is `ru-long` (33.8 s, 52 words)
+on repeat; English is `dots-full`, `death` and `whole-earth` back to back (one speech); both cut
+to length, 16 kHz mono PCM16. Load average 2.5–3.1.
+
+| Model | Length | Time, s | Peak footprint | Words |
+|---|---|---|---|---|
+| `gigaam-v3` (e2e-rnnt) | 1 min | 0.76 / 0.79 | 349 / 344 | 91 |
+|  | 2 min | 1.58 | 406 | 170 |
+|  | 3 min | 2.45 | 459 | 236 |
+|  | 5 min | 5.20 / 5.41 | 573 / 420 | 254 |
+|  | 10 min | 15.9 / 20.0 | 858 / 529 | 177 |
+| `parakeet-v3` | 1 min | 1.11 / 1.75 | 821 / 917 | 141 |
+|  | 5 min | 7.59 / 14.0 | 1132 / 1110 | 796 |
+|  | 10 min | 22.5 / 43.9 | 1516 / 1293 | 1589 |
+
+- The text is identical to the reference's at every length measured against it.
+- GigaAM was trained on ≤ 25 s (the reference's `docs/input-limits.md`: soft window, it warns and
+  proceeds; wavo says nothing). Past ~1 minute it drops words: about 92 / 185 / 277 / 462 / 923
+  are spoken, 91 / 170 / 236 / 254 / 177 come out. Long Russian audio needs chunking.
+- Parakeet stays coherent at 10 minutes (7500 encoder frames, full attention).
+- Time grows faster than length (attention is quadratic): ×5 length is ×6.8 for GigaAM and
+  Parakeet, ×10 is ×21 and ×20.
+- Peak footprint grows with length faster than the reference's: from 1 to 10 minutes +509 vs
+  +185 MiB (GigaAM), +695 vs +376 MiB (Parakeet). Not investigated.
+
 ## Targets: transcribe.cpp Metal (commit 5bb2deb, same Q8_0 GGUF)
 
 The reference side of the benchmark above. Earlier measurements (busier machine, load average
@@ -361,6 +389,9 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 ## Log
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
+
+- 2026-10-10, GigaAM e2e-rnnt and Parakeet TDT V3, 1 to 10 minutes in one pass through `wavo
+  run`: see "Long audio" above.
 
 - 2026-10-10, Parakeet TDT V2 and V3, end-of-phase-6 benchmark against `transcribe-bench`: see
   "Benchmark" above (the Parakeet rows).

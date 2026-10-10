@@ -4,15 +4,29 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[[bin]]
+name = "wavo"
+path = "src/cli/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+cli = ["dep:anyhow", "dep:rubato", "dep:symphonia", "dep:ureq"]
+
 [dependencies]
-anyhow = "1.0.104"
+anyhow = { version = "1.0.104", optional = true }
 bytemuck = "1.25.2"
 half = "2.7.1"
-hound = "3.5.1"
 pollster = "1.0.1"
+rubato = { version = "5.0.1", optional = true }
 rustfft = "6.4.1"
+symphonia = { version = "0.6.1", default-features = false, features = ["wav", "pcm", "mp3", "isomp4", "aac", "flac", "ogg", "vorbis"], optional = true }
 thiserror = "2.0.21"
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"], optional = true }
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl", "metal"] }
+
+[dev-dependencies]
+hound = "3.5.1"
 
 [profile.release]
 debug = 1
