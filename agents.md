@@ -185,4 +185,6 @@ the first call matter as much as warm speed.
 - Ask the user only when output must change, the public API must break, a heavy dependency is
   needed, or the request is ambiguous. Otherwise decide and say so in your report.
 - Keep docs to `readme.md` (for users), `docs/perf.md`, `docs/roadmap.md` and `docs/plans/`. No
-  progress journals, hash receipts, run logs or disclaimer paragraphs.
+  progress journals, hash receipts, run logs or disclaimer paragraphs. `changelog.md` is written
+  only in a release commit, by the person's changelog skill from the git history: don't edit it
+  in feature work.
