@@ -5,6 +5,7 @@ mod audio;
 mod hfs;
 mod models;
 mod output;
+mod progress;
 mod split;
 
 use std::path::{Path, PathBuf};
@@ -119,20 +120,29 @@ fn run(args: &[&str]) -> Result<()> {
     _ => bail!(USAGE),
   };
   let path = model_path(model)?;
-  let pcm = audio::read(audio)?;
-  let model = load(&path)?;
-  let max_ms = segment.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
-  let max = if max_ms == 0 { usize::MAX } else { max_ms as usize * 16 };
-  let ranges = split::segments(&pcm, max);
-  let parts = ranges.into_iter().map(|r| Ok((r.start, model.transcribe(&pcm[r])?)));
-  let (transcript, starts) = split::join(parts.collect::<Result<Vec<_>>>()?);
+  let (ms, transcript, starts) = progress::show(|p| -> Result<_> {
+    p.set("decoding the audio");
+    let pcm = audio::read(audio)?;
+    p.set("loading the model");
+    let model = load(&path)?;
+    let max_ms = segment.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
+    let max = if max_ms == 0 { usize::MAX } else { max_ms as usize * 16 };
+    let ranges = split::segments(&pcm, max);
+    let n = ranges.len();
+    let parts = ranges.into_iter().enumerate().map(|(i, r)| {
+      p.set(if n == 1 { "transcribing".into() } else { format!("transcribing {}/{n}", i + 1) });
+      Ok((r.start, model.transcribe(&pcm[r])?))
+    });
+    let (transcript, starts) = split::join(parts.collect::<Result<Vec<_>>>()?);
+    Ok(((pcm.len() / 16) as u32, transcript, starts))
+  })?;
   match format {
     Some("--json") => println!("{}", output::json(&transcript)),
     // Whisper times segments, not tokens.
     Some(_) if models::architecture(&path).as_deref() == Some("whisper") => {
-      print!("{}", output::srt_segments(&transcript.tokens, (pcm.len() / 16) as u32))
+      print!("{}", output::srt_segments(&transcript.tokens, ms))
     }
-    Some(_) => print!("{}", output::srt(&transcript.tokens, &starts, (pcm.len() / 16) as u32)),
+    Some(_) => print!("{}", output::srt(&transcript.tokens, &starts, ms)),
     None => println!("{}", transcript.text),
   }
   Ok(())
@@ -209,21 +219,26 @@ fn bench(model: &str, audio: &str, n: usize) -> Result<()> {
   if n == 0 {
     bail!("-n must be at least 1");
   }
-  let pcm = audio::read(audio)?;
-  let path = model_path(model)?;
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
-  let t = Instant::now();
-  let model = load(&path)?;
-  let load = ms(t);
-  let t = Instant::now();
-  model.transcribe(&pcm)?;
-  let first = ms(t);
-  let mut warm = (0..n)
-    .map(|_| {
+  let (load, first, mut warm) = progress::show(|p| -> Result<_> {
+    p.set("decoding the audio");
+    let pcm = audio::read(audio)?;
+    let path = model_path(model)?;
+    p.set("loading the model");
+    let t = Instant::now();
+    let model = load(&path)?;
+    let load = ms(t);
+    p.set("first call");
+    let t = Instant::now();
+    model.transcribe(&pcm)?;
+    let first = ms(t);
+    let warm = (0..n).map(|i| {
+      p.set(format!("warm call {}/{n}", i + 1));
       let t = Instant::now();
       model.transcribe(&pcm).map(|_| ms(t))
-    })
-    .collect::<Result<Vec<_>, _>>()?;
+    });
+    Ok((load, first, warm.collect::<Result<Vec<_>, _>>()?))
+  })?;
   warm.sort_by(f64::total_cmp);
   let median = (warm[(n - 1) / 2] + warm[n / 2]) / 2.0;
   println!(
