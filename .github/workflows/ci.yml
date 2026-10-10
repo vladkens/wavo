@@ -53,8 +53,11 @@ jobs:
       - run: rustup update --no-self-update stable && rustup default stable
       - run: rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-gnu
       - run: brew install cargo-zigbuild
-      # One cache for the registry and all four targets' dependencies in target/.
+      # One cache for the registry, all four targets' dependencies in target/ and the libc and
+      # compiler-rt that zig builds for each target.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: ~/.cache/zig
 
       - name: Build
         run: |
@@ -69,6 +72,7 @@ jobs:
           done
           zip -j wavo-dev-x86_64-pc-windows-gnu.zip readme.md LICENSE target/x86_64-pc-windows-gnu/release/wavo.exe
           ls -lh wavo-dev-*
+          du -sh ~/.cache/zig ~/Library/Caches/zig ~/Library/Caches/cargo-zigbuild || true
 
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v7
