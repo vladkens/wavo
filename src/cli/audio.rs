@@ -71,39 +71,46 @@ mod tests {
 
   use super::*;
 
+  /// Writes `samples` as a WAV in the temp dir, decodes it with `read` and deletes it.
+  fn decode_wav<S: hound::Sample + Copy>(
+    name: &str,
+    spec: hound::WavSpec,
+    samples: &[S],
+  ) -> Vec<f32> {
+    let path = std::env::temp_dir().join(format!("wavo-{}-{name}.wav", std::process::id()));
+    let mut wav = hound::WavWriter::create(&path, spec).unwrap();
+    samples.iter().for_each(|&s| wav.write_sample(s).unwrap());
+    wav.finalize().unwrap();
+    let pcm = read(path.to_str().unwrap()).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    pcm
+  }
+
+  fn spec(channels: u16, sample_rate: u32, format: hound::SampleFormat) -> hound::WavSpec {
+    let bits_per_sample = if format == hound::SampleFormat::Int { 16 } else { 32 };
+    hound::WavSpec { channels, sample_rate, bits_per_sample, sample_format: format }
+  }
+
+  /// The fixtures' samples: a 16 kHz mono PCM16 WAV read with hound as `s as f32 / 32768.0`.
   #[test]
-  fn fixture_wavs_are_bit_exact() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("3rd/transcribe.cpp/samples");
-    for sample in ["jfk", "dots", "jobs-silence", "ru", "ru-short", "ru-long", "uk-short"] {
-      let path = root.join(format!("{sample}.wav"));
-      let mut wav = hound::WavReader::open(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-      let expected: Vec<u32> =
-        wav.samples::<i16>().map(|s| (s.unwrap() as f32 / 32768.0).to_bits()).collect();
-      let got: Vec<u32> =
-        read(path.to_str().unwrap()).unwrap().iter().map(|s| s.to_bits()).collect();
-      assert!(got == expected, "{sample}: samples differ from hound's");
-    }
+  fn pcm16_16k_mono_is_bit_exact() {
+    let mut x = 1u32;
+    let mut samples = vec![i16::MIN, i16::MIN + 1, -1, 0, 1, i16::MAX - 1, i16::MAX];
+    samples.extend((0..48000).map(|_| {
+      x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+      (x >> 16) as i16
+    }));
+    let pcm = decode_wav("pcm16", spec(1, 16000, hound::SampleFormat::Int), &samples);
+    let expected: Vec<u32> = samples.iter().map(|&s| (s as f32 / 32768.0).to_bits()).collect();
+    assert!(pcm.iter().map(|s| s.to_bits()).eq(expected), "samples differ from hound's");
   }
 
   #[test]
   fn stereo_44k_is_averaged_and_resampled() {
-    let path = std::env::temp_dir().join(format!("wavo-{}-stereo.wav", std::process::id()));
-    let spec = hound::WavSpec {
-      channels: 2,
-      sample_rate: 44100,
-      bits_per_sample: 32,
-      sample_format: hound::SampleFormat::Float,
-    };
-    let mut wav = hound::WavWriter::create(&path, spec).unwrap();
     let tone = |t: f32| (TAU * 440.0 * t).sin();
-    for i in 0..44100 {
-      let s = tone(i as f32 / 44100.0);
-      wav.write_sample(s).unwrap();
-      wav.write_sample(0.5 * s).unwrap();
-    }
-    wav.finalize().unwrap();
-    let pcm = read(path.to_str().unwrap()).unwrap();
-    std::fs::remove_file(&path).unwrap();
+    let samples: Vec<f32> =
+      (0..44100).map(|i| tone(i as f32 / 44100.0)).flat_map(|s| [s, 0.5 * s]).collect();
+    let pcm = decode_wav("stereo", spec(2, 44100, hound::SampleFormat::Float), &samples);
     assert!(pcm.len().abs_diff(16000) <= 1, "{} samples", pcm.len());
     // The resampler leaves a delay of a fraction of a sample (~11 µs here).
     for (i, s) in pcm.iter().enumerate().take(15000).skip(1000) {
