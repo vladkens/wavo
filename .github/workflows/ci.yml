@@ -1,17 +1,26 @@
-name: main
+name: ci
 
+# Never add pull_request_target or issue_comment: they run untrusted code with the base branch's
+# rights and can poison its cache. With push and pull_request GitHub keeps PR caches to the PR.
 on:
   push:
     branches: [main]
+  pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/cache@v6
         with:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}

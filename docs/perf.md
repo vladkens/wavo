@@ -209,6 +209,21 @@ count of the fixture's words on repeat, cut at the same length. English is compa
   words). Over 60 minutes, 30 s twice inserts a phrase nobody says ("that was a very good thing")
   where 60 s doesn't. 60 s is the default.
 
+## Real recordings vs transcribe.cpp (2026-10-10, phase 10)
+
+`make compare` on 2,923 of the person's dictation recordings (8.6 h, mostly Russian, median
+3.75 s), M2, A/B/A. Conclusions:
+
+- Text: the same as the reference in 99.86% (GigaAM e2e-rnnt) and 98.9% (Parakeet V3) of the
+  recordings. Every difference starts at a near-tie (top two logits within 0.03): float
+  rounding, not a bug.
+- Parakeet V3: 36% less compute, faster at every length.
+- GigaAM: on par overall; ~5% slower per file under 2 s, faster from 5 s. Its fixed cost per call
+  is ~1 ms higher ("Not tried yet", item 5).
+- Model loaded per recording (fresh process): GigaAM 136 vs 188 ms, Parakeet V3 278 vs 429 ms.
+- Peak memory over a batch: Parakeet 975 vs 1067 MiB; GigaAM 452 vs 421 MiB, since wavo keeps the
+  arena of the longest input so far.
+
 ## Targets: transcribe.cpp Metal (commit 5bb2deb, same Q8_0 GGUF)
 
 The reference side of the benchmark above. Earlier measurements (busier machine, load average
@@ -473,10 +488,20 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 3. Q8_0 prepacked in fragment order: low priority, W traffic is not the GEMM's limit (see Log).
 4. Decoder: `Wx · embed[token]` depends only on the token, so a per-call cache would skip half
    of the LSTM step (~68 µs) for repeated tokens.
+5. Short recordings (see "Real recordings"): under 2 s (24% of real dictation) wavo's call costs
+   ~1 ms (5%) more than the reference's wall time, at 2–5 s (37%) the same. GigaAM is meant to be
+   faster everywhere. At T ≤ 64 frames (2.5 s) FFN down has 12–24 workgroups (N/64 × ⌈M/32⌉),
+   under two per GPU core. Profile a 1–2 s clip first; candidates are split-K or a 16-row tile at
+   small M, item 2, and fixed CPU costs per call.
 
 ## Log
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
+
+- 2026-10-10, GigaAM e2e-rnnt, Parakeet TDT V3 (and V2 on 87 recordings), 2,923 of the person's
+  dictation recordings against transcribe.cpp's batch mode (`make compare`): text the same in
+  99.86% / 98.9%, every difference from a near-tie; Parakeet V3 36–37% less compute, GigaAM on
+  par overall (slower per file under 2 s, faster from 5 s). See "Real recordings" above.
 
 - 2026-10-10, all models, GPU work that fails or that a driver cancels is an error, and the
   portable path submits each Conformer block on its own. i915 cancels a request 20 s after it

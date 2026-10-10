@@ -1,4 +1,4 @@
-.PHONY: prepare check test test-unit build update models reference fixtures
+.PHONY: prepare check test test-unit build update clean models reference fixtures compare
 
 CARGO_FLAGS := --release --locked
 MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
@@ -31,6 +31,9 @@ build:
 update:
 	cargo upgrade -i
 
+clean:
+	cargo clean
+
 models:
 	for m in $(MODELS); do hf download handy-computer/$$m-gguf $$m-Q8_0.gguf; done
 
@@ -49,3 +52,7 @@ fixtures:
 			| awk '/^text: /{print} /^tokens: /{t=1; print; next} t && /^  \[/{print}' \
 			> tests/fixtures/$(MODEL)/$$s.txt; \
 	done
+
+# make compare MODEL=gigaam-v3-e2e-rnnt LIST=wavs.txt OUT=dir (see the script)
+compare:
+	scripts/compare.sh "$(MODEL)" "$(LIST)" "$(OUT)"

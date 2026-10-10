@@ -31,6 +31,17 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       VAD model) into segments of at most the model's window (`Model::max_audio_ms()`, GigaAM
       25 s) or a default for models without one, and joins the transcripts; `--segment` sets the
       length, `0` is one pass. Time linear in length, peak memory flat.
+- [x] **10. Real recordings vs transcribe.cpp.** `make compare` (`examples/batch.rs` and the
+      reference's batch mode, one model load each) on 2,923 of the person's dictation
+      recordings: the same text in 99.9% (GigaAM) and 98.9% (Parakeet V3) of them, every
+      difference from a near-tie; speed by length in `docs/perf.md` → "Real recordings".
+
+After Whisper: **other engines.** Measure wavo against the other ways to run the same models on a
+Mac, not only transcribe.cpp. Plan: [docs/plans/20261010-other-engines.md](plans/20261010-other-engines.md).
+
+After the models: **fast build.** A clean release build takes 42 s, mostly the wgpu chain (naga →
+wgpu-core → wgpu); rebuilding the library after a change takes 14 s, and 58% of its code is
+`rustfft`'s generic planner. Plan: [docs/plans/20261010-fast-build.md](plans/20261010-fast-build.md).
 
 Later, only on request: Whisper, streaming, slowing fast speech down before recognition
 (pitch-keeping time-stretch such as WSOLA; first measure WER on samples sped up with ffmpeg

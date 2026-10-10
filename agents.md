@@ -20,6 +20,9 @@ the first call matter as much as warm speed.
 - Keep the library pure Rust: no C/C++, ONNX, BLAS or Python in it or its build. Its
   dependencies: `wgpu`, `bytemuck`, `half`, `thiserror`, `pollster`, `rustfft`; tests may also
   use `hound` (dev-dependency).
+- Keep the build fast, also for crates that depend on wavo: prefer a small own routine to a
+  generic dependency that compiles far more code than wavo uses. Measure with `cargo build
+  --timings`.
 - The CLI sits behind the default `cli` feature (binary `wavo` in `src/cli/`, `required-features
   = ["cli"]`), so `cargo add wavo --no-default-features` gets only the library. The CLI's own
   dependencies are optional and enabled by `cli`: `anyhow`, `ureq` (rustls with ring and webpki
@@ -65,6 +68,9 @@ the first call matter as much as warm speed.
   reference docs say.
 - Start every `.rs` and `.wgsl` file with the line
   `// Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo`.
+- Put helper scripts in `scripts/`, named in kebab-case (`compare.sh`, `make-fixtures.py`):
+  `sh`, or Python run with `uv run`. A Makefile target that needs more than a line or two calls a
+  script instead of holding it.
 
 ## External sources
 
@@ -131,10 +137,16 @@ the first call matter as much as warm speed.
 ## Performance
 
 - Read [docs/perf.md](docs/perf.md) before speed work. Log every attempt there, kept or rejected.
+- Profile with GPU timestamp queries in a temporary local tool. Never run Instruments or `xcrun
+  xctrace` (Metal System Trace): on this Mac it froze the window server twice and needed a hard
+  reset.
 - Compare `wavo bench` with the reference `transcribe-bench` on the same GGUF and WAV: at least 10
   warm calls, median and min. Measure a change A/B/A back to back. When the two A runs differ by
   more than 3%, rerun later instead of concluding. Run one GPU job at a time.
 - Keep a speed change only when fixtures still match and the gain is clear. Delete rejected code.
+- On many recordings (text agreement and speed at scale, e.g. real dictation), use `make compare
+  MODEL=<name> LIST=<file of WAV paths> OUT=<dir>`: `examples/batch.rs` and the reference's
+  `--batch` mode, one model load each.
 
 ## Workflow
 
