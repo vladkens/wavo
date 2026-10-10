@@ -31,7 +31,8 @@ On Linux wavo runs through Vulkan, so it needs a Vulkan driver and access to the
 sudo apt install build-essential           # a linker for cargo; Rust itself from rustup.rs
 sudo apt install mesa-vulkan-drivers       # the driver, with libvulkan1
 sudo usermod -aG render $USER              # GPU access, then log out and back in
-vulkaninfo --summary                       # lists the GPU (from vulkan-tools)
+sudo apt install vulkan-tools              # optional: vulkaninfo
+vulkaninfo --summary                       # lists the GPU
 ```
 
 GPUs other than Apple's run the slower portable kernels for now: an Intel N100 transcribes 11 s
@@ -127,8 +128,8 @@ model load are from a fresh process; memory is the peak footprint. Measured back
 Built by coding agents; the rules are in [agents.md](agents.md).
 
 ```sh
-cargo install --git https://github.com/vladkens/wavo --branch feat/<name> --locked  # a PR branch
-cargo install --git https://github.com/vladkens/wavo --locked --force               # back to main
-cargo install --path . --locked                                                     # a local checkout
-cargo uninstall wavo                                                                # remove it
+cargo install --git https://github.com/vladkens/wavo --branch feat/NAME --locked  # a PR branch
+cargo install --git https://github.com/vladkens/wavo --locked --force             # back to main
+cargo install --path . --locked                                                   # a local checkout
+cargo uninstall wavo                                                              # remove it
 ```
