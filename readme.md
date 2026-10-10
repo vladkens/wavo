@@ -2,21 +2,21 @@
 
 <div align="center">
 
-[<img src="https://badges.ws/github/license/vladkens/wavo" />](https://github.com/vladkens/wavo/blob/main/LICENSE)
+[<img src="https://badges.ws/github/license/vladkens/wavo" alt="license" />](https://github.com/vladkens/wavo/blob/main/LICENSE)
 
 </div>
 
 `wavo` turns speech into text locally, on the GPU, in pure Rust. Give it a recording of any
 length, a voice note or a two-hour meeting, and get the text with timestamps. It runs the open ASR
-models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes (Parakeet,
-GigaAM) with the same output, at least as fast. Use it as a command-line tool with an ollama-like
-model manager, or as a library that builds with a plain `cargo build`.
+models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes with the
+same output, at least as fast. Use it as a command-line tool with an ollama-like model manager, or
+as a library that builds with a plain `cargo build`.
 
 ## 🌟 Features
 
 - 📏 Audio of any length: long recordings are split at pauses and joined back, no chunking on
   your side
-- 🎧 Any common format: wav, mp3, m4a, flac, ogg, resampled for you
+- 🎧 Any common format: wav, mp3, m4a, flac, ogg (Vorbis), resampled for you
 - 🦀 Pure Rust library: no CMake, C++ toolchain, Python or ONNX Runtime to install
 - ⚡ Runs on the GPU: Metal on Apple Silicon, Vulkan on Linux
 - 🏎️ As fast as transcribe.cpp or faster on the same model files, and loads in 0.1–0.2 s
@@ -37,8 +37,7 @@ model manager, or as a library that builds with a plain `cargo build`.
 | `gigaam-v3-ctc` | 0.27 GB | Russian | lowercase, no punctuation |
 
 Parakeet is NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
-GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM). Whisper is next; see
-the [roadmap](docs/roadmap.md).
+GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM).
 
 ## 📥 Installation
 
