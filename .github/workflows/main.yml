@@ -1,0 +1,26 @@
+name: main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+
+      - run: rustup update --no-self-update stable && rustup default stable
+      - run: rustup toolchain install nightly --profile minimal --component rustfmt
+      - run: make check
+      - run: make test-unit
