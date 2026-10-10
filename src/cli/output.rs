@@ -55,9 +55,12 @@ pub fn srt(tokens: &[Token], starts: &[usize], audio_ms: u32) -> String {
     let text = text.trim();
     match cues.last_mut() {
       _ if text.is_empty() => {}
+      // Words that share the cue's start (a Whisper segment) stay in it: a cut there would give the
+      // cue before an empty interval.
       Some(cue)
-        if !cue.2.ends_with(['.', '!', '?', '…'])
-          && cue.2.chars().count() + 1 + text.chars().count() <= MAX_CUE =>
+        if *first == cue.0
+          || !cue.2.ends_with(['.', '!', '?', '…'])
+            && cue.2.chars().count() + 1 + text.chars().count() <= MAX_CUE =>
       {
         (cue.1, cue.2) = (*last, format!("{} {text}", cue.2));
       }
@@ -130,6 +133,16 @@ mod tests {
     // A segment of a split recording starts a word without a space token.
     let t = tokens(&[("д", 0), ("а", 40), ("н", 25_000), ("е", 25_040), ("т", 25_080)]);
     assert_eq!(srt(&t, &[0, 2], 30_000), "1\n00:00:00,000 --> 00:00:26,580\nда нет\n\n");
+  }
+
+  #[test]
+  fn segment_starts_keep_one_cue() {
+    // Whisper gives every token of a segment the segment's start.
+    let t = tokens(&[(" Ask", 0), (" not.", 0), (" Ask", 0), (" what.", 0), (" Next", 5000)]);
+    assert_eq!(
+      srt(&t, &[], 6000),
+      "1\n00:00:00,000 --> 00:00:01,500\nAsk not. Ask what.\n\n2\n00:00:05,000 --> 00:00:06,000\nNext\n\n"
+    );
   }
 
   /// Cue texts joined with spaces give each fixture's transcript text.
