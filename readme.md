@@ -41,8 +41,9 @@ Audio can be wav, mp3, m4a (AAC), flac or ogg (Vorbis); it is downmixed to mono 
 16 kHz. `--json` prints `{"text": ..., "tokens": [{"id", "piece", "start_ms"}, ...]}`. `--srt`
 cues break after sentences or at 80 characters.
 
-Models live in the Hugging Face cache (`HF_HUB_CACHE`, else `$HF_HOME/hub`, else
-`~/.cache/huggingface/hub`) in the layout the `hf` CLI uses, so a model fetched with
+Models live in the Hugging Face cache, found as `hf` finds it: `HF_HUB_CACHE` (or the legacy
+`HUGGINGFACE_HUB_CACHE`), else `$HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else
+`~/.cache/huggingface/hub`. The layout is the one `hf` uses, so a model fetched with
 `hf download handy-computer/<full name>-gguf <full name>-Q8_0.gguf` is found by `wavo`, and one
 pulled by `wavo` is seen by `hf`. Only `wavo pull` uses the network; `wavo run` names the
 `wavo pull` command when a model is missing.

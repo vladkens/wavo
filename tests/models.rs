@@ -4,12 +4,15 @@
 
 use std::path::{Path, PathBuf};
 
-/// The Q8_0 GGUF of `name` in the Hugging Face cache (`make models`).
+/// The Q8_0 GGUF of `name` in the Hugging Face cache (`make models`), with the root resolved as
+/// the CLI does (`src/cli/hfs.rs`).
 fn model_path(name: &str) -> PathBuf {
-  let var = |k| std::env::var_os(k).map(PathBuf::from);
-  let cache = || var("XDG_CACHE_HOME").unwrap_or_else(|| var("HOME").unwrap().join(".cache"));
-  let hub = var("HF_HUB_CACHE")
-    .unwrap_or_else(|| var("HF_HOME").unwrap_or_else(|| cache().join("huggingface")).join("hub"));
+  let var = |k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+  let user = || var("HOME").or_else(|| var("USERPROFILE")).unwrap_or_default();
+  let cache = || var("XDG_CACHE_HOME").unwrap_or_else(|| user().join(".cache"));
+  let home = || var("HF_HOME").unwrap_or_else(|| cache().join("huggingface"));
+  let hub = var("HF_HUB_CACHE").or_else(|| var("HUGGINGFACE_HUB_CACHE"));
+  let hub = hub.unwrap_or_else(|| home().join("hub"));
   let repo = hub.join(format!("models--handy-computer--{name}-gguf"));
   let rev = std::fs::read_to_string(repo.join("refs/main"))
     .unwrap_or_else(|e| panic!("{name} is not downloaded, run `make models`: {e}"));

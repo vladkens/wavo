@@ -7,6 +7,7 @@
 //!                             /snapshots/<commit>/<file>     -> ../../blobs/<etag>
 //!                             /refs/main                     <commit>
 //! <root>/.locks/models--<org>--<repo>/<etag>.lock            held while downloading
+//!                                    /wavo.lock              wavo's: held by pull and rm
 //! ```
 //!
 //! Newer `hf` versions make `blobs/<etag>` a symlink into a shared `<root>/blobs/<xx>/<hash>`
@@ -71,6 +72,15 @@ impl Cache {
     self.install(repo, file, &remote, |part| download(&remote.url, part, remote.size, file))
   }
 
+  /// Holds `<root>/.locks/<repo folder>/<name>.lock` until the file is dropped.
+  fn lock(&self, repo: &str, name: &str) -> Result<File> {
+    let dir = self.root.join(".locks").join(self.folder(repo).file_name().unwrap());
+    fs::create_dir_all(&dir)?;
+    let lock = File::create(dir.join(format!("{name}.lock")))?;
+    lock.lock()?;
+    Ok(lock)
+  }
+
   /// Links the file into its snapshot, `fetch`ing the blob into `<etag>.incomplete` first when it
   /// is missing, then points `refs/main` at the snapshot.
   fn install(
@@ -80,16 +90,20 @@ impl Cache {
     remote: &Remote,
     fetch: impl FnOnce(&Path) -> Result<()>,
   ) -> Result<PathBuf> {
+    let hex = |s: &str, lens: &[usize]| {
+      lens.contains(&s.len()) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    if !hex(&remote.commit, &[40]) || !hex(&remote.etag, &[40, 64]) {
+      bail!("unexpected commit {:?} or etag {:?} from the Hub", remote.commit, remote.etag);
+    }
+    let _repo = self.lock(repo, "wavo")?;
     let dir = self.folder(repo);
     let pointer = dir.join("snapshots").join(&remote.commit).join(file);
     if !pointer.exists() {
       let blob = dir.join("blobs").join(&remote.etag);
-      let lock = self.root.join(".locks").join(dir.file_name().unwrap());
-      for d in [&lock, blob.parent().unwrap(), pointer.parent().unwrap()] {
-        fs::create_dir_all(d)?;
-      }
-      let lock = File::create(lock.join(format!("{}.lock", remote.etag)))?;
-      lock.lock()?;
+      fs::create_dir_all(blob.parent().unwrap())?;
+      fs::create_dir_all(pointer.parent().unwrap())?;
+      let _blob = self.lock(repo, &remote.etag)?; // huggingface_hub's own per-blob lock
       if !blob.exists() {
         let part = blob.with_file_name(format!("{}.incomplete", remote.etag));
         fetch(&part)?;
@@ -116,6 +130,10 @@ impl Cache {
   /// freed, or `None` when nothing was cached.
   pub fn remove(&self, repo: &str, file: &str) -> Result<Option<u64>> {
     let dir = self.folder(repo);
+    if !dir.exists() {
+      return Ok(None);
+    }
+    let _repo = self.lock(repo, "wavo")?;
     let pointers: Vec<PathBuf> =
       self.snapshots(repo).map(|s| s.join(file)).filter(|p| p.symlink_metadata().is_ok()).collect();
     if pointers.is_empty() {
@@ -232,8 +250,9 @@ mod tests {
     Cache { root }
   }
 
-  fn remote(commit: char, etag: &str, size: u64) -> Remote {
-    Remote { commit: commit.to_string().repeat(40), etag: etag.into(), size, url: String::new() }
+  fn remote(commit: char, etag: char, size: u64) -> Remote {
+    let (commit, etag) = (commit.to_string().repeat(40), etag.to_string().repeat(64));
+    Remote { commit, etag, size, url: String::new() }
   }
 
   fn write(text: &'static str) -> impl FnOnce(&Path) -> Result<()> {
@@ -264,28 +283,68 @@ mod tests {
   fn install_writes_the_spec_layout() {
     let cache = temp("install");
     let dir = cache.root.join("models--org--m-gguf");
-    let a = remote('a', "e1", 5);
+    let a = remote('a', '1', 5);
     let path = cache.install("org/m-gguf", "m.gguf", &a, write("hello")).unwrap();
     assert_eq!(path, dir.join("snapshots").join(&a.commit).join("m.gguf"));
-    assert_eq!(fs::read_link(&path).unwrap(), Path::new("../../blobs/e1"));
+    assert_eq!(fs::read_link(&path).unwrap(), Path::new("../../blobs").join(&a.etag));
     assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
     assert_eq!(fs::read_to_string(dir.join("refs/main")).unwrap(), a.commit);
-    assert!(cache.root.join(".locks/models--org--m-gguf/e1.lock").is_file());
+    let locks = cache.root.join(".locks/models--org--m-gguf");
+    assert!(locks.join(format!("{}.lock", a.etag)).is_file() && locks.join("wavo.lock").is_file());
     assert_eq!(cache.find("org/m-gguf", "m.gguf").as_ref(), Some(&path));
 
     // A cached revision and a new revision of the same content download nothing.
     let fail = |_: &Path| -> Result<()> { panic!("downloaded again") };
     assert_eq!(cache.install("org/m-gguf", "m.gguf", &a, fail).unwrap(), path);
-    let b = remote('b', "e1", 5);
+    let b = remote('b', '1', 5);
     let path = cache.install("org/m-gguf", "m.gguf", &b, fail).unwrap();
     assert_eq!(fs::read_to_string(dir.join("refs/main")).unwrap(), b.commit);
     assert_eq!(cache.find("org/m-gguf", "m.gguf"), Some(path));
 
     // A short download fails and stays for the next pull to resume.
-    let c = remote('c', "e3", 10);
+    let c = remote('c', '3', 10);
     assert!(cache.install("org/m-gguf", "m.gguf", &c, write("short")).is_err());
-    assert_eq!(fs::read_to_string(dir.join("blobs/e3.incomplete")).unwrap(), "short");
+    let part = dir.join("blobs").join(format!("{}.incomplete", c.etag));
+    assert_eq!(fs::read_to_string(part).unwrap(), "short");
     assert_eq!(fs::read_to_string(dir.join("refs/main")).unwrap(), b.commit);
+    fs::remove_dir_all(&cache.root).unwrap();
+  }
+
+  #[test]
+  fn install_takes_only_hex_ids() {
+    let cache = temp("ids");
+    let ok = remote('a', '1', 5);
+    for (commit, etag) in [
+      ("../../x", ok.etag.as_str()),
+      (&ok.commit[..39], &ok.etag),
+      (&"A".repeat(40), &ok.etag),
+      (&ok.commit, "../blobs/x"),
+      (&ok.commit, &ok.etag[..63]),
+      (&ok.commit, "\"0123\""),
+    ] {
+      let r = Remote { commit: commit.into(), etag: etag.into(), size: 5, url: String::new() };
+      assert!(cache.install("org/m", "m.gguf", &r, write("hello")).is_err(), "{commit} {etag}");
+    }
+    assert!(!cache.root.exists(), "nothing written");
+    let sha1 = Remote { etag: "f".repeat(40), ..ok };
+    assert!(cache.install("org/m", "m.gguf", &sha1, write("hello")).is_ok());
+    fs::remove_dir_all(&cache.root).unwrap();
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn remove_waits_for_the_repo_lock() {
+    let cache = temp("lock");
+    cache.install("org/m", "m.gguf", &remote('a', '1', 5), write("hello")).unwrap();
+    let lock = cache.lock("org/m", "wavo").unwrap();
+    std::thread::scope(|s| {
+      let (tx, rx) = std::sync::mpsc::channel();
+      let c = &cache;
+      s.spawn(move || tx.send(c.remove("org/m", "m.gguf").unwrap()).unwrap());
+      assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "rm ran under the lock");
+      drop(lock);
+      assert_eq!(rx.recv().unwrap(), Some(5));
+    });
     fs::remove_dir_all(&cache.root).unwrap();
   }
 
@@ -314,12 +373,13 @@ mod tests {
   fn remove_keeps_other_files() {
     let cache = temp("remove");
     let dir = cache.folder("org/m");
-    cache.install("org/m", "m.gguf", &remote('a', "e1", 5), write("hello")).unwrap();
-    cache.install("org/m", "other.gguf", &remote('a', "e2", 3), write("abc")).unwrap();
-    cache.install("org/m", "m.gguf", &remote('b', "e1", 5), write("hello")).unwrap();
+    cache.install("org/m", "m.gguf", &remote('a', '1', 5), write("hello")).unwrap();
+    cache.install("org/m", "other.gguf", &remote('a', '2', 3), write("abc")).unwrap();
+    cache.install("org/m", "m.gguf", &remote('b', '1', 5), write("hello")).unwrap();
     assert_eq!(cache.remove("org/m", "m.gguf").unwrap(), Some(5));
     assert_eq!(cache.find("org/m", "m.gguf"), None);
-    assert!(!dir.join("blobs/e1").exists() && !dir.join("snapshots").join("b".repeat(40)).exists());
+    assert!(!dir.join("blobs").join("1".repeat(64)).exists());
+    assert!(!dir.join("snapshots").join("b".repeat(40)).exists());
     assert!(!dir.join("refs/main").exists(), "refs/main named the removed snapshot");
     assert!(cache.find("org/m", "other.gguf").is_some());
     assert_eq!(cache.remove("org/m", "m.gguf").unwrap(), None);
@@ -336,8 +396,10 @@ mod tests {
     fs::create_dir_all(cache.root.join("blobs/ab")).unwrap();
     fs::write(cache.root.join("blobs/ab").join(&hash), "hello").unwrap();
     fs::create_dir_all(dir.join("blobs")).unwrap();
-    std::os::unix::fs::symlink(format!("../../blobs/ab/{hash}"), dir.join("blobs/e1")).unwrap();
-    let path = cache.install("org/m", "m.gguf", &remote('a', "e1", 5), write("")).unwrap();
+    let r = remote('a', '1', 5);
+    std::os::unix::fs::symlink(format!("../../blobs/ab/{hash}"), dir.join("blobs").join(&r.etag))
+      .unwrap();
+    let path = cache.install("org/m", "m.gguf", &r, write("")).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
     let e = cache.remove("org/m", "m.gguf").unwrap_err().to_string();
     assert!(e.contains("hf cache rm hf://models/org/m/m.gguf"), "{e}");
