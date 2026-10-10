@@ -55,9 +55,12 @@ pub fn srt(tokens: &[Token], starts: &[usize], audio_ms: u32) -> String {
     let text = text.trim();
     match cues.last_mut() {
       _ if text.is_empty() => {}
+      // A word that starts with the cue (several in one frame) stays in it, else the cue would
+      // last no time at all.
       Some(cue)
-        if !cue.2.ends_with(['.', '!', '?', '…'])
-          && cue.2.chars().count() + 1 + text.chars().count() <= MAX_CUE =>
+        if *first == cue.0
+          || !cue.2.ends_with(['.', '!', '?', '…'])
+            && cue.2.chars().count() + 1 + text.chars().count() <= MAX_CUE =>
       {
         (cue.1, cue.2) = (*last, format!("{} {text}", cue.2));
       }
@@ -149,6 +152,15 @@ mod tests {
     // A segment of a split recording starts a word without a space token.
     let t = tokens(&[("д", 0), ("а", 40), ("н", 25_000), ("е", 25_040), ("т", 25_080)]);
     assert_eq!(srt(&t, &[0, 2], 30_000), "1\n00:00:00,000 --> 00:00:26,580\nда нет\n\n");
+  }
+
+  #[test]
+  fn words_of_one_frame_stay_in_a_cue() {
+    let t = tokens(&[("▁Yes.", 400), ("▁Right", 400), ("▁now.", 600), ("▁Go", 3000)]);
+    assert_eq!(
+      srt(&t, &[], 4000),
+      "1\n00:00:00,400 --> 00:00:02,100\nYes. Right now.\n\n2\n00:00:03,000 --> 00:00:04,000\nGo\n\n"
+    );
   }
 
   #[test]

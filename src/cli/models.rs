@@ -83,19 +83,52 @@ fn distance(a: &str, b: &str) -> usize {
   row[b.len()]
 }
 
-/// The model file's `general.architecture` (`whisper`, `gigaam`, …), read from its GGUF header:
-/// the key comes first in the metadata, as a string (type 8) with a u64 length.
+/// The model file's `general.architecture` (`whisper`, `gigaam`, …), from its GGUF metadata:
+/// the key-value pairs are read in order, skipping other values, until the key turns up.
 pub fn architecture(path: &Path) -> Option<String> {
-  let mut head = Vec::new();
-  std::fs::File::open(path).ok()?.take(4096).read_to_end(&mut head).ok()?;
-  let key = b"general.architecture";
-  let at = head.windows(key.len()).position(|w| w == key)? + key.len();
-  let rest = head.get(at..)?;
-  if u32::from_le_bytes(rest.get(..4)?.try_into().ok()?) != 8 {
-    return None;
+  let mut f = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+  let mut magic = [0; 4];
+  f.read_exact(&mut magic).ok()?;
+  (magic == *b"GGUF").then_some(())?;
+  let (_version, _tensors, kvs) = (int::<4>(&mut f)?, int::<8>(&mut f)?, int::<8>(&mut f)?);
+  for _ in 0..kvs {
+    let key = string(&mut f)?;
+    let ty = int::<4>(&mut f)?;
+    if key == b"general.architecture" && ty == 8 {
+      return String::from_utf8(string(&mut f)?).ok();
+    }
+    skip(&mut f, ty)?;
   }
-  let len = u64::from_le_bytes(rest.get(4..12)?.try_into().ok()?) as usize;
-  String::from_utf8(rest.get(12..12 + len)?.to_vec()).ok()
+  None
+}
+
+/// A little-endian unsigned integer of `N` bytes.
+fn int<const N: usize>(f: &mut impl Read) -> Option<u64> {
+  let mut b = [0; 8];
+  f.read_exact(&mut b[..N]).ok()?;
+  Some(u64::from_le_bytes(b))
+}
+
+fn string(f: &mut impl Read) -> Option<Vec<u8>> {
+  let mut s = vec![0; int::<8>(f)? as usize];
+  f.read_exact(&mut s).ok()?;
+  Some(s)
+}
+
+/// Skips one GGUF value of type `ty`: scalars 0–7 and 10–12, a string 8, an array 9.
+fn skip(f: &mut impl Read, ty: u64) -> Option<()> {
+  match ty {
+    0 | 1 | 7 => int::<1>(f).map(drop),
+    2 | 3 => int::<2>(f).map(drop),
+    4..=6 => int::<4>(f).map(drop),
+    10..=12 => int::<8>(f).map(drop),
+    8 => string(f).map(drop),
+    9 => {
+      let (ty, n) = (int::<4>(f)?, int::<8>(f)?);
+      (0..n).try_for_each(|_| skip(f, ty))
+    }
+    _ => None,
+  }
 }
 
 pub fn gb(bytes: u64) -> String {
@@ -122,7 +155,14 @@ mod tests {
   #[test]
   fn architecture_from_the_header() {
     let mut gguf = b"GGUF\x03\0\0\0".to_vec();
-    gguf.extend([0; 16]); // tensor and key counts
+    gguf.extend(0u64.to_le_bytes()); // tensors
+    gguf.extend(2u64.to_le_bytes()); // keys
+    // A description that mentions the key comes first and must not match.
+    gguf.extend(19u64.to_le_bytes());
+    gguf.extend(b"general.description");
+    gguf.extend(8u32.to_le_bytes());
+    gguf.extend(27u64.to_le_bytes());
+    gguf.extend(b"has a general.architecture!");
     gguf.extend(20u64.to_le_bytes());
     gguf.extend(b"general.architecture");
     gguf.extend(8u32.to_le_bytes());
