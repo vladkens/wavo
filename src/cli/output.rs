@@ -34,15 +34,16 @@ fn quote(s: &str) -> String {
   out + "\""
 }
 
-/// Subtitles: words from pieces (`▁` or a space starts a word) grouped into cues that end after
-/// sentence punctuation or before passing `MAX_CUE` characters. A cue shows until the next one
-/// starts, the audio ends or `LINGER_MS` after its last token, whichever is first.
-pub fn srt(tokens: &[Token], audio_ms: u32) -> String {
+/// Subtitles: words from pieces (`▁` or a space starts a word, and so does each token index in
+/// `starts`, sorted) grouped into cues that end after sentence punctuation or before passing
+/// `MAX_CUE` characters. A cue shows until the next one starts, the audio ends or `LINGER_MS`
+/// after its last token, whichever is first.
+pub fn srt(tokens: &[Token], starts: &[usize], audio_ms: u32) -> String {
   let mut words: Vec<(u32, u32, String)> = Vec::new(); // first and last token start, text
-  for t in tokens {
+  for (i, t) in tokens.iter().enumerate() {
     let piece = t.piece.replace('▁', " ");
     match words.last_mut() {
-      Some(word) if !piece.starts_with(' ') => {
+      Some(word) if !piece.starts_with(' ') && starts.binary_search(&i).is_err() => {
         word.1 = t.start_ms;
         word.2 += &piece;
       }
@@ -102,12 +103,12 @@ mod tests {
   fn cues_split_on_sentences_and_length() {
     let t = tokens(&[("▁Hel", 0), ("lo", 80), (".", 160), ("▁How", 4000), ("▁are", 4100)]);
     assert_eq!(
-      srt(&t, 6000),
+      srt(&t, &[], 6000),
       "1\n00:00:00,000 --> 00:00:01,660\nHello.\n\n2\n00:00:04,000 --> 00:00:05,600\nHow are\n\n"
     );
     let long: Vec<(String, u32)> = (0..30).map(|i| (format!("▁w{i:02}"), i * 100)).collect();
     let long: Vec<(&str, u32)> = long.iter().map(|(p, s)| (p.as_str(), *s)).collect();
-    let srt = srt(&tokens(&long), 3000);
+    let srt = srt(&tokens(&long), &[], 3000);
     let lines: Vec<&str> = srt.lines().filter(|l| l.starts_with('w')).collect();
     assert_eq!(lines.len(), 2);
     assert_eq!(lines[0].len(), 79, "20 words of 3 chars and their spaces");
@@ -124,8 +125,11 @@ mod tests {
       ("н", 3_600_120),
       (" ", 3_600_200),
     ]);
-    assert_eq!(srt(&t, 3_700_000), "1\n01:00:00,000 --> 01:00:01,620\nда н\n\n");
-    assert_eq!(srt(&[], 1000), "");
+    assert_eq!(srt(&t, &[], 3_700_000), "1\n01:00:00,000 --> 01:00:01,620\nда н\n\n");
+    assert_eq!(srt(&[], &[], 1000), "");
+    // A segment of a split recording starts a word without a space token.
+    let t = tokens(&[("д", 0), ("а", 40), ("н", 25_000), ("е", 25_040), ("т", 25_080)]);
+    assert_eq!(srt(&t, &[0, 2], 30_000), "1\n00:00:00,000 --> 00:00:26,580\nда нет\n\n");
   }
 
   /// Cue texts joined with spaces give each fixture's transcript text.
@@ -141,7 +145,7 @@ mod tests {
         let pieces: Vec<(&str, u32)> = (lines.skip(1))
           .map(|l| (l.split_once("] ").unwrap().1.trim_start().split_once(' ').unwrap().1, 0))
           .collect();
-        let srt = srt(&tokens(&pieces), 1000);
+        let srt = srt(&tokens(&pieces), &[], 1000);
         let cues: Vec<&str> = srt.split("\n\n").filter_map(|c| c.lines().nth(2)).collect();
         assert_eq!(cues.join(" "), text.split_whitespace().collect::<Vec<_>>().join(" "));
       }

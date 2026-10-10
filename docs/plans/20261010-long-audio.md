@@ -59,11 +59,12 @@ the fixture text on repeat; Parakeet against its own one-pass text, which matche
   fixture). Other values must be at least 5 s. The arguments are still parsed by hand.
 - **Splitting**, with no VAD model and no threshold. Energy per 10 ms frame (160 samples, sum of
   x²). While the rest from `s` is longer than L, look in [s + L/2, min(s + L, end − 1 s)] for the
-  300 ms window (30 frames) with the least energy (ties go to the later one), and cut at the start
-  of that window's quietest frame. The remainder is the last segment.
+  latest 300 ms window (30 frames) with at most twice the least energy there, so among pauses at
+  the same noise floor the later one wins, and cut at the start of that window's quietest frame.
+  The remainder is the last segment.
   - Segments are contiguous slices of the decoded PCM with no copies and no overlap. Each is ≤ L,
     all but the last are ≥ L/2, and the last is ≥ 1 s.
-  - The quietest window needs no threshold, so recording level and steady noise don't matter. A
+  - Only relative energy counts, so recording level and steady noise don't matter. A
     300 ms window prefers sentence pauses to gaps between words. That matters for the e2e models,
     which punctuate and capitalize each segment as an utterance: a cut mid-sentence can add a
     period and a capital.
@@ -99,10 +100,10 @@ the fixture text on repeat; Parakeet against its own one-pass text, which matche
 
 ### Task 3: `wavo run` on long audio
 
-- [ ] `src/cli/split.rs`: `segments(pcm, l) -> Vec<Range<usize>>` and `join(parts)` as designed.
-- [ ] `run`: `--segment SECS` parsed by hand; segments and join (one segment within L, so one
+- [x] `src/cli/split.rs`: `segments(pcm, l) -> Vec<Range<usize>>` and `join(parts)` as designed.
+- [x] `run`: `--segment SECS` parsed by hand; segments and join (one segment within L, so one
       `transcribe` call); `srt` starts a word at each segment start; usage text.
-- [ ] Unit tests on synthetic PCM, with tone bursts as speech and digital silence or −40 dB noise
+- [x] Unit tests on synthetic PCM, with tone bursts as speech and digital silence or −40 dB noise
       as pauses: input within L gives one range; cuts fall inside the last pause before L; ranges
       are contiguous and cover the input, each ≤ L, the last ≥ 1 s, cuts multiples of 160; with
       no pause the cuts fall within [L/2, L]; the input × 0.01 gives the same cuts. Join: offsets,
