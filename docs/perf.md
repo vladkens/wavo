@@ -227,8 +227,9 @@ AC (2026-10-10, after the x86 decoder and per-layer submissions).
 
 M2, whisper.cpp v1.9.5 (d1be6fd), CMake Release with Metal, its `ggml-large-v3-turbo-q8_0.bin`
 (874 MB; our GGUF 886 MB). wavo / whisper.cpp, ms (MiB for the footprint), two rounds alternating
-step by step, load average 1.5–8. wavo: `wavo bench -n 10`, footprint of `wavo run --segment 0`.
-whisper.cpp: `whisper-cli -bs 1` (greedy; its default is beam 5) with the language given, defaults
+step by step, load average 1.5–8. wavo: `wavo bench whisper-turbo CLIP.wav -n 10`, footprint of
+`wavo run whisper-turbo CLIP.wav --segment 0`. whisper.cpp: `whisper-cli -bs 1` (greedy; its
+default is beam 5) with the language given, defaults
 otherwise (4 threads, flash attention); a call is its `total − load` in a fresh process, 11 calls
 in one process average the same. The last column gives `-l auto`, which wavo always does.
 
