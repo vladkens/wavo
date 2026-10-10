@@ -1165,9 +1165,10 @@ mod tests {
 
   #[test]
   fn attention() {
-    let (heads, hd) = (2, 48);
-    let d = heads * hd;
-    for t in [37usize, 100] {
+    // head_dim 56: the flash kernel's last 8 columns stay out.
+    for (t, hd) in [(37usize, 48), (100, 48), (100, 56)] {
+      let heads = 2;
+      let d = heads * hd;
       // The fast path reads rows up to t rounded up to 64.
       let qk = random(t.next_multiple_of(64) * 2 * d, 15);
       let v = random(t.next_multiple_of(64) * d, 16);

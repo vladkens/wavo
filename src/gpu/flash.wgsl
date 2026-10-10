@@ -240,6 +240,8 @@ fn flash(
     if (hd > 48u) {
       o06 = pv(o06, pa0, pa1, pa2, pa3, vb + 48u);
       o16 = pv(o16, pb0, pb1, pb2, pb3, vb + 48u);
+    }
+    if (hd > 56u) {
       o07 = pv(o07, pa0, pa1, pa2, pa3, vb + 56u);
       o17 = pv(o17, pb0, pb1, pb2, pb3, vb + 56u);
     }
@@ -265,6 +267,8 @@ fn flash(
   if (hd > 48u) {
     finish(o06, x, sl, 0u, ob + 48u, q0);
     finish(o16, x, sl, 8u, ob + 48u, q0);
+  }
+  if (hd > 56u) {
     finish(o07, x, sl, 0u, ob + 56u, q0);
     finish(o17, x, sl, 8u, ob + 56u, q0);
   }
