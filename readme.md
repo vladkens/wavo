@@ -5,9 +5,10 @@ Speech-to-text in Rust. Runs the GGUF ASR models published by
 custom WGSL kernels. The library is pure Rust (no C/C++, ONNX or BLAS); the `wavo` command adds
 an ollama-like model manager and decoding of common audio formats.
 
-Works now, on Apple Silicon: the four GigaAM v3 models (Russian) and Parakeet TDT 0.6B v2
-(English) and v3 (25 European languages), with output that matches transcribe.cpp exactly (text,
-tokens and timestamps). More models and platforms are next: [docs/roadmap.md](docs/roadmap.md).
+Works now, on Apple Silicon and (slower for now) on Linux through Vulkan: the four GigaAM v3
+models (Russian) and Parakeet TDT 0.6B v2 (English) and v3 (25 European languages), with output
+that matches transcribe.cpp exactly (text, tokens and timestamps). More models and platforms are
+next: [docs/roadmap.md](docs/roadmap.md).
 
 | Name | Full name | Size | Head | Output |
 |---|---|---|---|---|
@@ -23,6 +24,19 @@ tokens and timestamps). More models and platforms are next: [docs/roadmap.md](do
 ```sh
 cargo install --git https://github.com/vladkens/wavo
 ```
+
+On Linux wavo runs through Vulkan, so it needs a Vulkan driver and access to the GPU:
+
+```sh
+sudo apt install build-essential           # a linker for cargo; Rust itself from rustup.rs
+sudo apt install mesa-vulkan-drivers       # the driver, with libvulkan1
+sudo usermod -aG render $USER              # GPU access, then log out and back in
+vulkaninfo --summary                       # lists the GPU (from vulkan-tools)
+```
+
+GPUs other than Apple's run the slower portable kernels for now: an Intel N100 transcribes 11 s
+in ~2.5 s with GigaAM and ~3.9 s with Parakeet. Without GPU access wgpu may fall back to llvmpipe,
+a software Vulkan driver on the CPU, which is slower than real time.
 
 ## Usage
 
