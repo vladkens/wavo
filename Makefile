@@ -1,4 +1,4 @@
-.PHONY: prepare check test test-unit build update models reference fixtures compare
+.PHONY: prepare check test test-unit build update clean models reference fixtures compare
 
 CARGO_FLAGS := --release --locked
 MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
@@ -30,6 +30,9 @@ build:
 
 update:
 	cargo upgrade -i
+
+clean:
+	cargo clean
 
 models:
 	for m in $(MODELS); do hf download handy-computer/$$m-gguf $$m-Q8_0.gguf; done
