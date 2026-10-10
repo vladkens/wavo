@@ -9,7 +9,7 @@ repository = "https://github.com/vladkens/wavo"
 homepage = "https://github.com/vladkens/wavo"
 documentation = "https://docs.rs/wavo"
 readme = "readme.md"
-include = ["/src/**/*.rs", "/src/**/*.wgsl","/Cargo.toml", "/Cargo.lock", "/LICENSE", "/readme.md"]
+include = ["/src/**/*.rs", "/src/**/*.wgsl", "/Cargo.toml", "/Cargo.lock", "/LICENSE", "/readme.md"]
 keywords = ["speech-to-text", "asr", "transcription", "whisper", "gpu"]
 categories = ["multimedia::audio", "command-line-utilities"]
 
