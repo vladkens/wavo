@@ -66,7 +66,9 @@ jobs:
     runs-on: macos-latest
     needs: dev
     permissions:
+      attestations: write
       contents: write
+      id-token: write
     concurrency:
       group: dev-${{ github.ref }}
     steps:
@@ -75,6 +77,10 @@ jobs:
         with:
           name: wavo-dev
           path: target/distrib
+      # Users check an archive with `gh attestation verify FILE -R vladkens/wavo`.
+      - uses: actions/attest@v4
+        with:
+          subject-path: target/distrib/*
 
       - name: Update dev pre-release
         env:
