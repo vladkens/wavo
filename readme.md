@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://github.com/vladkens/wavo/blob/assets/wavo.png?raw=true" alt="wavo" width="600" />
+<img src="docs/logo.png" alt="wavo" width="600" />
 
 **Speech to text on your GPU, in pure Rust**
 
