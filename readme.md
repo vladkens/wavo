@@ -64,7 +64,7 @@ sudo usermod -aG render $USER              # GPU access, then log out and back i
 ```
 
 GPUs other than Apple's use simpler kernels for now: an Intel N100 transcribes 11 s of audio in
-2.5–4 s.
+2.1–3.6 s.
 
 </details>
 

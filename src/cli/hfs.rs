@@ -23,6 +23,8 @@ use anyhow::{Context, Result, bail};
 
 pub struct Cache {
   root: PathBuf,
+  /// The environment variable that set `root`, if any.
+  from: Option<&'static str>,
 }
 
 /// What a HEAD of `resolve/main/<file>` says about the latest revision.
@@ -40,13 +42,23 @@ impl Cache {
 
   /// The root as huggingface_hub resolves it (`constants.py`).
   fn from_env(var: impl Fn(&str) -> Option<OsString>) -> Self {
-    let home = || {
-      let user = || PathBuf::from(var("HOME").or_else(|| var("USERPROFILE")).unwrap_or_default());
-      let cache = var("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| user().join(".cache"));
-      var("HF_HOME").map(PathBuf::from).unwrap_or_else(|| cache.join("huggingface"))
-    };
-    let root = var("HF_HUB_CACHE").or_else(|| var("HUGGINGFACE_HUB_CACHE"));
-    Self { root: root.map(PathBuf::from).unwrap_or_else(|| home().join("hub")) }
+    let set =
+      |k: &'static str, hub: fn(PathBuf) -> PathBuf| var(k).map(|v| (hub(v.into()), Some(k)));
+    let (root, from) = (set("HF_HUB_CACHE", |p| p))
+      .or_else(|| set("HUGGINGFACE_HUB_CACHE", |p| p))
+      .or_else(|| set("HF_HOME", |p| p.join("hub")))
+      .unwrap_or_else(|| {
+        let user = || PathBuf::from(var("HOME").or_else(|| var("USERPROFILE")).unwrap_or_default());
+        let xdg = var("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| user().join(".cache"));
+        (xdg.join("huggingface/hub"), None)
+      });
+    Self { root, from }
+  }
+
+  /// The root for messages, with the variable that set it.
+  pub fn describe(&self) -> String {
+    let from = self.from.map(|v| format!(" (set by {v})")).unwrap_or_default();
+    format!("{}{from}", self.root.display())
   }
 
   fn folder(&self, repo: &str) -> PathBuf {
@@ -261,7 +273,7 @@ mod tests {
   fn temp(name: &str) -> Cache {
     let root = std::env::temp_dir().join(format!("wavo-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
-    Cache { root }
+    Cache { root, from: None }
   }
 
   fn remote(commit: char, etag: char, size: u64) -> Remote {
@@ -275,21 +287,25 @@ mod tests {
 
   #[test]
   fn root_follows_huggingface_hub() {
+    // Paths compare as `Path`s, so the test holds with Windows' separators too.
     let root = |vars: &[(&str, &str)]| {
-      Cache::from_env(|k| vars.iter().rev().find(|v| v.0 == k).map(|v| v.1.into())).root
+      let cache = Cache::from_env(|k| vars.iter().rev().find(|v| v.0 == k).map(|v| v.1.into()));
+      (cache.root, cache.from)
     };
     let mut vars = vec![("USERPROFILE", "/u")];
-    assert_eq!(root(&vars), Path::new("/u/.cache/huggingface/hub"));
-    for (var, value, expected) in [
-      ("HOME", "/h", "/h/.cache/huggingface/hub"),
-      ("XDG_CACHE_HOME", "/x", "/x/huggingface/hub"),
-      ("HF_HOME", "/hf", "/hf/hub"),
-      ("HUGGINGFACE_HUB_CACHE", "/old", "/old"),
-      ("HF_HUB_CACHE", "/c", "/c"),
+    assert_eq!(root(&vars), (PathBuf::from("/u/.cache/huggingface/hub"), None));
+    for (var, value, expected, from) in [
+      ("HOME", "/h", "/h/.cache/huggingface/hub", None),
+      ("XDG_CACHE_HOME", "/x", "/x/huggingface/hub", None),
+      ("HF_HOME", "/hf", "/hf/hub", Some("HF_HOME")),
+      ("HUGGINGFACE_HUB_CACHE", "/old", "/old", Some("HUGGINGFACE_HUB_CACHE")),
+      ("HF_HUB_CACHE", "/c", "/c", Some("HF_HUB_CACHE")),
     ] {
       vars.push((var, value));
-      assert_eq!(root(&vars), Path::new(expected), "{var}");
+      assert_eq!(root(&vars), (PathBuf::from(expected), from), "{var}");
     }
+    let cache = Cache { root: PathBuf::from("/c"), from: Some("HF_HUB_CACHE") };
+    assert_eq!(cache.describe(), "/c (set by HF_HUB_CACHE)");
   }
 
   #[cfg(unix)]
