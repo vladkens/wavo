@@ -31,6 +31,20 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       VAD model) into segments of at most the model's window (`Model::max_audio_ms()`, GigaAM
       25 s) or a default for models without one, and joins the transcripts; `--segment` sets the
       length, `0` is one pass. Time linear in length, peak memory flat.
+- [ ] **10. Real recordings vs transcribe.cpp.** A tool in the repo runs thousands of local
+      dictation recordings through wavo and transcribe.cpp, each loading its model once, and
+      reports text agreement (exact matches, WER between the engines), speed over the whole set
+      (total, real-time factor median / p90 / worst, load) and failures (crashes, empty output,
+      silence, very short or long audio). Audio and transcripts stay local; only aggregate
+      numbers go into `docs/perf.md`.
+- [ ] **11. Accuracy on labeled data.** WER against human transcripts: LibriSpeech test-clean /
+      test-other (English), FLEURS (English, Russian, Ukrainian), Golos or Common Voice for
+      GigaAM, normalized as transcribe.cpp's `scripts/wer` does so the numbers compare with its
+      catalog. A local command (too big for CI); results in `docs/perf.md` and the readme.
+- [ ] **12. Parakeet unified EN.** `parakeet-unified-en-0.6b`, the most downloaded Parakeet on
+      `handy-computer`; same FastConformer family.
+- [ ] **13. Nemotron 3.5 streaming.** `nemotron-3.5-asr-streaming-0.6b`, the most downloaded
+      model on `handy-computer`; multilingual, FastConformer lineage.
 
 Later, only on request: Whisper, streaming, slowing fast speech down before recognition
 (pitch-keeping time-stretch such as WSOLA; first measure WER on samples sped up with ffmpeg
