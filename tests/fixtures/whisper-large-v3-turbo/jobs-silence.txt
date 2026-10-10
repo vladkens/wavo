@@ -1,0 +1,3 @@
+text: Thank you.
+segments: 1
+  [   0.00 ->    5.30] Thank you.

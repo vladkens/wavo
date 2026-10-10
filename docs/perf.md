@@ -137,6 +137,24 @@ is RSS plus the iGPU buffers (DRM fdinfo) for wavo, RSS for the reference. Load 
 - llvmpipe (`VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`, native, `-n 3`): ru 15.1 s,
   ru-short 41.2 s, jfk 61.9 s warm; load 6–19 s.
 
+## Whisper large-v3-turbo vs transcribe.cpp (2026-10-10, phase 12)
+
+M2, the protocol above, two rounds; wavo / reference, ms (MiB for the footprint); the baseline is
+the correct slice (382a72c). Load average 1.6–3.0.
+
+| Clip | Baseline warm | Warm median | Warm min | First call | Load | Peak footprint |
+|---|---|---|---|---|---|---|
+| jfk, 11 s | 1596 | 1239–1343 / 1375–1415 | 1234 / 1371 | 1236–1287 / 1424–1428 | 213–218 / 309–339 | 1018 / 1055 |
+| german, 29 s | 1710 | 1318–1326 / 1440–1458 | 1309 / 1434 | 1332–1340 / 1457–1458 | 216 / 298–302 | 1018–1019 / 1055 |
+| ru-long, 34 s | 3492 | 2686–2725 / 2910–2924 | 2676 / 2892 | 2738–2759 / 2909–2923 | 210–230 / 302–325 | 1020 / 1059 |
+| jobs-silence, 5 s | 1480 | 1161–1162 / 1306–1325 | 1152 / 1299 | 1153–1167 / 1315–1325 | 216–220 / 301–303 | 1016–1018 / 1054–1056 |
+
+- All 32 samples, one pass (`--segment 0`): the text equals the reference's except zh-long's last
+  window, where the reference falls back to sampling (a different tail each run); no repetition
+  loops, also with the CLI's 30 s split. Warm (3 calls) faster on all but dots and noise in a busy
+  run, both faster on a rerun (2870 / 3155, 1206 / 1292 ms). One pass over dots-full (306 s) 16.8 /
+  18.0 s, 1071 / 1087 MiB; death (233 s) 13.6 / 14.5 s, 1059 / 1078 MiB.
+
 ## Long audio: one pass, no chunking (2026-10-10, phase 7)
 
 On the M2, `wavo run` and `transcribe-cli` once each per file under `/usr/bin/time -l`: process
@@ -497,6 +515,12 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 ## Log
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
+
+- 2026-10-10, all models, fast GEMM on f16 operands, 64×64 tiles, K step 8 (32×64 for short inputs):
+  Whisper jfk 1495 → 1298, GigaAM ru-long 301 → 248, Parakeet dots 498 → 448 ms; fixtures exact. Kept.
+- 2026-10-10, Whisper and GigaAM, flash attention with the output in registers, 9.5 KB shared:
+  Whisper jfk 1550 → 1403, GigaAM ru-long 297 → 276 ms, Parakeet unchanged; fixtures exact. Kept.
+- 2026-10-10, Whisper, decoder gemv over 4 rows per 32 threads: jfk 1603 → 1563 ms. Kept.
 
 - 2026-10-10, GigaAM e2e-rnnt, Parakeet TDT V3 (and V2 on 87 recordings), 2,923 of the person's
   dictation recordings against transcribe.cpp's batch mode (`make compare`): text the same in

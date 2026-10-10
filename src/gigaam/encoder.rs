@@ -8,7 +8,7 @@ use std::sync::{Mutex, PoisonError};
 use crate::conformer::{self, Buffers, Conformer};
 use crate::error::Result;
 use crate::gguf::Gguf;
-use crate::gpu::{BindGroup, Buffer, Epilogue, Gpu, Linear, Pass, half};
+use crate::gpu::{Buffer, Epilogue, Gpu, Groups, Linear, Pass, half};
 
 pub struct Encoder {
   mels: usize,
@@ -31,7 +31,7 @@ struct Arena {
   mel: Buffer,
   out: Buffer,
   read: Buffer,
-  groups: Vec<BindGroup>,
+  groups: Groups,
 }
 
 impl Encoder {
@@ -84,9 +84,9 @@ impl Encoder {
     let d = self.conformer.cfg.d;
     let t1 = half(mel_frames);
     let t = half(t1);
-    p.im2col(mel, &b.h, mel_frames, self.mels, t1);
+    p.im2col(mel, &b.h, mel_frames, self.mels, [5, 2, 2]);
     p.gemm(&b.h, &self.conv0, &b.qk, t1, Epilogue::Relu);
-    p.im2col(&b.qk, &b.h, t1, d, t);
+    p.im2col(&b.qk, &b.h, t1, d, [5, 2, 2]);
     p.gemm(&b.h, &self.conv2, &b.x, t, Epilogue::Relu);
     let x = self.conformer.record(p, b, t);
     p.gemm(x, &self.head, out, t, Epilogue::Bias);

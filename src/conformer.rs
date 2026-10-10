@@ -220,13 +220,13 @@ impl Block {
         p.layer_norm(x, &self.norm_attn, y, t, d, Some((&b.pos, &b.yr, hd)));
         p.gemm(&b.yr, qk, &b.qk, t, Epilogue::Bias);
         p.gemm(y, v, &b.h, t, Epilogue::Bias);
-        p.attention(&b.qk, &b.h, None, &b.s, y, t, c.heads, hd);
+        p.attention(&b.qk, Some(&b.h), None, &b.s, y, t, c.heads, hd);
       }
       Mhsa::Relative { qkv, pos } => {
         p.layer_norm(x, &self.norm_attn, y, t, d, None);
         p.gemm(y, qkv, &b.qk, t, Epilogue::Bias);
         p.gemm(&b.pos, pos, &b.yr, pos_rows(t), Epilogue::Bias);
-        p.attention(&b.qk, &b.qk, Some(&b.yr), &b.s, y, t, c.heads, hd);
+        p.attention(&b.qk, None, Some(&b.yr), &b.s, y, t, c.heads, hd);
       }
     }
     p.gemm(y, &self.out, x, t, Epilogue::Residual(1.0));

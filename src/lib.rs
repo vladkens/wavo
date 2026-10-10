@@ -1,6 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Speech-to-text for the GGUF ASR models published by transcribe.cpp. The encoder runs on the GPU
-//! through wgpu; the frontend and decoder run on the CPU.
+//! through wgpu; the frontend runs on the CPU, and the decoder on the CPU (or for Whisper on the
+//! GPU).
 
 mod conformer;
 mod cpu;
@@ -9,6 +10,7 @@ mod gguf;
 mod gigaam;
 mod gpu;
 mod parakeet;
+mod whisper;
 
 use std::path::Path;
 
@@ -20,6 +22,7 @@ pub struct Model(Family);
 enum Family {
   Gigaam(Box<gigaam::Gigaam>),
   Parakeet(Box<parakeet::Parakeet>),
+  Whisper(Box<whisper::Whisper>),
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -31,10 +34,11 @@ pub struct Transcript {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
   pub id: u32,
-  /// Vocabulary piece: a SentencePiece piece (`▁` marks a word start) or a character.
+  /// Vocabulary piece: a SentencePiece piece (`▁` marks a word start), a character, or for
+  /// Whisper the text the token completes (its bytes may end inside a character).
   pub piece: String,
   /// Start time in milliseconds: the encoder frame where the token was emitted times the frame
-  /// length (40 ms for GigaAM, 80 ms for Parakeet).
+  /// length (40 ms for GigaAM, 80 ms for Parakeet); for Whisper the start of its segment.
   pub start_ms: u32,
 }
 
@@ -44,7 +48,10 @@ impl Model {
     Ok(Self(match g.get::<&str>("general.architecture")? {
       "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g)?)),
       "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g)?)),
-      arch => bail!("general.architecture is {arch:?}, only gigaam and parakeet are supported"),
+      "whisper" => Family::Whisper(Box::new(whisper::Whisper::load(&g)?)),
+      arch => {
+        bail!("general.architecture is {arch:?}, only gigaam, parakeet and whisper are supported")
+      }
     }))
   }
 
@@ -53,6 +60,7 @@ impl Model {
     match &self.0 {
       Family::Gigaam(m) => m.transcribe(pcm),
       Family::Parakeet(m) => m.transcribe(pcm),
+      Family::Whisper(m) => m.transcribe(pcm),
     }
   }
 
@@ -62,6 +70,8 @@ impl Model {
     match &self.0 {
       // No GGUF key holds GigaAM's window; transcribe.cpp hardcodes the same 25 s.
       Family::Gigaam(_) => Some(25_000),
+      // Its window; `transcribe` still takes any length in 30 s windows, as transcribe.cpp does.
+      Family::Whisper(_) => Some(30_000),
       Family::Parakeet(_) => None,
     }
   }

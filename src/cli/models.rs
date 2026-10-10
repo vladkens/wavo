@@ -34,6 +34,7 @@ pub const MODELS: &[Model] = &[
   Model { name: "gigaam-v3-e2e-ctc", variant: "gigaam-v3-e2e-ctc", size: 272_151_136, about: "Russian, CTC head" },
   Model { name: "gigaam-v3-rnnt", variant: "gigaam-v3-rnnt", size: 273_022_880, about: "Russian, lowercase without punctuation" },
   Model { name: "gigaam-v3-ctc", variant: "gigaam-v3-ctc", size: 271_803_328, about: "Russian, lowercase without punctuation, CTC head" },
+  Model { name: "whisper-turbo", variant: "whisper-large-v3-turbo", size: 886_381_760, about: "100 languages" },
 ];
 
 /// What a MODEL argument names.

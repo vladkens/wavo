@@ -141,10 +141,19 @@ mod tests {
         let fixture = std::fs::read_to_string(file.unwrap().path()).unwrap();
         let mut lines = fixture.lines();
         let text = lines.next().unwrap().strip_prefix("text: ").unwrap().replace("(empty)", "");
-        // `  [   0.96 ->    1.00] p=0.000 ▁В`, with `▁` sometimes printed as a space.
-        let pieces: Vec<(&str, u32)> = (lines.skip(1))
-          .map(|l| (l.split_once("] ").unwrap().1.trim_start().split_once(' ').unwrap().1, 0))
+        let segments = lines.next().is_some_and(|l| l.starts_with("segments: "));
+        // `  [   0.96 ->    1.00] p=0.000 ▁В`, with `▁` sometimes printed as a space, or a
+        // Whisper segment `  [   0.00 ->   10.40] text`, one piece here.
+        let pieces: Vec<String> = (lines.map(|l| l.split_once("] ").unwrap().1))
+          .map(|r| {
+            if segments {
+              format!(" {r}")
+            } else {
+              r.trim_start().split_once(' ').unwrap().1.into()
+            }
+          })
           .collect();
+        let pieces: Vec<(&str, u32)> = pieces.iter().map(|p| (p.as_str(), 0)).collect();
         let srt = srt(&tokens(&pieces), &[], 1000);
         let cues: Vec<&str> = srt.split("\n\n").filter_map(|c| c.lines().nth(2)).collect();
         assert_eq!(cues.join(" "), text.split_whitespace().collect::<Vec<_>>().join(" "));

@@ -35,6 +35,15 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       reference's batch mode, one model load each) on 2,923 of the person's dictation
       recordings: the same text in 99.9% (GigaAM) and 98.9% (Parakeet V3) of them, every
       difference from a near-tie; speed by length in `docs/perf.md` → "Real recordings".
+- [x] **11. Whisper large-v3-turbo, correct.** Encoder and decoder on the GPU (F16 K/V caches,
+      one pass per token), greedy search with segment timestamps and 30 s windows on the CPU, as
+      transcribe.cpp runs it by default. Fixtures `jfk`, `zh-short`, `ru-long`, `jobs-silence`
+      (text and segments) match exactly; first benchmark recorded in `docs/perf.md`.
+- [x] **12. Whisper large-v3-turbo, fast.** Warm, first call, load and peak memory at least on par
+      with transcribe.cpp on `jfk`, `ru-long` and a ~30 s clip; accuracy and memory over every
+      sample the model's languages cover.
+- [ ] **13. Other Whisper variants.** `whisper-medium`, `whisper-large-v3`, `whisper-small`,
+      `Breeze-ASR-25`: config only.
 
 After Whisper: **other engines.** Measure wavo against the other ways to run the same models on a
 Mac, not only transcribe.cpp. Plan: [docs/plans/20261010-other-engines.md](plans/20261010-other-engines.md).
@@ -43,6 +52,6 @@ After the models: **fast build.** A clean release build takes 42 s, mostly the w
 wgpu-core → wgpu); rebuilding the library after a change takes 14 s, and 58% of its code is
 `rustfft`'s generic planner. Plan: [docs/plans/20261010-fast-build.md](plans/20261010-fast-build.md).
 
-Later, only on request: Whisper, streaming, slowing fast speech down before recognition
+Later, only on request: streaming, slowing fast speech down before recognition
 (pitch-keeping time-stretch such as WSOLA; first measure WER on samples sped up with ffmpeg
 `atempo`, with and without slowing them back down).

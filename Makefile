@@ -2,9 +2,11 @@
 
 CARGO_FLAGS := --release --locked
 MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
-	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3
+	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 whisper-large-v3-turbo
 REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
 CLI := 3rd/transcribe.cpp/build/bin/transcribe-cli
+# Whisper has segment timestamps only: TIMESTAMPS=segment.
+TIMESTAMPS := token
 
 prepare:
 	cargo +nightly fmt
@@ -48,8 +50,8 @@ fixtures:
 	@set -eu; model=$$(hf download handy-computer/$(MODEL)-gguf $(MODEL)-Q8_0.gguf | sed 's/^path=//'); \
 	mkdir -p tests/fixtures/$(MODEL); \
 	for s in $(SAMPLES); do \
-		$(CLI) -m "$$model" --timestamps token 3rd/transcribe.cpp/samples/$$s.wav 2>/dev/null \
-			| awk '/^text: /{print} /^tokens: /{t=1; print; next} t && /^  \[/{print}' \
+		$(CLI) -m "$$model" --timestamps $(TIMESTAMPS) 3rd/transcribe.cpp/samples/$$s.wav 2>/dev/null \
+			| awk '/^text: /{print} /^(tokens|segments): /{t=1; print; next} t && /^  \[/{print}' \
 			> tests/fixtures/$(MODEL)/$$s.txt; \
 	done
 
