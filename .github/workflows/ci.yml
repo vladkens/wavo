@@ -36,18 +36,19 @@ jobs:
       - run: make check
       - run: make test-unit
 
-  # A push to main updates the `dev` pre-release; a manual run on a branch keeps the archives as
-  # workflow artifacts.
+  # `dev` builds the archives as a workflow artifact, on main and on manual runs; on main,
+  # `dev-release` publishes them as the `dev` pre-release. Only the job that builds nothing gets
+  # write access, so dependency build scripts never run with it.
   dev:
     if: github.event_name != 'pull_request'
     runs-on: macos-latest
     needs: test
     permissions:
-      contents: write
-    concurrency:
-      group: dev-${{ github.ref }}
+      contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       # One cache for the registry, cargo-cross, the targets' dependencies and the cross toolchains.
       - uses: Swatinem/rust-cache@v2
         with:
@@ -56,15 +57,27 @@ jobs:
       - run: make dist
         env:
           CROSS_COMPILER_DIR: ${{ runner.temp }}/cross
-
-      - if: github.ref != 'refs/heads/main'
-        uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7
         with:
           name: wavo-dev
           path: target/distrib/*
 
+  dev-release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    needs: dev
+    permissions:
+      contents: write
+    concurrency:
+      group: dev-${{ github.ref }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: wavo-dev
+          path: target/distrib
+
       - name: Update dev pre-release
-        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
