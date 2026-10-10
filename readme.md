@@ -2,7 +2,7 @@
 
 <img src="docs/logo.png" alt="wavo" width="600" />
 
-**Speech to text on your GPU, in pure Rust**
+**Local speech-to-text at GPU speed**
 
 [<img src="https://badges.ws/crates/v/wavo" alt="version" />](https://crates.io/crates/wavo)
 [<img src="https://badges.ws/github/license/vladkens/wavo" alt="license" />](https://github.com/vladkens/wavo/blob/main/LICENSE)
