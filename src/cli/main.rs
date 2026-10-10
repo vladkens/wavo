@@ -97,9 +97,10 @@ fn run(args: &[&str]) -> Result<()> {
       "--json" | "--srt" if format.is_none() => format = Some(arg),
       "--segment" if segment.is_none() => {
         let secs = args.next().and_then(|s| s.parse::<u32>().ok());
-        segment = Some(secs.filter(|&s| s == 0 || s >= 5).ok_or_else(|| {
+        let secs = secs.filter(|&s| s == 0 || s >= 5).ok_or_else(|| {
           anyhow!("--segment takes whole seconds: 0 for one pass, else at least 5")
-        })?);
+        })?;
+        segment = Some(secs.saturating_mul(1000));
       }
       _ if arg.starts_with("--") => bail!(USAGE),
       _ => rest.push(arg),
@@ -116,7 +117,7 @@ fn run(args: &[&str]) -> Result<()> {
   let path = model_path(model)?;
   let pcm = audio::read(audio)?;
   let model = load(&path)?;
-  let max_ms = segment.map(|s| s * 1000).or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
+  let max_ms = segment.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
   let max = if max_ms == 0 { usize::MAX } else { max_ms as usize * 16 };
   let ranges = split::segments(&pcm, max);
   let parts = ranges.into_iter().map(|r| Ok((r.start, model.transcribe(&pcm[r])?)));
