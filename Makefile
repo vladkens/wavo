@@ -1,4 +1,4 @@
-.PHONY: prepare check test build update models reference fixtures
+.PHONY: prepare check test test-unit build update models reference fixtures
 
 CARGO_FLAGS := --release --locked
 MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
@@ -18,6 +18,10 @@ check:
 
 test:
 	cargo test $(CARGO_FLAGS)
+
+# CI has no models: unit tests only.
+test-unit:
+	cargo test $(CARGO_FLAGS) --lib --bins
 
 build:
 	cargo build $(CARGO_FLAGS)

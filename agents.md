@@ -114,18 +114,29 @@ the first call matter as much as warm speed.
 
 - Before committing, run `make check` and `make test`. `make prepare` rewrites files, so don't use
   it as a check.
-- Make each commit one meaningful change a person can check. The message is one short lowercase
-  line, no body. Update the roadmap/docs in the same commit. Push only when asked.
-- When fixing your own unpushed commit (wrong rule, typo, forgotten file), amend or fix up that
-  commit. Never add a separate "update agents.md" / "fix plan" commit. After a push, make a normal
-  commit with a real reason.
+- Every change reaches `main` through a pull request, one per feature or roadmap phase:
+  1. Agree the plan with the person. For multi-step work keep a checklist in
+     `docs/plans/yyyymmdd-<name>.md`; in it, only tick checkboxes: no evidence, progress or status
+     prose.
+  2. Branch from `main`. Each agent works in its own git worktree, so parallel tasks don't touch
+     each other's files.
+  3. Commit on the branch every step that passes `make check` and `make test`: one short lowercase
+     line, no body, roadmap/docs updated in the same commit. Any agent on the task may commit;
+     fix-ups are fine, the branch is squashed.
+  4. Push the branch and open the PR with `gh pr create`. The title is the squash commit: one short
+     lowercase line. The body is short: what changed, the checks run, numbers for speed work.
+  5. Whoever delegated the work (the orchestrating agent) reviews the diff, reruns the checks and
+     sends findings back to the implementing agent until the PR is clean, then hands it to the
+     person. CI runs only `make check` and `make test-unit` (no models there), so `make test` and
+     benchmarks stay local.
+  6. The person does the final review and merges: squash, one commit on `main`, the branch is
+     deleted. Never commit or push to `main` directly.
+  7. On conflicts, the orchestrator (or an agent it asks) rebases the branch onto `main`, reruns the
+     checks and pushes with `--force-with-lease`.
+- An orchestrating agent writes each task, verifies every report itself (`make check`, `make test`,
+  the diff, benchmarks) instead of trusting it, and keeps the person informed.
 - Build in vertical slices: the first commit for a model already produces a transcript; speed
   and polish come after.
-- Develop a feature on its own branch and commit there every step that passes `make check` and
-  `make test`. The person reviews the branch; it lands on main as one squashed commit per roadmap
-  phase, and then the branch is deleted.
-- For multi-step work, keep a checklist plan in `docs/plans/yyyymmdd-<name>.md`. In it, only tick
-  checkboxes: no evidence, progress or status prose.
 - Ask the user only when output must change, the public API must break, a heavy dependency is
   needed, or the request is ambiguous. Otherwise decide and say so in your report.
 - Keep docs to `readme.md` (for users), `docs/perf.md`, `docs/roadmap.md` and `docs/plans/`. No
