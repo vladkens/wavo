@@ -31,9 +31,11 @@ the first call matter as much as warm speed.
 - Add, remove or upgrade dependencies only with `cargo add` / `cargo remove` / `cargo upgrade`
   (e.g. `cargo add wgpu@=30.0.1 --no-default-features --features std,wgsl,metal,vulkan`, or
   `cargo add ureq --optional` for the CLI). Never edit `[dependencies]` or `Cargo.lock` by hand.
-- Target Apple Silicon / Metal; Linux runs through Vulkan. The fast path may use subgroups and
-  `EXPERIMENTAL_COOPERATIVE_MATRIX`. Keep one simple portable fallback per kernel and don't
-  optimize it.
+- Target Apple Silicon / Metal; Linux runs through Vulkan. Every kernel has one simple portable
+  version that runs anywhere; keep it simple. Next to it, a fast tier may exist per hardware
+  class, chosen at load from adapter features: Apple GPUs (32-lane subgroups and
+  `EXPERIMENTAL_COOPERATIVE_MATRIX`), GPUs with subgroups but no cooperative matrices (any
+  subgroup width). Keep a fast kernel only with a measured gain on its hardware class.
 - Keep the public API to `Model::load(path)`, `model.transcribe(&pcm)` → `Transcript { text,
   tokens }` and `model.max_audio_ms()` (the window a model was trained for, `None` without one),
   where pcm is 16 kHz mono `f32` and tokens carry id, piece and start time in ms. The CLI is

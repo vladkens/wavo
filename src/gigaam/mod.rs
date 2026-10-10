@@ -79,8 +79,10 @@ impl Gigaam {
       (Head::Ctc { blank }, encoder(("head.ctc", &[1, d, classes]))?)
     };
     // The GPU's first use of the pipelines and the weight memory costs 20–40 ms whatever the input
-    // length: pay it here on 8 silent frames instead of in the first call.
-    encoder.run(&gpu, &vec![0.0; 8 * mels])?;
+    // length: pay it here on 8 silent frames instead of in the first call (see `Gpu::warm_up`).
+    if gpu.warm_up() {
+      encoder.run(&gpu, &vec![0.0; 8 * mels])?;
+    }
     Ok(Self { gpu, frontend, encoder, head, vocab })
   }
 

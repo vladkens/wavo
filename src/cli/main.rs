@@ -78,9 +78,13 @@ fn model_path(arg: &str) -> Result<PathBuf> {
   match models::resolve(arg)? {
     Source::Path(path) if path.is_file() => Ok(path),
     Source::Path(path) => bail!("{}: no such file", path.display()),
-    Source::Model(m) => hfs::Cache::new().find(&m.repo(), &m.file()).ok_or_else(|| {
-      anyhow!("{} is not downloaded; run: wavo pull {} ({})", m.name, m.name, models::gb(m.size))
-    }),
+    Source::Model(m) => {
+      let cache = hfs::Cache::new();
+      cache.find(&m.repo(), &m.file()).ok_or_else(|| {
+        let (name, size, root) = (m.name, models::gb(m.size), cache.describe());
+        anyhow!("{name} is not in {root}; run: wavo pull {name} ({size})")
+      })
+    }
   }
 }
 

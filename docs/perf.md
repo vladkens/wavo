@@ -98,8 +98,8 @@ sanity check, not a reference for speed.
 A fanless MeLE Quieter 4C. wavo picks the iGPU through Vulkan (ANV on i915): no cooperative
 matrices, subgroups 8–32, so every kernel is the portable one. `default` is `cargo build
 --release`, `native` adds `-C target-cpu=native`. transcribe.cpp 5bb2deb is its CPU build with
-defaults (`-march=native`, 4 threads, no BLAS: "decoder uses scalar fallback"); its Vulkan build
-needs `spirv-headers` and was not measured. Per clip, back to back: wavo default `bench -n 10`,
+defaults (`-march=native`, 4 threads, no BLAS: "decoder uses scalar fallback"); its Vulkan build is
+in the second table. Per clip, back to back: wavo default `bench -n 10`,
 `transcribe-bench --warmup 1 --iters 10`, wavo native `bench -n 10`, `transcribe-bench --warmup 0
 --iters 1` (first call, load, peak). Cells are wavo default / wavo native / reference, ms; peak
 is RSS plus the iGPU buffers (DRM fdinfo) for wavo, RSS for the reference. Load average 1.0–1.7
@@ -123,9 +123,10 @@ is RSS plus the iGPU buffers (DRM fdinfo) for wavo, RSS for the reference. Load 
   jobs-silence 6 / 2140 / 20 vs 21 / 1195 / 5. The portable encoder is 85–99% of wavo's time.
   The reference's CPU encoder quantizes activations to Q8_0 and multiplies in int8 (AVX-VNNI),
   and is faster; wavo wins GigaAM only through the reference's scalar RNN-T decoder.
-- The default build's decoder is the plain-Rust fallback (`mul_add` without FMA is a libm call):
-  GigaAM 145 / 419 / 1056 ms on the three clips, Parakeet 343 / 2003 / 44. `native` gives 11 /
-  29 / 68 and 132 / 712 / 20, bit-identical.
+- The table's default build had the plain-Rust decoder (`mul_add` without FMA is a libm call):
+  GigaAM 145 / 419 / 1056 ms on the three clips, Parakeet 343 / 2003 / 44; `native` 11 / 29 / 68
+  and 132 / 712 / 20. Runtime-dispatched AVX2 tiles now give the default build 10 / 24 / 55 and
+  64 / 236 / 6.5 (see Log).
 - The reference's four CPU threads throttle after ~20 s on this fanless box (ru-long 8478 → ~9850,
   dots 8929 → ~11 000 ms per call). wavo's iGPU stays at 750 MHz with the CPU idle.
 - wavo's iGPU buffers are 529 MiB (GigaAM) and 914 MiB (Parakeet) at any clip length.
@@ -136,6 +137,26 @@ is RSS plus the iGPU buffers (DRM fdinfo) for wavo, RSS for the reference. Load 
   nothing. Fixed by one submission per block and a completion mark (see Log).
 - llvmpipe (`VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`, native, `-n 3`): ru 15.1 s,
   ru-short 41.2 s, jfk 61.9 s warm; load 6–19 s.
+
+After the AVX2 decoder and the load change (see Log), against both reference builds. Cells are wavo
+default build / reference CPU (the table above) / reference Vulkan (`-DTRANSCRIBE_VULKAN=ON`,
+ggml-vulkan on ANV: fp16, no integer dot, no matrix cores), ms. wavo is `bench -n 10` (ranges are
+two runs), the reference Vulkan `transcribe-bench --warmup 1 --iters 10` and `--warmup 0 --iters 1`;
+peak is RSS plus iGPU buffers for wavo and the reference Vulkan. Load average 0.3–1.9 (2026-10-10).
+
+| Model | Clip | Warm median | First call | Load | Peak, MiB |
+|---|---|---|---|---|---|
+| GigaAM e2e-rnnt | ru | 829 / 902 / 1088 | 834–841 / 898 / 1086 | 187–196 / 180 / 148 | 403–435 / 282 / 400 |
+| GigaAM e2e-rnnt | ru-short | 2141 / 2470 / 2724 | 2155 / 2484 / 2744 | 184 / 182 / 149 | 452 / 289 / 406 |
+| GigaAM e2e-rnnt | ru-long | 7417 / 9847 / 7989 | 7454 / 8500 / 7947 | 194 / 178 / 149 | 551 / 345 / 429 |
+| Parakeet TDT V2 | jfk | 3575 / 2537 / 3231 | 3588–3608 / 2505 / 3248 | 386–394 / 671 / 344 | 901 / 1098 / 925 |
+| Parakeet TDT V2 | dots | 11874 / 11045 / 8653 | 11912 / 8930 / 8663 | 373 / 690 / 367 | 941 / 1212 / 1040 |
+| Parakeet TDT V2 | jobs-silence | 2152 / 1225 / 2079 | 2167 / 1204 / 2095 | 367 / 683 / 336 | 899 / 1073 / 899 |
+
+- The reference Vulkan's mel / encode / decode medians: ru 10.6 / 879 / 191, ru-short 26 / 2076 /
+  615, ru-long 78 / 6372 / 1530, jfk 30 / 3144 / 45, dots 115 / 8267 / 255, jobs-silence 15 /
+  2049 / 4 ms. Its encoder beats wavo's portable one from ru-short on (wavo 2103, 7340, 3499,
+  11609, 2138 ms); its text matches the fixtures except one comma on ru-short.
 
 ## Whisper large-v3-turbo vs transcribe.cpp (2026-10-10, phase 12)
 
@@ -516,6 +537,18 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
 
+- 2026-10-10, all models, N100: warm up at load only with the fast kernels (the portable GEMM pads
+  one frame to 64 rows: 0.4 / 1 s to save 8–20 ms). Load ru 586 → 191, jfk 1389 → 390 ms. Kept.
+- 2026-10-10, all models, x86_64: runtime-dispatched AVX2 + FMA decoder tiles, bit-identical. N100
+  default build decoder ru-long 1243 → 55, dots 2031 → 236 ms; warm ru-long 8515 → 7418 ms. Kept.
+- 2026-10-10, all models, `MemoryHints::MemoryUsage`: Vulkan suballocates from 8–64 MiB blocks
+  instead of 128–256; Metal ignores it. N100 (default build, `bench -n 10`, A/B/A, warm median):
+  ru 972 / 971 / 962, ru-long 8482 / 8511 / 8481, jfk 3867 / 3865 / 3858, dots 13695 / 13726 /
+  13698 ms; load, first call and RSS unchanged; iGPU buffers 529 → 324 (ru), 529 → 436
+  (ru-long), 914 → 777 (jfk), 914 → 810 MiB (dots). M2 (`-n 20`): ru 43.5 / 43.6 / 43.6, ru-long
+  296.9 / 297.0 / 297.1, jfk 143.1 / 142.3 / 141.7, dots 478.0 / 454.7 / 459.8 ms. Fixtures exact
+  on both. Kept: 100–200 MiB less on Vulkan for ≤ 0.35% on the N100's long clips.
+
 - 2026-10-10, all models, fast GEMM on f16 operands, 64×64 tiles, K step 8 (32×64 for short inputs):
   Whisper jfk 1495 → 1298, GigaAM ru-long 301 → 248, Parakeet dots 498 → 448 ms; fixtures exact. Kept.
 - 2026-10-10, Whisper and GigaAM, flash attention with the output in registers, 9.5 KB shared:
@@ -539,7 +572,6 @@ Add entries here, newest first: date, model, idea, before → after (median, A/B
   so the fast path stays one submission, and against the code before the change ru 43.4–44.0 →
   43.5–43.7, ru-long 297.6–298.2 → 298.0–298.7, jfk 142.5–143.8 → 141.9–142.3, dots 453.6–456.7
   → 453.9–456.4 ms, first call and load within noise. Kept.
-
 - 2026-10-10, Linux N100 (ANV), `MemoryHints::MemoryUsage` in the device descriptor: iGPU buffers
   529 → 324 MiB (GigaAM), 914 → 777 MiB (Parakeet V2); ru 828 → 828, jfk 3645 → 3646 ms (one run
   each). Not kept yet: needs A/B/A, the M2 and the fixtures (plan `20261010-linux.md`).

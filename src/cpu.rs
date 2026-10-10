@@ -1,5 +1,5 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! CPU dot products for the frontends and decoders, with NEON tiles on aarch64.
+//! CPU dot products for the frontends and decoders, with NEON tiles on aarch64 and AVX2 on x86_64.
 
 use std::sync::{Mutex, PoisonError};
 
@@ -96,6 +96,11 @@ fn tile<const R: usize, const F: usize>(w: &[f32], z: &[f32], k: usize) -> [[f32
 
 #[cfg(not(target_arch = "aarch64"))]
 fn tile<const R: usize, const F: usize>(w: &[f32], z: &[f32], k: usize) -> [[f32; R]; F] {
+  #[cfg(target_arch = "x86_64")]
+  if x86::avx2() {
+    // SAFETY: the CPU has AVX2 and FMA.
+    return unsafe { x86::tile(w, z, k) };
+  }
   std::array::from_fn(|f| std::array::from_fn(|r| dot(&w[r * k..][..k], &z[f * k..][..k])))
 }
 
@@ -158,8 +163,95 @@ impl Q8 {
 
   #[cfg(not(target_arch = "aarch64"))]
   fn rows(&self, r0: usize, x: &[f32], out: &mut [f32]) {
+    #[cfg(target_arch = "x86_64")]
+    if x86::avx2() {
+      // SAFETY: the CPU has AVX2 and FMA.
+      return unsafe { x86::rows(self, r0, x, out) };
+    }
     for (r, o) in out.iter_mut().enumerate() {
       *o = dot(&self.row(r0 + r), x);
+    }
+  }
+}
+
+/// `tile` and `Q8::rows` with AVX2 and FMA, chosen at run time. Like the NEON ones they keep
+/// `dot`'s 16 lanes (two 8-float vectors), fused multiply-adds and pairwise sum, so the results
+/// are identical. No intrinsics in closures: those would not get the target features.
+#[cfg(target_arch = "x86_64")]
+mod x86 {
+  use std::arch::x86_64::*;
+
+  use super::Q8;
+
+  pub fn avx2() -> bool {
+    is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")
+  }
+
+  /// `dot`'s pairwise sum of 16 lanes, 0..8 in `a` and 8..16 in `b`.
+  #[target_feature(enable = "avx2,fma")]
+  fn sum(a: __m256, b: __m256) -> f32 {
+    let s = _mm256_add_ps(a, b);
+    let s = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps::<1>(s));
+    let s = _mm_add_ps(s, _mm_movehl_ps(s, s));
+    _mm_cvtss_f32(s) + _mm_cvtss_f32(_mm_shuffle_ps::<1>(s, s))
+  }
+
+  #[target_feature(enable = "avx2,fma")]
+  pub fn tile<const R: usize, const F: usize>(w: &[f32], z: &[f32], k: usize) -> [[f32; R]; F] {
+    let (w, z, n) = (&w[..R * k], &z[..F * k], k / 16 * 16);
+    let mut acc = [[[_mm256_setzero_ps(); 2]; R]; F];
+    for i in (0..n).step_by(16) {
+      for c in 0..2 {
+        let mut wv = [_mm256_setzero_ps(); R];
+        for (r, v) in wv.iter_mut().enumerate() {
+          // SAFETY: 8 floats below `n` ≤ k of a row of `w`.
+          *v = unsafe { _mm256_loadu_ps(w.as_ptr().add(r * k + i + 8 * c)) };
+        }
+        for (f, acc) in acc.iter_mut().enumerate() {
+          // SAFETY: 8 floats below `n` ≤ k of a frame of `z`.
+          let zv = unsafe { _mm256_loadu_ps(z.as_ptr().add(f * k + i + 8 * c)) };
+          for (a, wv) in acc.iter_mut().zip(wv) {
+            a[c] = _mm256_fmadd_ps(wv, zv, a[c]);
+          }
+        }
+      }
+    }
+    let mut out = [[0.0; R]; F];
+    for (f, out) in out.iter_mut().enumerate() {
+      for (r, out) in out.iter_mut().enumerate() {
+        let (w, z) = (&w[r * k + n..][..k - n], &z[f * k + n..][..k - n]);
+        let tail = w.iter().zip(z).map(|(x, y)| x * y).sum::<f32>();
+        *out = sum(acc[f][r][0], acc[f][r][1]) + tail;
+      }
+    }
+    out
+  }
+
+  #[target_feature(enable = "avx2,fma")]
+  pub fn rows(q8: &Q8, r0: usize, x: &[f32], out: &mut [f32]) {
+    let k = q8.k;
+    let (q, d, x) = (&q8.q[r0 * k..][..out.len() * k], &q8.d[r0 * k / 32..], &x[..k]);
+    for (g, out) in out.chunks_mut(4).enumerate() {
+      let mut acc = [[_mm256_setzero_ps(); 2]; 4];
+      for i in (0..k).step_by(16) {
+        // SAFETY: 16 floats of `x` below k.
+        let xs =
+          unsafe { [_mm256_loadu_ps(x.as_ptr().add(i)), _mm256_loadu_ps(x.as_ptr().add(i + 8))] };
+        for (j, acc) in acc.iter_mut().enumerate() {
+          // A short last group repeats its last row.
+          let at = (4 * g + j.min(out.len() - 1)) * k + i;
+          // SAFETY: 16 int8 of a row of `q` below k.
+          let v = unsafe { _mm_loadu_si128(q.as_ptr().add(at).cast()) };
+          let scale = _mm256_set1_ps(d[at / 32]);
+          let lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(v));
+          let hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128::<8>(v)));
+          acc[0] = _mm256_fmadd_ps(_mm256_mul_ps(lo, scale), xs[0], acc[0]);
+          acc[1] = _mm256_fmadd_ps(_mm256_mul_ps(hi, scale), xs[1], acc[1]);
+        }
+      }
+      for (o, [a, b]) in out.iter_mut().zip(acc) {
+        *o = sum(a, b);
+      }
     }
   }
 }

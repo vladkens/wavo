@@ -169,6 +169,9 @@ impl Gpu {
       } else {
         wgpu::ExperimentalFeatures::disabled()
       },
+      // Vulkan suballocates from smaller blocks (8–64 MiB, not 128–256): ~200 MiB less for
+      // GigaAM on an Intel iGPU at the same speed. Metal ignores it.
+      memory_hints: wgpu::MemoryHints::MemoryUsage,
       ..Default::default()
     }))?;
     let failure = Arc::new(Mutex::new(None));
@@ -270,6 +273,13 @@ impl Gpu {
       attention: probe(attention, 3, 2, 7, 4.0),
       relative: probe(relative, 4, 3, 8, 1.0),
     }
+  }
+
+  /// Whether a model should run once at load. The fast kernels save 20–40 ms on the first call
+  /// that way. The portable GEMM computes 64 rows even for one frame, so on an Intel N100 the
+  /// warm-up took 0.4 s (GigaAM) and 1 s (Parakeet) to save 10–20 ms.
+  pub fn warm_up(&self) -> bool {
+    self.fast.gemm.is_some()
   }
 
   /// An uninitialized storage buffer of `len` f32s.
