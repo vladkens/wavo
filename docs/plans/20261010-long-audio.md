@@ -109,20 +109,20 @@ the fixture text on repeat; Parakeet against its own one-pass text, which matche
       no pause the cuts fall within [L/2, L]; the input × 0.01 gives the same cuts. Join: offsets,
       empty segment texts, segment starts. SRT across a boundary between character tokens gives
       two words.
-- [ ] `make check`; `make test`.
+- [x] `make check`; `make test`.
 
 ### Task 4: verify and measure
 
-- [ ] Long files built with `ffmpeg` outside the repo, as in `docs/perf.md`: `ru-long` on repeat,
+- [x] Long files built with `ffmpeg` outside the repo, as in `docs/perf.md`: `ru-long` on repeat,
       and `dots-full` + `death` + `whole-earth` back to back, as 16 kHz mono PCM16, cut to 1, 2,
       3, 5, 10 and 60 minutes (English repeated for the 60).
-- [ ] The default L for models without a window: 30 / 60 / 120 s with `parakeet-v3` on the
+- [x] The default L for models without a window: 30 / 60 / 120 s with `parakeet-v3` on the
       10-minute English file (time, peak, word diff against `--segment 0`).
-- [ ] Words, compared in lowercase without punctuation: `gigaam-v3` and `gigaam-v3-rnnt` against
+- [x] Words, compared in lowercase without punctuation: `gigaam-v3` and `gigaam-v3-rnnt` against
       the fixture text on repeat; `parakeet-v3` and `parakeet-v2` against `--segment 0` up to 10
       minutes. `wavo run --segment 0` on the fixture clips gives the fixture text. Differences
       only next to cuts.
-- [ ] `/usr/bin/time -l wavo run` at every length for `gigaam-v3` and `parakeet-v3`: a split table
+- [x] `/usr/bin/time -l wavo run` at every length for `gigaam-v3` and `parakeet-v3`: a split table
       next to the one-pass one in `docs/perf.md` → "Long audio", and a log entry.
-- [ ] `readme.md`: long audio, each model's L and `--segment`; tick roadmap phase 9; `make check`;
+- [x] `readme.md`: long audio, each model's L and `--segment`; tick roadmap phase 9; `make check`;
       `make test`.

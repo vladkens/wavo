@@ -27,7 +27,7 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       default `cli` feature; with `--no-default-features` the library stays pure Rust with the
       same API. Long-audio time and memory measured, no chunking yet.
 - [ ] **8. Linux and Windows.** Vulkan / DX12 through wgpu, tested on real machines.
-- [ ] **9. Long audio.** `wavo run` splits recordings of any length at pauses (frame energy, no
+- [x] **9. Long audio.** `wavo run` splits recordings of any length at pauses (frame energy, no
       VAD model) into segments of at most the model's window (`Model::max_audio_ms()`, GigaAM
       25 s) or a default for models without one, and joins the transcripts; `--segment` sets the
       length, `0` is one pass. Time linear in length, peak memory flat.

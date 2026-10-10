@@ -45,8 +45,10 @@ cues break after sentences or at 80 characters.
 Recordings of any length work: longer audio is split at its quietest moments (by energy, no VAD
 model) into segments of up to 25 s for GigaAM, which was trained on utterances up to ~25 s, and
 60 s for Parakeet. The segments are transcribed one by one and joined: texts with a space, token
-times shifted to the whole file. `--segment SECS` sets the length; `--segment 0` runs the whole
-file in one pass, as transcribe.cpp does.
+times shifted to the whole file. In one pass, GigaAM loses most words after about a minute and
+Parakeet skips sentences; split, 10 minutes take 5.2 s with GigaAM and 8.9 s with Parakeet V3 on
+an M2, and memory stays flat. `--segment SECS` sets the length; `--segment 0` runs the whole file
+in one pass, as transcribe.cpp does.
 
 Models live in the Hugging Face cache, found as `hf` finds it: `HF_HUB_CACHE` (or the legacy
 `HUGGINGFACE_HUB_CACHE`), else `$HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else
