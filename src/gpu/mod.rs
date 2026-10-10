@@ -432,7 +432,7 @@ impl Gpu {
     (encoder, pass)
   }
 
-  /// Records the dispatches of `record` (one submission, or more with `Pass::flush`), runs them,
+  /// Records the dispatches of `record` (one submission, or more with `Pass::layers`), runs them,
   /// and reads back `len` f32s of `out` through the `read` buffer. `groups` caches bind groups by
   /// dispatch index, so a caller must record the same dispatch sequence over the same buffers each
   /// time, and clear it when buffers change.
@@ -580,12 +580,21 @@ impl<'a> Pass<'a> {
     Self { gpu, encoder, pass, groups, next: 0, call, marked: 0, queued: None }
   }
 
+  /// Records an encoder's layers, `layer(pass, item)` for each item, each returning the buffer it
+  /// wrote last; on the portable path each layer is its own submission (see `flush`).
+  pub fn layers<'b, T>(&mut self, items: &[T], mut layer: impl FnMut(&mut Self, &T) -> &'b Buffer) {
+    for item in items {
+      let out = layer(self, item);
+      self.flush(out);
+    }
+  }
+
   /// Submits the work recorded so far, marked done once `after` is written, and waits for the
   /// submission before it. A driver may cancel a long request (i915 20 s after it was queued,
   /// while a slow GPU runs a minute of Parakeet for longer), so each request is short and at
   /// most two are queued. Errors show in `Gpu::run`'s last poll. With the fast kernels (Apple) a
   /// call stays one submission: splitting costs ~1% there, and a 20 s call ran fine.
-  pub fn flush(&mut self, after: &Buffer) {
+  fn flush(&mut self, after: &Buffer) {
     if self.gpu.fast.gemm.is_some() {
       return;
     }

@@ -72,6 +72,11 @@ the first call matter as much as warm speed.
 - The library returns its own `Error` enum built with `thiserror`; only the CLI uses `anyhow`.
   Comment only non-obvious data layouts, numeric tricks and model quirks that differ from what the
   reference docs say.
+- An encoder records its layers through `Pass::layers`, which submits each layer on its own on the
+  portable path. Some drivers (i915 on Linux) cancel GPU work that runs over ~20 s and still report
+  success, and a slow GPU takes that long for one long call. With the fast kernels (Apple) the
+  helper keeps one submission, so it costs nothing there; a new model's encoder must loop through
+  it.
 - Start every `.rs` and `.wgsl` file with the line
   `// Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo`.
 - Put helper scripts in `scripts/`, named in kebab-case (`compare.sh`, `make-fixtures.py`):

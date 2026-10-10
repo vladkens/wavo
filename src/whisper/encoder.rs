@@ -119,7 +119,7 @@ impl Encoder {
     p.im2col(&b.h, &b.qkv, 2 * t, d, [3, 2, 1]);
     p.gemm(&b.qkv, &self.conv1, &b.x, t, Epilogue::GeluResidual);
     let (heads, hd) = (self.cfg.heads, d / self.cfg.heads);
-    for k in &self.blocks {
+    p.layers(&self.blocks, |p, k| {
       p.layer_norm(&b.x, &k.norm_attn, &b.y, t, d, None);
       p.gemm(&b.y, &k.qkv, &b.qkv, t, Epilogue::Bias);
       p.attention(&b.qkv, None, None, &b.s, &b.y, t, heads, hd);
@@ -127,7 +127,8 @@ impl Encoder {
       p.layer_norm(&b.x, &k.norm_ffn, &b.y, t, d, None);
       p.gemm(&b.y, &k.fc1, &b.h, t, Epilogue::Gelu);
       p.gemm(&b.h, &k.fc2, &b.x, t, Epilogue::Residual(1.0));
-    }
+      &b.x
+    });
     p.layer_norm(&b.x, &self.norm, &b.y, t, d, None);
   }
 }

@@ -151,8 +151,10 @@ impl Whisper {
       arena: Mutex::new(arena),
     };
     // The GPU's first use of the pipelines and the weight memory: pay it here on a short window
-    // instead of in the first call.
-    model.window(&mut model.lock(), None, 64)?;
+    // instead of in the first call (see `Gpu::warm_up`).
+    if model.gpu.warm_up() {
+      model.window(&mut model.lock(), None, 64)?;
+    }
     Ok(model)
   }
 

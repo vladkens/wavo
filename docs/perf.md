@@ -157,6 +157,9 @@ peak is RSS plus iGPU buffers for wavo and the reference Vulkan. Load average 0.
   615, ru-long 78 / 6372 / 1530, jfk 30 / 3144 / 45, dots 115 / 8267 / 255, jobs-silence 15 /
   2049 / 4 ms. Its encoder beats wavo's portable one from ru-short on (wavo 2103, 7340, 3499,
   11609, 2138 ms); its text matches the fixtures except one comma on ru-short.
+- Whisper large-v3-turbo, jfk (one 30 s window, `-n 3` / `--iters 3`): wavo 72.3 s warm, load
+  0.5 s, fixtures exact, no driver timeout; reference CPU 41.8 s; reference Vulkan i915 cancels
+  (kernel "Fence expiration time out") and `transcribe-cli` prints "unlock the".
 
 ## Whisper large-v3-turbo vs transcribe.cpp (2026-10-10, phase 12)
 
@@ -536,6 +539,11 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 ## Log
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
+
+- 2026-10-10, all models, `Pass::layers` submits each encoder layer on its own on the portable path
+  (Whisper had one submission per window: i915 cancelled it on the N100, now fixtures exact). M2
+  A/B/A/B warm unchanged: ru 41.3 / 41.4 / 41.2 / 41.5, jfk 137.8 / 137.9 / 137.8 / 137.9, Whisper
+  jfk 1246 / 1245 / 1254 / 1242 ms. Kept.
 
 - 2026-10-10, all models, N100: warm up at load only with the fast kernels (the portable GEMM pads
   one frame to 64 rows: 0.4 / 1 s to save 8–20 ms). Load ru 586 → 191, jfk 1389 → 390 ms. Kept.
