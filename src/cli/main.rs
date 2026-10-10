@@ -128,6 +128,10 @@ fn run(args: &[&str]) -> Result<()> {
   let (transcript, starts) = split::join(parts.collect::<Result<Vec<_>>>()?);
   match format {
     Some("--json") => println!("{}", output::json(&transcript)),
+    // Whisper times segments, not tokens.
+    Some(_) if models::architecture(&path).as_deref() == Some("whisper") => {
+      print!("{}", output::srt_segments(&transcript.tokens, (pcm.len() / 16) as u32))
+    }
     Some(_) => print!("{}", output::srt(&transcript.tokens, &starts, (pcm.len() / 16) as u32)),
     None => println!("{}", transcript.text),
   }

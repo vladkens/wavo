@@ -50,32 +50,49 @@ pub fn srt(tokens: &[Token], starts: &[usize], audio_ms: u32) -> String {
       _ => words.push((t.start_ms, t.start_ms, piece)),
     }
   }
-  // Start, last word's start, text, and whether it is a timed segment (Whisper) rather than words.
-  let mut cues: Vec<(u32, u32, String, bool)> = Vec::new();
+  let mut cues: Vec<(u32, u32, String)> = Vec::new();
   for (first, last, text) in &words {
     let text = text.trim();
     match cues.last_mut() {
       _ if text.is_empty() => {}
-      // Words that share the cue's start (a Whisper segment) stay in it: a cut there would give the
-      // cue before an empty interval.
-      Some(cue) if *first == cue.0 => (cue.2, cue.3) = (format!("{} {text}", cue.2), true),
+      // A word that starts with the cue (several in one frame) stays in it, else the cue would
+      // last no time at all.
       Some(cue)
-        if !cue.2.ends_with(['.', '!', '?', '…'])
-          && cue.2.chars().count() + 1 + text.chars().count() <= MAX_CUE =>
+        if *first == cue.0
+          || !cue.2.ends_with(['.', '!', '?', '…'])
+            && cue.2.chars().count() + 1 + text.chars().count() <= MAX_CUE =>
       {
         (cue.1, cue.2) = (*last, format!("{} {text}", cue.2));
       }
-      _ => cues.push((*first, *last, text.to_string(), false)),
+      _ => cues.push((*first, *last, text.to_string())),
     }
   }
+  write_cues(&cues, |i, last| cues.get(i + 1).map_or(audio_ms, |c| c.0).min(last + LINGER_MS))
+}
+
+/// Subtitles from a model that times segments, not tokens (Whisper: every token carries its
+/// segment's start): one cue per segment, shown until the next one starts or the audio ends.
+pub fn srt_segments(tokens: &[Token], audio_ms: u32) -> String {
+  let mut cues: Vec<(u32, u32, String)> = Vec::new();
+  for t in tokens {
+    match cues.last_mut() {
+      Some(cue) if cue.0 == t.start_ms => cue.2 += &t.piece,
+      _ => cues.push((t.start_ms, t.start_ms, t.piece.clone())),
+    }
+  }
+  cues.iter_mut().for_each(|c| c.2 = c.2.trim().to_string());
+  cues.retain(|c| !c.2.is_empty());
+  write_cues(&cues, |i, _| cues.get(i + 1).map_or(audio_ms, |c| c.0))
+}
+
+/// Numbered cues `(start, last token's start, text)`; `end(i, last)` gives cue `i`'s end.
+fn write_cues(cues: &[(u32, u32, String)], end: impl Fn(usize, u32) -> u32) -> String {
   let time = |ms: u32| {
     format!("{:02}:{:02}:{:02},{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
   };
   let mut out = String::new();
-  for (i, (start, last, text, segment)) in cues.iter().enumerate() {
-    // A segment lasts until the next one; words linger a little after the last one starts.
-    let next = cues.get(i + 1).map_or(audio_ms, |c| c.0);
-    let end = if *segment { next } else { next.min(last + LINGER_MS) }.max(*start);
+  for (i, (start, last, text)) in cues.iter().enumerate() {
+    let end = end(i, *last).max(*start);
     write!(out, "{}\n{} --> {}\n{text}\n\n", i + 1, time(*start), time(end)).unwrap();
   }
   out
@@ -138,12 +155,27 @@ mod tests {
   }
 
   #[test]
-  fn segment_starts_keep_one_cue() {
+  fn words_of_one_frame_stay_in_a_cue() {
+    let t = tokens(&[("▁Yes.", 400), ("▁Right", 400), ("▁now.", 600), ("▁Go", 3000)]);
+    assert_eq!(
+      srt(&t, &[], 4000),
+      "1\n00:00:00,400 --> 00:00:02,100\nYes. Right now.\n\n2\n00:00:03,000 --> 00:00:04,000\nGo\n\n"
+    );
+  }
+
+  #[test]
+  fn segments_last_until_the_next() {
     // Whisper gives every token of a segment the segment's start.
     let t = tokens(&[(" Ask", 0), (" not.", 0), (" Ask", 0), (" what.", 0), (" Next", 5000)]);
     assert_eq!(
-      srt(&t, &[], 6000),
+      srt_segments(&t, 6000),
       "1\n00:00:00,000 --> 00:00:05,000\nAsk not. Ask what.\n\n2\n00:00:05,000 --> 00:00:06,000\nNext\n\n"
+    );
+    // Without spaces, and a one-token segment.
+    let t = tokens(&[("我们", 0), ("走吧。", 0), ("好", 2000)]);
+    assert_eq!(
+      srt_segments(&t, 3000),
+      "1\n00:00:00,000 --> 00:00:02,000\n我们走吧。\n\n2\n00:00:02,000 --> 00:00:03,000\n好\n\n"
     );
   }
 
