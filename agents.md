@@ -151,7 +151,8 @@ the first call matter as much as warm speed.
   5. Whoever delegated the work (the orchestrating agent) reviews the diff, reruns the checks and
      sends findings back to the implementing agent until the PR is clean, then hands it to the
      person. CI runs only `make check` and `make test-unit` (no models there), so `make test` and
-     benchmarks stay local.
+     benchmarks stay local. Copilot reviews every PR automatically: fix what is right, answer the
+     rest in the thread.
   6. The person does the final review and merges: squash, one commit on `main`, the branch is
      deleted. Never commit or push to `main` directly.
   7. On conflicts, the orchestrator (or an agent it asks) rebases the branch onto `main`, reruns the
