@@ -1,5 +1,7 @@
 name: ci
 
+# Never add pull_request_target or issue_comment: they run untrusted code with the base branch's
+# rights and can poison its cache. With push and pull_request GitHub keeps PR caches to the PR.
 on:
   push:
     branches: [main]
