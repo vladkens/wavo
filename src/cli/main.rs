@@ -219,26 +219,21 @@ fn bench(model: &str, audio: &str, n: usize) -> Result<()> {
   if n == 0 {
     bail!("-n must be at least 1");
   }
+  let pcm = audio::read(audio)?;
+  let path = model_path(model)?;
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
-  let (load, first, mut warm) = progress::show(|p| -> Result<_> {
-    p.set("decoding the audio");
-    let pcm = audio::read(audio)?;
-    let path = model_path(model)?;
-    p.set("loading the model");
-    let t = Instant::now();
-    let model = load(&path)?;
-    let load = ms(t);
-    p.set("first call");
-    let t = Instant::now();
-    model.transcribe(&pcm)?;
-    let first = ms(t);
-    let warm = (0..n).map(|i| {
-      p.set(format!("warm call {}/{n}", i + 1));
+  let t = Instant::now();
+  let model = load(&path)?;
+  let load = ms(t);
+  let t = Instant::now();
+  model.transcribe(&pcm)?;
+  let first = ms(t);
+  let mut warm = (0..n)
+    .map(|_| {
       let t = Instant::now();
       model.transcribe(&pcm).map(|_| ms(t))
-    });
-    Ok((load, first, warm.collect::<Result<Vec<_>, _>>()?))
-  })?;
+    })
+    .collect::<Result<Vec<_>, _>>()?;
   warm.sort_by(f64::total_cmp);
   let median = (warm[(n - 1) / 2] + warm[n / 2]) / 2.0;
   println!(

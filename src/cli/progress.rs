@@ -1,6 +1,6 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! A status line on stderr while `wavo run` and `wavo bench` work: a spinner, the current step
-//! and the elapsed seconds. Only on a terminal, so pipes and files get nothing new.
+//! A status line on stderr while `wavo run` works: a spinner, the current step and the elapsed
+//! seconds. Only on a terminal, so pipes and files get nothing new.
 
 use std::io::{self, IsTerminal, Write};
 use std::sync::Mutex;
@@ -33,8 +33,7 @@ pub fn show<T>(work: impl FnOnce(&Progress) -> T) -> T {
         }
         let step = progress.0.lock().unwrap().clone();
         let line = format!("\r{spin} {step} {:.1}s\x1b[K", start.elapsed().as_secs_f64());
-        let _ = io::stderr().write_all(line.as_bytes());
-        drawn = true;
+        drawn |= io::stderr().write_all(line.as_bytes()).is_ok();
       }
       if drawn {
         let _ = io::stderr().write_all(b"\r\x1b[2K");
