@@ -1,20 +1,16 @@
-name: ci
+name: main
 
-# Never add pull_request_target or issue_comment: they run untrusted code with the base branch's
-# rights and can poison its cache. With push and pull_request GitHub keeps PR caches to the PR.
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Main runs queue instead, so a dev release is never cut off halfway.
+# Runs queue instead of cancelling each other, so a dev release is never cut off halfway.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -36,11 +32,10 @@ jobs:
       - run: make check
       - run: make test-unit
 
-  # `dev` builds the archives as a workflow artifact, on main and on manual runs; on main,
-  # `dev-release` publishes them as the `dev` pre-release. Only the job that builds nothing gets
-  # write access, so dependency build scripts never run with it.
+  # `dev` builds the archives as a workflow artifact; on main, `dev-release` publishes them as the
+  # `dev` pre-release. Only the job that builds nothing gets write access, so dependency build
+  # scripts never run with it.
   dev:
-    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     needs: test
     permissions:
