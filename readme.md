@@ -4,6 +4,7 @@
 
 **Speech to text on your GPU, in pure Rust**
 
+[<img src="https://badges.ws/crates/v/wavo" alt="version" />](https://crates.io/crates/wavo)
 [<img src="https://badges.ws/github/license/vladkens/wavo" alt="license" />](https://github.com/vladkens/wavo/blob/main/LICENSE)
 
 </div>
@@ -49,7 +50,7 @@ is `parakeet-tdt-0.6b-v2`, `gigaam-v3` is `gigaam-v3-e2e-rnnt` and `whisper-turb
 ## 📥 Installation
 
 ```sh
-cargo install --git https://github.com/vladkens/wavo
+cargo install wavo
 ```
 
 <details>
@@ -120,7 +121,7 @@ is about a quarter to a third shorter. More numbers in [docs/perf.md](docs/perf.
 ## 📚 Library usage
 
 ```sh
-cargo add wavo --git https://github.com/vladkens/wavo --no-default-features
+cargo add wavo --no-default-features
 ```
 
 ```rust
