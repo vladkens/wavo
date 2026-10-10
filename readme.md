@@ -1,37 +1,74 @@
 # wavo
 
-Speech-to-text in pure Rust. Runs the GGUF ASR models published by
+Speech-to-text in Rust. Runs the GGUF ASR models published by
 [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) on the GPU through `wgpu` with
-custom WGSL kernels: no C/C++, ONNX or BLAS, just `cargo build`.
+custom WGSL kernels. The library is pure Rust (no C/C++, ONNX or BLAS); the `wavo` command adds
+an ollama-like model manager and decoding of common audio formats.
 
 Works now, on Apple Silicon: the four GigaAM v3 models (Russian) and Parakeet TDT 0.6B v2
 (English) and v3 (25 European languages), with output that matches transcribe.cpp exactly (text,
-tokens and timestamps). More models are next: [docs/roadmap.md](docs/roadmap.md).
+tokens and timestamps). More models and platforms are next: [docs/roadmap.md](docs/roadmap.md).
 
-| Model | Head | Output |
-|---|---|---|
-| `gigaam-v3-e2e-rnnt` | RNN-T | cased, punctuated (1024 SentencePiece pieces) |
-| `gigaam-v3-e2e-ctc` | CTC | cased, punctuated (256 SentencePiece pieces) |
-| `gigaam-v3-rnnt` | RNN-T | lowercase letters and spaces |
-| `gigaam-v3-ctc` | CTC | lowercase letters and spaces |
-| `parakeet-tdt-0.6b-v2` | TDT | English, cased, punctuated (1024 SentencePiece pieces) |
-| `parakeet-tdt-0.6b-v3` | TDT | 25 European languages, cased, punctuated (8192 SentencePiece pieces) |
+| Name | Full name | Size | Head | Output |
+|---|---|---|---|---|
+| `parakeet-v3` | `parakeet-tdt-0.6b-v3` | 0.74 GB | TDT | 25 European languages, cased, punctuated |
+| `parakeet-v2` | `parakeet-tdt-0.6b-v2` | 0.73 GB | TDT | English, cased, punctuated |
+| `gigaam-v3` | `gigaam-v3-e2e-rnnt` | 0.27 GB | RNN-T | Russian, cased, punctuated |
+| `gigaam-v3-e2e-ctc` | | 0.27 GB | CTC | Russian, cased, punctuated |
+| `gigaam-v3-rnnt` | | 0.27 GB | RNN-T | Russian, lowercase letters and spaces |
+| `gigaam-v3-ctc` | | 0.27 GB | CTC | Russian, lowercase letters and spaces |
+
+## Install
+
+```sh
+cargo install --git https://github.com/vladkens/wavo
+```
 
 ## Usage
 
 ```sh
-hf download handy-computer/gigaam-v3-e2e-rnnt-gguf gigaam-v3-e2e-rnnt-Q8_0.gguf  # prints the path
-cargo build --release
-target/release/wavo MODEL.gguf AUDIO.wav [--tokens]
-target/release/wavo bench MODEL.gguf AUDIO.wav [-n 10]
+wavo pull parakeet-v3                 # download a model
+wavo run talk.m4a                     # transcribe with parakeet-v3
+wavo run gigaam-v3 talk.mp3           # or another model: name, full name or a .gguf path
+wavo run talk.wav --json              # text and every token with its start time
+wavo run talk.wav --srt > talk.srt    # subtitles
+wavo list                             # downloaded models
+wavo rm parakeet-v3                   # delete one
+wavo bench gigaam-v3 talk.wav -n 20   # load time, first call, warm median and minimum
 ```
 
-Audio must be mono 16 kHz WAV (16-bit PCM or 32-bit float). `--tokens` also prints one line per
-token: start time in ms, token id, piece. `bench` prints load time, the first call and the warm
-median and minimum over N calls.
+Audio can be wav, mp3, m4a (AAC), flac or ogg (Vorbis); it is downmixed to mono and resampled to
+16 kHz. `--json` prints `{"text": ..., "tokens": [{"id", "piece", "start_ms"}, ...]}`. `--srt`
+cues break after sentences or at 80 characters.
 
-As a library: `wavo::Model::load(path)?.transcribe(&pcm)?` returns a `Transcript` with `text`
-and `tokens` (id, piece, `start_ms`); `pcm` is 16 kHz mono `f32`.
+Models live in the Hugging Face cache (`HF_HUB_CACHE`, else `$HF_HOME/hub`, else
+`~/.cache/huggingface/hub`) in the layout the `hf` CLI uses, so a model fetched with
+`hf download handy-computer/<full name>-gguf <full name>-Q8_0.gguf` is found by `wavo`, and one
+pulled by `wavo` is seen by `hf`. Only `wavo pull` uses the network; `wavo run` names the
+`wavo pull` command when a model is missing.
+
+Known limitations: GigaAM was trained on utterances up to ~25 s. Longer audio still runs in one
+pass, but past about a minute it drops words (as in transcribe.cpp), so split long Russian audio
+into short segments. Opus is not supported.
+
+## Library
+
+```toml
+[dependencies]
+wavo = { git = "https://github.com/vladkens/wavo", default-features = false }
+```
+
+```rust
+let model = wavo::Model::load("parakeet-tdt-0.6b-v3-Q8_0.gguf")?;
+let transcript = model.transcribe(&pcm)?; // pcm: 16 kHz mono f32 in [-1, 1]
+println!("{}", transcript.text);
+for token in &transcript.tokens {
+  println!("{} ms {}", token.start_ms, token.piece);
+}
+```
+
+Without default features (the `cli` feature) you get only the engine: decoding audio,
+resampling and downloading models are up to you.
 
 ## Speed
 
