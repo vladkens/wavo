@@ -1,0 +1,102 @@
+name: main
+
+# Never add pull_request_target or issue_comment: they run untrusted code with the base branch's
+# rights and can poison its cache. With push and pull_request GitHub keeps PR caches to the PR.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Main runs queue instead, so a dev release is never cut off halfway.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v6
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+
+      - run: rustup update --no-self-update stable && rustup default stable
+      - run: rustup toolchain install nightly --profile minimal --component rustfmt
+      - run: make check
+      - run: make test-unit
+
+  # `dev` builds the archives as a workflow artifact, on main and on manual runs; on main,
+  # `dev-release` publishes them as the `dev` pre-release. Only the job that builds nothing gets
+  # write access, so dependency build scripts never run with it.
+  dev:
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    needs: test
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # One cache for the registry, cargo-cross, the targets' dependencies and the cross toolchains.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: ${{ runner.temp }}/cross
+      - run: make dist
+        env:
+          CROSS_COMPILER_DIR: ${{ runner.temp }}/cross
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wavo-dev
+          path: target/distrib/*
+
+  dev-release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    needs: dev
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    concurrency:
+      group: dev-${{ github.ref }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: wavo-dev
+          path: target/distrib
+      # Users check an archive with `gh attestation verify FILE -R vladkens/wavo`.
+      - uses: actions/attest@v4
+        with:
+          subject-path: target/distrib/*
+
+      - name: Update dev pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          head=$(git ls-remote --exit-code origin refs/heads/main)
+          if [ "$(echo "$head" | cut -f1)" != "$GITHUB_SHA" ]; then
+            echo "main has moved past $GITHUB_SHA, skipping"
+            exit 0
+          fi
+          NOTES="Latest build of \`main\` at ${GITHUB_SHA} ($(date -u '+%Y-%m-%d %H:%M UTC'))."
+          git tag -f dev
+          git push -f origin refs/tags/dev
+          if gh release view dev >/dev/null 2>&1; then
+            gh release upload dev target/distrib/* --clobber
+            gh release edit dev --title "Dev build" --notes "$NOTES"
+          else
+            gh release create dev target/distrib/* --prerelease --title "Dev build" --notes "$NOTES"
+          fi

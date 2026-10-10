@@ -1,12 +1,6 @@
-.PHONY: prepare check test test-unit build update clean models reference fixtures compare
+.PHONY: prepare check test build dist update clean
 
 CARGO_FLAGS := --release --locked
-MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
-	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 whisper-large-v3-turbo
-REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
-CLI := 3rd/transcribe.cpp/build/bin/transcribe-cli
-# Whisper has segment timestamps only: TIMESTAMPS=segment.
-TIMESTAMPS := token
 
 prepare:
 	cargo +nightly fmt
@@ -22,19 +16,48 @@ check:
 test:
 	cargo test $(CARGO_FLAGS)
 
-# CI has no models: unit tests only.
-test-unit:
-	cargo test $(CARGO_FLAGS) --lib --bins
-
 build:
 	cargo build $(CARGO_FLAGS)
 	ls -lh target/release/$(shell basename $(CURDIR))
+
+# Prebuilt binaries as target/distrib/wavo-dev-<target>.tar.gz (.zip for Windows), from an Apple
+# Silicon Mac: Linux (glibc 2.28) and Windows through cargo-cross, installed at a fixed version.
+# macOS keeps its file and line info in wavo.dSYM, which has to stay next to the binary. Not
+# target/dist: cargo keeps the dist profile's build scripts there.
+dist: T := $(or $(CARGO_TARGET_DIR),target)
+dist:
+	cargo install --locked cargo-cross@1.6.0
+	CARGO_PROFILE_DIST_SPLIT_DEBUGINFO=packed cargo build --profile dist --locked --target aarch64-apple-darwin
+	cargo cross build --profile dist --locked --glibc-version 2.28 \
+		--targets x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-pc-windows-gnu
+	rm -rf $(T)/distrib && mkdir -p $(T)/distrib
+	tar czhf $(T)/distrib/wavo-dev-aarch64-apple-darwin.tar.gz readme.md LICENSE \
+		-C $(T)/aarch64-apple-darwin/dist wavo wavo.dSYM
+	for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do \
+		tar czf $(T)/distrib/wavo-dev-$$t.tar.gz readme.md LICENSE -C $(T)/$$t/dist wavo || exit 1; done
+	zip -jq $(T)/distrib/wavo-dev-x86_64-pc-windows-gnu.zip readme.md LICENSE \
+		$(T)/x86_64-pc-windows-gnu/dist/wavo.exe
+	ls -lh $(T)/distrib
 
 update:
 	cargo upgrade -i
 
 clean:
 	cargo clean
+
+# wavo
+.PHONY: test-unit models reference fixtures compare
+
+MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
+	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 whisper-large-v3-turbo
+REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
+CLI := 3rd/transcribe.cpp/build/bin/transcribe-cli
+# Whisper has segment timestamps only: TIMESTAMPS=segment.
+TIMESTAMPS := token
+
+# CI has no models: unit tests only.
+test-unit:
+	cargo test $(CARGO_FLAGS) --lib --bins
 
 models:
 	for m in $(MODELS); do hf download handy-computer/$$m-gguf $$m-Q8_0.gguf; done
