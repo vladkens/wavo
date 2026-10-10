@@ -38,6 +38,9 @@ as a library that builds with a plain `cargo build`.
 
 Parakeet is NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
 GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM).
+Short names stand for the published ones: `parakeet-v3` is `parakeet-tdt-0.6b-v3`, `parakeet-v2`
+is `parakeet-tdt-0.6b-v2` and `gigaam-v3` is `gigaam-v3-e2e-rnnt`; full names and a path to a
+`.gguf` work too.
 
 ## 📥 Installation
 
