@@ -72,7 +72,6 @@ jobs:
           done
           zip -j wavo-dev-x86_64-pc-windows-gnu.zip readme.md LICENSE target/x86_64-pc-windows-gnu/release/wavo.exe
           ls -lh wavo-dev-*
-          du -sh ~/.cache/zig ~/Library/Caches/zig ~/Library/Caches/cargo-zigbuild || true
 
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v7
