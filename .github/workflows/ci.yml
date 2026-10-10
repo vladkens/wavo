@@ -36,7 +36,8 @@ jobs:
       - run: make test-unit
 
   # A push to main updates the `dev` pre-release; a manual run on a branch keeps the archives as
-  # workflow artifacts. Linux and Windows are cross-compiled with zig (glibc 2.28 and up).
+  # workflow artifacts. Linux (glibc 2.28 and up) and Windows (MinGW) are cross-compiled with
+  # cargo-cross, which adds the Rust targets and downloads prebuilt GCC toolchains.
   dev:
     if: github.event_name != 'pull_request'
     runs-on: macos-latest
@@ -51,19 +52,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: rustup update --no-self-update stable && rustup default stable
-      - run: rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-gnu
-      - run: brew install cargo-zigbuild
-      # One cache for the registry, all four targets' dependencies in target/ and the libc and
-      # compiler-rt that zig builds for each target.
+      # One cache for the registry, cargo-cross, all four targets' dependencies in target/ and the
+      # cross toolchains.
       - uses: Swatinem/rust-cache@v2
         with:
-          cache-directories: ~/.cache/zig
+          cache-directories: ${{ runner.temp }}/cross
+      - run: cargo install --locked cargo-cross@1.6.0
 
       - name: Build
+        env:
+          CROSS_COMPILER_DIR: ${{ runner.temp }}/cross
         run: |
           cargo build --release --locked --target aarch64-apple-darwin
-          cargo zigbuild --release --locked --target x86_64-unknown-linux-gnu.2.28 \
-            --target aarch64-unknown-linux-gnu.2.28 --target x86_64-pc-windows-gnu
+          cargo cross build --release --locked --glibc-version 2.28 \
+            --targets x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-pc-windows-gnu
 
       - name: Archive binaries
         run: |
