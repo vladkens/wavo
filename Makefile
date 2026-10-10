@@ -21,11 +21,12 @@ build:
 	ls -lh target/release/$(shell basename $(CURDIR))
 
 # Prebuilt binaries as target/distrib/wavo-dev-<target>.tar.gz (.zip for Windows), from an Apple
-# Silicon Mac: Linux (glibc 2.28) and Windows through cargo-cross (cargo install cargo-cross).
+# Silicon Mac: Linux (glibc 2.28) and Windows through cargo-cross, installed at a fixed version.
 # macOS keeps its file and line info in wavo.dSYM, which has to stay next to the binary. Not
 # target/dist: cargo keeps the dist profile's build scripts there.
 dist: T := $(or $(CARGO_TARGET_DIR),target)
 dist:
+	cargo install --locked cargo-cross@1.6.0
 	CARGO_PROFILE_DIST_SPLIT_DEBUGINFO=packed cargo build --profile dist --locked --target aarch64-apple-darwin
 	cargo cross build --profile dist --locked --glibc-version 2.28 \
 		--targets x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-pc-windows-gnu
