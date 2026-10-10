@@ -146,9 +146,16 @@ fn named(arg: &str) -> Result<&'static models::Model> {
   }
 }
 
-/// One thread per model; live progress only for a single one, whose line would be overwritten.
+/// One thread per distinct model; live progress only for a single one, whose line would be
+/// overwritten.
 fn pull(args: &[&str]) -> Result<()> {
-  let models = args.iter().map(|arg| named(arg)).collect::<Result<Vec<_>>>()?;
+  let mut models: Vec<&models::Model> = Vec::new();
+  for arg in args {
+    let m = named(arg)?;
+    if !models.iter().any(|seen| seen.name == m.name) {
+      models.push(m);
+    }
+  }
   let (cache, live) = (hfs::Cache::new(), models.len() == 1);
   let results: Vec<_> = std::thread::scope(|s| {
     let cache = &cache;
