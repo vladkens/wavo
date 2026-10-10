@@ -42,6 +42,11 @@ hound = "3.5.1"
 [profile.release]
 debug = 1
 
+# The prebuilt binaries of `make dist`: file and line in backtraces at a smaller size.
+[profile.dist]
+inherits = "release"
+debug = "line-tables-only"
+
 [profile.dev]
 opt-level = 1
 

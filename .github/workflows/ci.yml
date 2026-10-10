@@ -11,9 +11,10 @@ on:
 permissions:
   contents: read
 
+# Main runs queue instead, so a dev release is never cut off halfway.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -44,7 +45,7 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: dev-release
+      group: dev-${{ github.ref }}
     steps:
       - uses: actions/checkout@v7
       # One cache for the registry, cargo-cross, the targets' dependencies and the cross toolchains.
@@ -52,15 +53,32 @@ jobs:
         with:
           cache-directories: ${{ runner.temp }}/cross
       - run: cargo install --locked cargo-cross@1.6.0
-      - run: scripts/build-dev.sh
+      - run: make dist
         env:
           CROSS_COMPILER_DIR: ${{ runner.temp }}/cross
+
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v7
         with:
           name: wavo-dev
           path: target/dist/*
-      - if: github.ref == 'refs/heads/main'
-        run: scripts/publish-dev.sh
+
+      - name: Update dev pre-release
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          head=$(git ls-remote --exit-code origin refs/heads/main)
+          if [ "$(echo "$head" | cut -f1)" != "$GITHUB_SHA" ]; then
+            echo "main has moved past $GITHUB_SHA, skipping"
+            exit 0
+          fi
+          NOTES="Latest build of \`main\` at ${GITHUB_SHA} ($(date -u '+%Y-%m-%d %H:%M UTC'))."
+          git tag -f dev
+          git push -f origin refs/tags/dev
+          if gh release view dev >/dev/null 2>&1; then
+            gh release upload dev target/dist/* --clobber
+            gh release edit dev --title "Dev build" --notes "$NOTES"
+          else
+            gh release create dev target/dist/* --prerelease --title "Dev build" --notes "$NOTES"
+          fi
