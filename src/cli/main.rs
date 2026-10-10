@@ -20,7 +20,7 @@ Usage:
                                  transcribe AUDIO, with parakeet-v3 unless MODEL is given;
                                  --json adds tokens with start times, --srt prints subtitles;
                                  longer audio is split at pauses into segments of up to SECS
-                                 (25 for GigaAM, else 60; 0 for one pass)
+                                 (25 for GigaAM, 30 for Whisper, else 60; 0 for one pass)
   wavo pull MODEL                download a model
   wavo list                      list downloaded models
   wavo rm MODEL                  delete a downloaded model

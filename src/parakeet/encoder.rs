@@ -11,7 +11,7 @@ use super::frontend::MELS;
 use crate::conformer::{self, Buffers, Conformer};
 use crate::error::Result;
 use crate::gguf::Gguf;
-use crate::gpu::{BindGroup, Buffer, Channels, Epilogue, Gpu, Linear, Pass, half, pos_rows};
+use crate::gpu::{Buffer, Channels, Epilogue, Gpu, Groups, Linear, Pass, half, pos_rows};
 
 /// conv0 to conv5 run in this many chunks of output rows, so their outputs (4× the blocks'
 /// activations) never exist whole.
@@ -43,7 +43,7 @@ struct Arena {
   mel: Buffer,
   out: Buffer,
   read: Buffer,
-  groups: Vec<BindGroup>,
+  groups: Groups,
 }
 
 impl Encoder {

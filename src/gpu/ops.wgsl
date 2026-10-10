@@ -10,6 +10,9 @@ struct Params {
   // conv_glu: the depthwise kernel size, and 1 for LayerNorm or 0 for the affine x·g + b.
   kernel: u32,
   layer_norm: u32,
+  // im2col: the conv's stride and padding (and `kernel`).
+  stride: u32,
+  pad: u32,
 }
 
 var<immediate> p: Params;
@@ -66,7 +69,9 @@ fn layer_norm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_in
   for (var i = lid; i < p.ch; i += 256u) {
     let v = (norm_x[base + i] - mean) * rstd * norm_g[i] + norm_b[i];
     norm_y[base + i] = v;
-    row[i] = v;
+    if (p.head_dim != 0u) {
+      row[i] = v;
+    }
   }
   if (p.head_dim == 0u) {
     return;
@@ -87,8 +92,8 @@ fn layer_norm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_in
   }
 }
 
-// im2col for a conv1d with kernel 5, stride 2, padding 2 over x [t][ch]:
-// col[i][c * 5 + k] = x[2i + k - 2][c], matching a ggml conv weight [k, ch, out].
+// im2col for a conv1d over x [t][ch]: col[i][c · kernel + k] = x[stride · i + k − pad][c], matching
+// a ggml conv weight [kernel, ch, out].
 
 @group(0) @binding(0) var<storage, read> col_x: array<f32>;
 @group(0) @binding(1) var<storage, read_write> col_y: array<f32>;
@@ -97,16 +102,16 @@ fn layer_norm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_in
 fn im2col(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
   let i = wg.y;
   let e = wg.x * 256u + lid;
-  if (e >= p.ch * 5u) {
+  if (e >= p.ch * p.kernel) {
     return;
   }
-  // Source frame plus the padding of 2.
-  let s = 2u * i + e % 5u;
+  // Source frame plus the padding.
+  let s = p.stride * i + e % p.kernel;
   var v = 0.0;
-  if (s >= 2u && s - 2u < p.t) {
-    v = col_x[(s - 2u) * p.ch + e / 5u];
+  if (s >= p.pad && s - p.pad < p.t) {
+    v = col_x[(s - p.pad) * p.ch + e / p.kernel];
   }
-  col_y[i * p.ch * 5u + e] = v;
+  col_y[i * p.ch * p.kernel + e] = v;
 }
 
 // Conformer conv module between the pointwise convs, one workgroup per frame: GLU (first half ·

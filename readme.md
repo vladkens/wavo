@@ -1,6 +1,8 @@
-# `wavo` – speech to text on your GPU
-
 <div align="center">
+
+<img src="https://github.com/vladkens/wavo/blob/assets/wavo.png?raw=true" alt="wavo" width="600" />
+
+**Speech to text on your GPU, in pure Rust**
 
 [<img src="https://badges.ws/github/license/vladkens/wavo" alt="license" />](https://github.com/vladkens/wavo/blob/main/LICENSE)
 
@@ -23,7 +25,7 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
 - 🎯 Same text, tokens and timestamps as transcribe.cpp on its test clips
 - 📦 `pull` / `list` / `rm` models, shared with the Hugging Face cache that `hf` uses
 - 📝 Plain text, JSON with a start time for every token, or SRT subtitles
-- 🌍 English, Russian and 25 European languages
+- 🌍 English, Russian, 25 European languages, and 100 with Whisper
 
 ## 🧠 Models
 
@@ -35,12 +37,14 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
 | `gigaam-v3-e2e-ctc` | 0.27 GB | Russian | cased, punctuated |
 | `gigaam-v3-rnnt` | 0.27 GB | Russian | lowercase, no punctuation |
 | `gigaam-v3-ctc` | 0.27 GB | Russian | lowercase, no punctuation |
+| `whisper-turbo` | 0.89 GB | 100 languages | cased, punctuated |
 
 Parakeet is NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
-GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM).
+GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM), Whisper is OpenAI's
+[Whisper large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo).
 Short names stand for the published ones: `parakeet-v3` is `parakeet-tdt-0.6b-v3`, `parakeet-v2`
-is `parakeet-tdt-0.6b-v2` and `gigaam-v3` is `gigaam-v3-e2e-rnnt`; full names and a path to a
-`.gguf` work too.
+is `parakeet-tdt-0.6b-v2`, `gigaam-v3` is `gigaam-v3-e2e-rnnt` and `whisper-turbo` is
+`whisper-large-v3-turbo`; full names and a path to a `.gguf` work too.
 
 ## 📥 Installation
 
@@ -91,6 +95,7 @@ Apple M2, the same Q8_0 model file, wavo against transcribe.cpp on Metal, an 11 
 | `gigaam-v3` | **96** / 100 | **77** / 124 | **302** / 325 |
 | `parakeet-v2` | **143** / 199 | **159** / 274 | **740** / 820 |
 | `parakeet-v3` | **154** / 215 | **169** / 284 | **763** / 884 |
+| `whisper-turbo` | **1240** / 1390 | **215** / 310 | **1018** / 1055 |
 
 For dictation, where a model is loaded for each recording, the whole run (start, load, transcribe)
 is about a quarter to a third shorter. More numbers in [docs/perf.md](docs/perf.md).
@@ -112,7 +117,7 @@ for token in &transcript.tokens {
 
 Without default features you get only the engine: decoding and resampling audio, splitting long
 recordings and downloading models are up to you. `model.max_audio_ms()` tells how long a piece
-the model was trained on (25 s for GigaAM), so you know where to split.
+the model was trained on (25 s for GigaAM, 30 s for Whisper), so you know where to split.
 
 ## 🤝 Contributing
 
