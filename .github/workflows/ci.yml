@@ -6,6 +6,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -33,3 +34,69 @@ jobs:
       - run: rustup toolchain install nightly --profile minimal --component rustfmt
       - run: make check
       - run: make test-unit
+
+  # A push to main updates the `dev` pre-release; a manual run on a branch keeps the archives as
+  # workflow artifacts. Linux and Windows are cross-compiled with zig (glibc 2.28 and up).
+  dev:
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    needs: test
+    permissions:
+      contents: write
+    concurrency:
+      group: dev-release
+    env:
+      CARGO_PROFILE_RELEASE_DEBUG: false
+      CARGO_PROFILE_RELEASE_STRIP: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+
+      - run: rustup update --no-self-update stable && rustup default stable
+      - run: rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-gnu
+      - run: brew install cargo-zigbuild
+
+      - name: Build
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo zigbuild --release --locked --target x86_64-unknown-linux-gnu.2.28 \
+            --target aarch64-unknown-linux-gnu.2.28 --target x86_64-pc-windows-gnu
+
+      - name: Archive binaries
+        run: |
+          for t in aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            tar czf "wavo-dev-$t.tar.gz" readme.md LICENSE -C "target/$t/release" wavo
+          done
+          zip -j wavo-dev-x86_64-pc-windows-gnu.zip readme.md LICENSE target/x86_64-pc-windows-gnu/release/wavo.exe
+          ls -lh wavo-dev-*
+
+      - if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: wavo-dev
+          path: wavo-dev-*
+
+      - name: Update dev pre-release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]; then
+            echo "main has moved past $GITHUB_SHA, skipping"
+            exit 0
+          fi
+          NOTES="Latest build of \`main\` at ${GITHUB_SHA} ($(date -u '+%Y-%m-%d %H:%M UTC'))."
+          git tag -f dev
+          git push -f origin refs/tags/dev
+          if gh release view dev >/dev/null 2>&1; then
+            gh release upload dev wavo-dev-* --clobber
+            gh release edit dev --title "Dev build" --notes "$NOTES"
+          else
+            gh release create dev wavo-dev-* --prerelease --title "Dev build" --notes "$NOTES"
+          fi
