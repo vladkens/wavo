@@ -87,7 +87,8 @@ the first call matter as much as warm speed.
 
 - Download models only into the shared Hugging Face cache, with `wavo pull <name>` or
   `hf download handy-computer/<name>-gguf <name>-Q8_0.gguf` (install with `brew install hf`);
-  `make models` runs `hf` for every supported model. Never copy model files into the repository.
+  `make models` runs `wavo pull` for every supported model, in parallel, and `make samples`
+  fetches only the reference's `samples/`. Never copy model files into the repository.
   The cache follows the Hub local cache spec (https://huggingface.co/docs/hub/local-cache), with
   the root resolved as Python huggingface_hub does: `HF_HUB_CACHE`, else `$HF_HOME/hub`, else
   `${XDG_CACHE_HOME:-~/.cache}/huggingface/hub`; a model is at
@@ -178,9 +179,11 @@ the first call matter as much as warm speed.
      lowercase line. The body is short: what changed, the checks run, numbers for speed work.
   5. Whoever delegated the work (the orchestrating agent) reviews the diff, reruns the checks and
      sends findings back to the implementing agent until the PR is clean, then hands it to the
-     person. CI runs only `make check` and `make test-unit` (no models there), so `make test` and
-     benchmarks stay local. Copilot reviews every PR automatically: fix what is right, answer the
-     rest in the thread.
+     person. CI runs `make check`, `make models-ci samples` and `make test-ci` (the smallest
+     model of each family) and, when a PR changes `src/`, `Cargo.toml` or `Cargo.lock`,
+     `make bench-compare`: `wavo bench` of GigaAM v3 and Parakeet v3 against main's `dev` build,
+     warning at over 25% slower; then run the full benchmarks locally. Copilot reviews every PR
+     automatically: fix what is right, answer the rest in the thread.
   6. The person does the final review and merges: squash, one commit on `main`, the branch is
      deleted. Never commit or push to `main` directly.
   7. On conflicts, the orchestrator (or an agent it asks) rebases the branch onto `main`, reruns the
