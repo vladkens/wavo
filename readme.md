@@ -7,8 +7,9 @@ an ollama-like model manager and decoding of common audio formats.
 
 Works now, on Apple Silicon and (slower for now) on Linux through Vulkan: the four GigaAM v3
 models (Russian) and Parakeet TDT 0.6B v2 (English) and v3 (25 European languages), with output
-that matches transcribe.cpp exactly (text, tokens and timestamps). More models and platforms are
-next: [docs/roadmap.md](docs/roadmap.md).
+that matches transcribe.cpp exactly on its test clips (text, tokens and timestamps). On real
+dictation recordings GigaAM e2e-rnnt and Parakeet V3 give its text on 99% of them; the rest differ
+at near-ties. More models and platforms are next: [docs/roadmap.md](docs/roadmap.md).
 
 | Name | Full name | Size | Head | Output |
 |---|---|---|---|---|
@@ -122,6 +123,11 @@ model load are from a fresh process; memory is the peak footprint. Measured back
 | `parakeet-tdt-0.6b-v3` | 11 s, English | 154 / 215 | 159 / 281 | 169 / 284 | 763 / 884 |
 |  | 11 s, Russian | 161 / 246 | 173 / 349 | 167 / 285 | 762 / 884 |
 |  | 11 s, Ukrainian | 167 / 254 | 170 / 304 | 188 / 317 | 762 / 884 |
+
+On 2,923 recordings from a real dictation history (mostly Russian, median length 3.75 s), in one
+process per engine, Parakeet V3 took 36% less time than transcribe.cpp and GigaAM e2e-rnnt about
+the same: 5% more under 2 s, less from 5 s. With the model loaded per recording, wavo took 26%
+(GigaAM) and 35% (Parakeet V3) less time. See "Real recordings" in [docs/perf.md](docs/perf.md).
 
 ## Development
 

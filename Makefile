@@ -1,4 +1,4 @@
-.PHONY: prepare check test test-unit build update models reference fixtures
+.PHONY: prepare check test test-unit build update models reference fixtures compare
 
 CARGO_FLAGS := --release --locked
 MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
@@ -49,3 +49,18 @@ fixtures:
 			| awk '/^text: /{print} /^tokens: /{t=1; print; next} t && /^  \[/{print}' \
 			> tests/fixtures/$(MODEL)/$$s.txt; \
 	done
+
+# make compare MODEL=gigaam-v3-e2e-rnnt LIST=wavs.txt OUT=dir: every 16 kHz mono WAV in LIST (one
+# path per line) through wavo (examples/batch.rs) and then the reference, one model load each, then
+# speed and text agreement. When either engine fails on a file, the comparison still prints (the
+# JSONL rows say which file) and make then fails.
+compare:
+	@set -eu; model=$$(hf download handy-computer/$(MODEL)-gguf $(MODEL)-Q8_0.gguf | sed 's/^path=//'); \
+	cargo build $(CARGO_FLAGS) --example batch; mkdir -p $(OUT); \
+	tr '\n' '\0' < $(LIST) | xargs -0 cat > /dev/null; \
+	/usr/bin/time -l target/release/examples/batch "$$model" $(LIST) \
+		> $(OUT)/wavo.jsonl 2> $(OUT)/wavo.time && wavo=0 || wavo=$$?; \
+	/usr/bin/time -l $(CLI) -m "$$model" --batch $(LIST) --batch-jsonl \
+		> $(OUT)/reference.jsonl 2> $(OUT)/reference.time && ref=0 || ref=$$?; \
+	target/release/examples/batch compare $(OUT)/wavo.jsonl $(OUT)/reference.jsonl; \
+	test $$wavo -eq 0 -a $$ref -eq 0

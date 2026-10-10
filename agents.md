@@ -135,6 +135,9 @@ the first call matter as much as warm speed.
   warm calls, median and min. Measure a change A/B/A back to back. When the two A runs differ by
   more than 3%, rerun later instead of concluding. Run one GPU job at a time.
 - Keep a speed change only when fixtures still match and the gain is clear. Delete rejected code.
+- On many recordings (text agreement and speed at scale, e.g. real dictation), use `make compare
+  MODEL=<name> LIST=<file of WAV paths> OUT=<dir>`: `examples/batch.rs` and the reference's
+  `--batch` mode, one model load each.
 
 ## Workflow
 

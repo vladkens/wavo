@@ -31,6 +31,10 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       VAD model) into segments of at most the model's window (`Model::max_audio_ms()`, GigaAM
       25 s) or a default for models without one, and joins the transcripts; `--segment` sets the
       length, `0` is one pass. Time linear in length, peak memory flat.
+- [x] **10. Real recordings vs transcribe.cpp.** `make compare` (`examples/batch.rs` and the
+      reference's batch mode, one model load each) on 2,923 of the person's dictation
+      recordings: the same text in 99.9% (GigaAM) and 98.9% (Parakeet V3) of them, every
+      difference from a near-tie; speed by length in `docs/perf.md` → "Real recordings".
 
 Later, only on request: Whisper, streaming, slowing fast speech down before recognition
 (pitch-keeping time-stretch such as WSOLA; first measure WER on samples sped up with ffmpeg
