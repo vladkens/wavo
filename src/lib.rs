@@ -6,6 +6,7 @@
 mod conformer;
 mod cpu;
 mod error;
+mod fft;
 mod gguf;
 mod gigaam;
 mod gpu;

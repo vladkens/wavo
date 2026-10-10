@@ -1200,7 +1200,6 @@ dependencies = [
  "hound",
  "pollster",
  "rubato",
- "rustfft",
  "symphonia",
  "thiserror",
  "ureq",
