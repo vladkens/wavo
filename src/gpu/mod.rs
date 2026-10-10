@@ -1,16 +1,19 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! wgpu device, weight upload, and a recorder that encodes kernel dispatches into one compute pass.
+//! wgpu device, weight upload, and a recorder that encodes kernel dispatches into compute passes.
 //! Each kernel has a portable version; a fast one (subgroups, cooperative matrices) replaces it
 //! when the device supports it and a probe dispatch of that pipeline succeeds.
 
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 pub use wgpu::{BindGroup, Buffer};
 
-use crate::error::{Result, bail};
+use crate::error::{Error, Result, bail};
 use crate::gguf::{Tensor, Type};
 
 type Pipeline = wgpu::ComputePipeline;
+
+/// Submissions a call may make (slots in `Gpu::marks`).
+const MARKS: u64 = 256;
 
 pub struct Gpu {
   device: wgpu::Device,
@@ -22,6 +25,15 @@ pub struct Gpu {
   fast: Fast,
   /// Bound for a writable output a dispatch doesn't use, so no writable binding aliases another.
   spare: Buffer,
+  /// One slot per submission of a call, set to the call's number when its work is done. A driver
+  /// may cancel a long submission and report success (i915 does after 20 s), which would read
+  /// back the previous call's output; a slot without the number makes the call an error instead.
+  marks: Buffer,
+  marks_read: Buffer,
+  /// The last call's number. Calls share `marks`, so each holds this lock while it runs.
+  calls: Mutex<u32>,
+  /// The first device-lost or uncaptured wgpu error, reported by the next call.
+  failure: Arc<Mutex<Option<String>>>,
 }
 
 struct Kernels {
@@ -36,6 +48,7 @@ struct Kernels {
   depthwise: Pipeline,
   first_depthwise: Pipeline,
   flatten: Pipeline,
+  mark: Pipeline,
 }
 
 #[derive(Default)]
@@ -97,26 +110,13 @@ pub enum Epilogue {
 impl Gpu {
   /// The device with the fast kernels that pass their probes, or only the portable ones.
   pub fn new(fast: bool) -> Result<Self> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-      power_preference: wgpu::PowerPreference::HighPerformance,
-      ..Default::default()
-    }))?;
-    let coop = wgpu::Features::SUBGROUP
-      | wgpu::Features::SUBGROUP_BARRIER
-      | wgpu::Features::EXPERIMENTAL_COOPERATIVE_MATRIX;
-    let fast = fast
-      && adapter.features().contains(coop)
-      && adapter.cooperative_matrix_properties().iter().any(|p| {
-        (p.m_size, p.n_size, p.k_size) == (8, 8, 8)
-          && p.ab_type == wgpu::CooperativeScalarType::F32
-          && p.cr_type == wgpu::CooperativeScalarType::F32
-      });
+    let adapter = adapter()?;
+    let fast = fast && offers_fast(&adapter);
     let mappable = adapter.get_info().device_type == wgpu::DeviceType::IntegratedGpu
       && adapter.features().contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
     let mut features = wgpu::Features::IMMEDIATES;
     if fast {
-      features |= coop;
+      features |= COOP;
     }
     if mappable {
       features |= wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
@@ -139,6 +139,11 @@ impl Gpu {
       },
       ..Default::default()
     }))?;
+    let failure = Arc::new(Mutex::new(None));
+    let f = failure.clone();
+    device.on_uncaptured_error(Arc::new(move |e| fail(&f, e.to_string())));
+    let f = failure.clone();
+    device.set_device_lost_callback(move |_, message| fail(&f, format!("device lost: {message}")));
 
     let gemm = module(&device, include_str!("gemm.wgsl"));
     let ops = module(&device, include_str!("ops.wgsl"));
@@ -155,15 +160,35 @@ impl Gpu {
       depthwise: pipeline(&device, &spatial, "depthwise", &[]),
       first_depthwise: pipeline(&device, &spatial, "first_depthwise", &[]),
       flatten: pipeline(&device, &spatial, "flatten", &[]),
+      mark: pipeline(&device, &ops, "mark", &[]),
     };
     let mut weights = wgpu::BufferUsages::STORAGE;
     if mappable {
       weights |= wgpu::BufferUsages::MAP_WRITE;
     }
-    let usage = wgpu::BufferUsages::STORAGE;
-    let desc = wgpu::BufferDescriptor { label: None, size: 4, usage, mapped_at_creation: false };
-    let spare = device.create_buffer(&desc);
-    let mut gpu = Self { device, queue, weights, kernels, fast: Fast::default(), spare };
+    let buffer = |size, usage| {
+      device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size,
+        usage,
+        mapped_at_creation: false,
+      })
+    };
+    let spare = buffer(4, wgpu::BufferUsages::STORAGE);
+    let marks = buffer(MARKS * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+    let marks_read = buffer(MARKS * 4, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
+    let mut gpu = Self {
+      device,
+      queue,
+      weights,
+      kernels,
+      fast: Fast::default(),
+      spare,
+      marks,
+      marks_read,
+      calls: Mutex::new(0),
+      failure,
+    };
     if fast {
       gpu.fast = gpu.fast_kernels();
     }
@@ -336,9 +361,16 @@ impl Gpu {
     if self.flash(head_dim, relative).is_some() { 1 } else { heads * t * t }
   }
 
-  /// Encodes one compute pass with `record`, runs it, and reads back `len` f32s of `out` through
-  /// the `read` buffer. `groups` caches bind groups by dispatch index, so a caller must record the
-  /// same dispatch sequence over the same buffers each time, and clear it when buffers change.
+  fn begin(&self) -> (wgpu::CommandEncoder, wgpu::ComputePass<'static>) {
+    let mut encoder = self.device.create_command_encoder(&Default::default());
+    let pass = encoder.begin_compute_pass(&Default::default()).forget_lifetime();
+    (encoder, pass)
+  }
+
+  /// Records the dispatches of `record` (one submission, or more with `Pass::flush`), runs them,
+  /// and reads back `len` f32s of `out` through the `read` buffer. `groups` caches bind groups by
+  /// dispatch index, so a caller must record the same dispatch sequence over the same buffers each
+  /// time, and clear it when buffers change.
   pub fn run(
     &self,
     groups: &mut Vec<BindGroup>,
@@ -347,26 +379,46 @@ impl Gpu {
     len: usize,
     record: impl FnOnce(&mut Pass),
   ) -> Result<Vec<f32>> {
-    let mut encoder = self.device.create_command_encoder(&Default::default());
-    record(&mut Pass {
-      gpu: self,
-      pass: encoder.begin_compute_pass(&Default::default()),
-      groups,
-      next: 0,
-    });
-    let size = (len * 4) as u64;
+    let mut calls = self.calls.lock().unwrap_or_else(PoisonError::into_inner);
+    *calls = calls.wrapping_add(1);
+    let call = *calls;
+    let mut p = Pass::new(self, groups, call);
+    record(&mut p);
+    p.mark(out);
+    let Pass { mut encoder, pass, marked, .. } = p;
+    drop(pass);
+    let (size, marks) = ((len * 4) as u64, marked as u64 * 4);
     encoder.copy_buffer_to_buffer(out, 0, read, 0, size);
+    encoder.copy_buffer_to_buffer(&self.marks, 0, &self.marks_read, 0, marks);
     self.queue.submit([encoder.finish()]);
 
-    let slice = read.slice(..size);
+    let slices = [read.slice(..size), self.marks_read.slice(..marks)];
     let (tx, rx) = mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+    for slice in &slices {
+      let tx = tx.clone();
+      slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+    }
     self.device.poll(wgpu::PollType::wait_indefinitely())?;
-    rx.recv().unwrap()?;
-    let data = bytemuck::cast_slice(&slice.get_mapped_range()?).to_vec();
+    for _ in &slices {
+      rx.recv().unwrap()?;
+    }
+    let data = bytemuck::cast_slice(&slices[0].get_mapped_range()?).to_vec();
+    let done =
+      bytemuck::cast_slice::<_, u32>(&slices[1].get_mapped_range()?).iter().all(|&m| m == call);
     read.unmap();
+    self.marks_read.unmap();
+    if let Some(failure) = self.failure.lock().unwrap_or_else(PoisonError::into_inner).take() {
+      return Err(Error::Gpu(failure));
+    }
+    if !done {
+      return Err(Error::Gpu("the driver did not finish the work (cancelled as too long?)".into()));
+    }
     Ok(data)
   }
+}
+
+fn fail(failure: &Mutex<Option<String>>, message: String) {
+  failure.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert(message);
 }
 
 /// Rows of projected positions for relative attention over `t` frames: positions t + 15 down to
@@ -379,6 +431,31 @@ pub fn pos_rows(t: usize) -> usize {
 /// Output length of a stride-2 conv with kernel 3 and padding 1 (or kernel 5 and padding 2).
 pub fn half(n: usize) -> usize {
   (n - 1) / 2 + 1
+}
+
+const COOP: wgpu::Features = wgpu::Features::SUBGROUP
+  .union(wgpu::Features::SUBGROUP_BARRIER)
+  .union(wgpu::Features::EXPERIMENTAL_COOPERATIVE_MATRIX);
+
+fn adapter() -> Result<wgpu::Adapter> {
+  let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+  Ok(pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    power_preference: wgpu::PowerPreference::HighPerformance,
+    ..Default::default()
+  }))?)
+}
+
+/// Whether `adapter` has what the fast kernels need: 8×8 F32 cooperative matrices and 32-lane
+/// subgroups. Apple GPUs do; Vulkan drivers so far offer F16/int8 matrices at best.
+fn offers_fast(adapter: &wgpu::Adapter) -> bool {
+  let info = adapter.get_info();
+  adapter.features().contains(COOP)
+    && (info.subgroup_min_size..=info.subgroup_max_size).contains(&32)
+    && adapter.cooperative_matrix_properties().iter().any(|p| {
+      (p.m_size, p.n_size, p.k_size) == (8, 8, 8)
+        && p.ab_type == wgpu::CooperativeScalarType::F32
+        && p.cr_type == wgpu::CooperativeScalarType::F32
+    })
 }
 
 fn module(device: &wgpu::Device, source: &str) -> wgpu::ShaderModule {
@@ -412,15 +489,53 @@ fn gemms(device: &wgpu::Device, module: &wgpu::ShaderModule) -> Vec<Pipeline> {
   (0..3).map(|ty| pipeline(device, module, "gemm", &[("WTYPE", ty as f64)])).collect()
 }
 
-/// Records kernel dispatches into one compute pass.
+/// Records kernel dispatches into a compute pass.
 pub struct Pass<'a> {
   gpu: &'a Gpu,
-  pass: wgpu::ComputePass<'a>,
+  encoder: wgpu::CommandEncoder,
+  pass: wgpu::ComputePass<'static>,
   groups: &'a mut Vec<BindGroup>,
   next: usize,
+  /// The call's number and the submissions marked so far (see `Gpu::marks`).
+  call: u32,
+  marked: u32,
+  /// The last submission `flush` made.
+  queued: Option<wgpu::SubmissionIndex>,
 }
 
-impl Pass<'_> {
+impl<'a> Pass<'a> {
+  fn new(gpu: &'a Gpu, groups: &'a mut Vec<BindGroup>, call: u32) -> Self {
+    let (encoder, pass) = gpu.begin();
+    Self { gpu, encoder, pass, groups, next: 0, call, marked: 0, queued: None }
+  }
+
+  /// Submits the work recorded so far, marked done once `after` is written, and waits for the
+  /// submission before it. A driver may cancel a long request (i915 20 s after it was queued,
+  /// while a slow GPU runs a minute of Parakeet for longer), so each request is short and at
+  /// most two are queued. Errors show in `Gpu::run`'s last poll. With the fast kernels (Apple) a
+  /// call stays one submission: splitting costs ~1% there, and a 20 s call ran fine.
+  pub fn flush(&mut self, after: &Buffer) {
+    if self.gpu.fast.gemm.is_some() {
+      return;
+    }
+    self.mark(after);
+    let (encoder, pass) = self.gpu.begin();
+    drop(std::mem::replace(&mut self.pass, pass));
+    let done = std::mem::replace(&mut self.encoder, encoder);
+    let index = self.gpu.queue.submit([done.finish()]);
+    if let Some(previous) = self.queued.replace(index) {
+      let wait = wgpu::PollType::Wait { submission_index: Some(previous), timeout: None };
+      let _ = self.gpu.device.poll(wait);
+    }
+  }
+
+  /// Marks the work recorded since the last mark done, once `after` is written.
+  fn mark(&mut self, after: &Buffer) {
+    let gpu = self.gpu;
+    self.run(&gpu.kernels.mark, &[after, &gpu.marks], &[self.marked, self.call], [1, 1, 1]);
+    self.marked += 1;
+  }
+
   /// Dispatches `kernel` with `buffers` bound in order and `params` as immediates.
   fn run(&mut self, kernel: &Pipeline, buffers: &[&Buffer], params: &[u32], [x, y, z]: [usize; 3]) {
     if self.next == self.groups.len() {
@@ -591,17 +706,19 @@ mod tests {
   use super::*;
   use crate::gguf::Gguf;
 
-  /// The portable path, then the fast one.
+  /// The portable path, then the fast one (also portable where the adapter doesn't offer it).
   fn gpus() -> &'static [Gpu; 2] {
     static GPUS: OnceLock<[Gpu; 2]> = OnceLock::new();
     GPUS.get_or_init(|| {
       let fast = Gpu::new(true).unwrap();
       let f = &fast.fast;
       let ops = [&f.layer_norm, &f.conv_glu, &f.attention, &f.relative];
-      assert!(
-        f.gemm.is_some() && ops.iter().all(|k| k.is_some()),
-        "a fast kernel failed its probe"
-      );
+      if offers_fast(&adapter().unwrap()) {
+        assert!(
+          f.gemm.is_some() && ops.iter().all(|k| k.is_some()),
+          "a fast kernel failed its probe"
+        );
+      }
       [Gpu::new(false).unwrap(), fast]
     })
   }

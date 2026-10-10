@@ -103,12 +103,14 @@ impl Conformer {
     Ok(Self { cfg, blocks })
   }
 
-  /// Records the blocks over `t` frames of `b.x`; returns the buffer that holds their output.
+  /// Records the blocks over `t` frames of `b.x`, each ending in `Pass::flush`; returns the buffer
+  /// that holds their output.
   pub fn record<'b>(&self, p: &mut Pass, b: &'b Buffers, t: usize) -> &'b Buffer {
     let (mut x, mut y) = (&b.x, &b.y);
     for k in &self.blocks {
       k.record(p, &self.cfg, b, x, y, t);
       std::mem::swap(&mut x, &mut y);
+      p.flush(x);
     }
     x
   }

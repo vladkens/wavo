@@ -93,6 +93,50 @@ sanity check, not a reference for speed.
 - First call is below the reference everywhere except rnnt ru-short and ru-long (within 0.5%).
   Load is 35–45% below, peak footprint 14–40 MiB below.
 
+### Linux: Intel N100 (4 cores, 24-EU UHD iGPU, 16 GiB), Ubuntu 24.04, Mesa 25.2.8
+
+A fanless MeLE Quieter 4C. wavo picks the iGPU through Vulkan (ANV on i915): no cooperative
+matrices, subgroups 8–32, so every kernel is the portable one. `default` is `cargo build
+--release`, `native` adds `-C target-cpu=native`. transcribe.cpp 5bb2deb is its CPU build with
+defaults (`-march=native`, 4 threads, no BLAS: "decoder uses scalar fallback"); its Vulkan build
+needs `spirv-headers` and was not measured. Per clip, back to back: wavo default `bench -n 10`,
+`transcribe-bench --warmup 1 --iters 10`, wavo native `bench -n 10`, `transcribe-bench --warmup 0
+--iters 1` (first call, load, peak). Cells are wavo default / wavo native / reference, ms; peak
+is RSS plus the iGPU buffers (DRM fdinfo) for wavo, RSS for the reference. Load average 1.0–1.7
+(2026-10-10).
+
+| Model | Clip | Warm median | First call | Load | Peak, MiB |
+|---|---|---|---|---|---|
+| GigaAM e2e-rnnt | ru | 963 / 828 / 902 | 964 / 833 / 898 | 1168 (cold shader cache) / 583 / 180 | 653 / 640 / 282 |
+| GigaAM e2e-rnnt | ru-short | 2536 / 2133 / 2470 | 2568 / 2136 / 2484 | 584 / 614 / 182 | 640 / 641 / 289 |
+| GigaAM e2e-rnnt | ru-long | 8456 / 7417 / 9847 (min 8478) | 8450 / 7433 / 8500 | 585 / 619 / 178 | 644 / 644 / 345 |
+| Parakeet TDT V2 | jfk | 3857 / 3645 / 2537 | 3868 / 3653 / 2505 | 1380 / 1554 / 671 | 1038 / 1038 / 1098 |
+| Parakeet TDT V2 | dots | 13628 / 12337 / 11045 (min 8929) | 13646 / 12337 / 8930 | 1394 / 1549 / 690 | 1046 / 1046 / 1212 |
+| Parakeet TDT V2 | jobs-silence | 2183 / 2166 / 1225 | 2178 / 2167 / 1204 | 1446 / 1418 / 683 | 1036 / 1036 / 1073 |
+
+- wavo matches the fixtures exactly (text, pieces, start times) on ANV and on llvmpipe, in both
+  builds. The reference's CPU build matches the text on all six clips but moves two tokens each
+  on ru-long and jfk by 1–3 frames.
+- Per call, wavo native mel / encoder / decoder against the reference's mel / encode / decode
+  medians: ru 0.7 / 815 / 11 vs 10.5 / 687 / 204, ru-long 5.5 / 7342 / 68 vs 78 / 8077 / 1690,
+  jfk 5.5 / 3500 / 132 vs 41 / 2423 / 53, dots 25 / 11601 / 712 vs 168 / 10465 / 388,
+  jobs-silence 6 / 2140 / 20 vs 21 / 1195 / 5. The portable encoder is 85–99% of wavo's time.
+  The reference's CPU encoder quantizes activations to Q8_0 and multiplies in int8 (AVX-VNNI),
+  and is faster; wavo wins GigaAM only through the reference's scalar RNN-T decoder.
+- The default build's decoder is the plain-Rust fallback (`mul_add` without FMA is a libm call):
+  GigaAM 145 / 419 / 1056 ms on the three clips, Parakeet 343 / 2003 / 44. `native` gives 11 /
+  29 / 68 and 132 / 712 / 20, bit-identical.
+- The reference's four CPU threads throttle after ~20 s on this fanless box (ru-long 8478 → ~9850,
+  dots 8929 → ~11 000 ms per call). wavo's iGPU stays at 750 MHz with the CPU idle.
+- wavo's iGPU buffers are 529 MiB (GigaAM) and 914 MiB (Parakeet) at any clip length.
+- i915 cancels a GPU request 20 s after it was queued ("Fence expiration time out") while wgpu
+  reports success. With the encoder in one submission (7.3 s on ru-long, 11.6 s on dots alone)
+  wavo returned the previous call's output or nothing: the fixture tests passed one at a time
+  but not six in parallel, and `wavo run parakeet-v2` on 5 minutes (60 s segments) printed
+  nothing. Fixed by one submission per block and a completion mark (see Log).
+- llvmpipe (`VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`, native, `-n 3`): ru 15.1 s,
+  ru-short 41.2 s, jfk 61.9 s warm; load 6–19 s.
+
 ## Long audio: one pass, no chunking (2026-10-10, phase 7)
 
 On the M2, `wavo run` and `transcribe-cli` once each per file under `/usr/bin/time -l`: process
@@ -433,6 +477,26 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 ## Log
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
+
+- 2026-10-10, all models, GPU work that fails or that a driver cancels is an error, and the
+  portable path submits each Conformer block on its own. i915 cancels a request 20 s after it
+  was queued and wgpu reports success, so every submission now ends with a `mark` dispatch that
+  writes the call's number to its own slot, read back with the output; wgpu's uncaptured and
+  device-lost errors are kept too. Per-block submissions only helped once each waited for the
+  one before (i915 starts the clock when a request is queued). N100: `make test` in parallel
+  0 → 6 of 6, `wavo run parakeet-v2` on 5 minutes 0 → 808 words, a 5-minute call in one pass an
+  error instead of stale text. M2, per block for every GPU (A/B/A/B/A, warm median): ru 43.4–43.8
+  → 44.0–44.2, jfk 141.6–143.2 → 142.9–144.2, dots 452.8–453.1 → 455.1–456.5 ms, ru-long equal;
+  so the fast path stays one submission, and against the code before the change ru 43.4–44.0 →
+  43.5–43.7, ru-long 297.6–298.2 → 298.0–298.7, jfk 142.5–143.8 → 141.9–142.3, dots 453.6–456.7
+  → 453.9–456.4 ms, first call and load within noise. Kept.
+
+- 2026-10-10, Linux N100 (ANV), `MemoryHints::MemoryUsage` in the device descriptor: iGPU buffers
+  529 → 324 MiB (GigaAM), 914 → 777 MiB (Parakeet V2); ru 828 → 828, jfk 3645 → 3646 ms (one run
+  each). Not kept yet: needs A/B/A, the M2 and the fixtures (plan `20261010-linux.md`).
+- 2026-10-10, Linux N100 (ANV), `-C target-cpu=native`: CPU decoder 13–15× faster on GigaAM,
+  2.6–2.8× on Parakeet V2, fixtures exact; warm ru-short 2536 → 2133 ms, dots 13628 → 12337 ms.
+  Not kept as a build flag: runtime-dispatched AVX2 tiles instead (plan `20261010-linux.md`).
 
 - 2026-10-10, GigaAM e2e-rnnt and Parakeet TDT V3, `wavo run` splitting long audio at pauses
   (≤ 25 / 60 s segments), 1 to 60 minutes: 10 minutes 15.6 → 5.2 s and 22.9 → 8.9 s, peak 856 →

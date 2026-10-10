@@ -15,6 +15,8 @@ pub enum Error {
   Map(#[from] wgpu::MapRangeError),
   #[error("GPU poll: {0}")]
   Poll(#[from] wgpu::PollError),
+  #[error("GPU: {0}")]
+  Gpu(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
