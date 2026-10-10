@@ -33,8 +33,13 @@ var<immediate> p: Params;
 // Q8_0 block scales as f16 pairs (any buffer for other types).
 @group(0) @binding(4) var<storage, read> scales: array<u32>;
 
+// Rounds to the nearest f16, ties to even, by hand: NVIDIA's Vulkan driver folds
+// unpack2x16float(pack2x16float(x)) into x and AMD's truncates. Normal halves keep 10 mantissa
+// bits, subnormal ones are multiples of 2^-24. Weights never exceed the f16 range.
 fn to_half(x: f32) -> f32 {
-  return unpack2x16float(pack2x16float(vec2(x, 0.0))).x;
+  let b = bitcast<u32>(x);
+  let normal = bitcast<f32>((b + 0xfffu + ((b >> 13u) & 1u)) & 0xffffe000u);
+  return select(normal, round(x * 0x1p24) * 0x1p-24, abs(x) < 0x1p-14);
 }
 
 fn scale(block: u32) -> f32 {
