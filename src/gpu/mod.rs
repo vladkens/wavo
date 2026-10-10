@@ -1088,12 +1088,13 @@ mod tests {
     let (heads, hd) = (2, 40);
     let d = heads * hd;
     // Rows of K then V of all heads, f16.
-    let kv = random(300 * 2 * d, 7);
+    let kv = random(1500 * 2 * d, 7);
     let q = random(d, 8);
     for gpu in gpus() {
       let (qb, xb) = (up(gpu, &q), up(gpu, &kv));
-      let cache = gpu.buffer(300 * d);
-      for n in [1, 37, 300] {
+      let cache = gpu.buffer(1500 * d);
+      // 1500 keys: Whisper's cross-attention over a whole window.
+      for n in [1, 37, 300, 1500] {
         let mut want = vec![0.0; d];
         for h in 0..heads {
           let s: Vec<f32> = (0..n)
@@ -1111,7 +1112,7 @@ mod tests {
           }
         }
         let got = run(gpu, &vec![0.0; d], |p, o| {
-          p.pack(&xb, &cache, 300 * d, 0, 0);
+          p.pack(&xb, &cache, 1500 * d, 0, 0);
           p.attend(&qb, &cache, o, n, heads, hd);
         });
         assert_close(&got, &want);

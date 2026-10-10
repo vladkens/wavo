@@ -114,6 +114,10 @@ mod tests {
     let m = find("gigaam-v3").unwrap();
     assert_eq!(m.repo(), "handy-computer/gigaam-v3-e2e-rnnt-gguf");
     assert_eq!(m.file(), "gigaam-v3-e2e-rnnt-Q8_0.gguf");
+    assert_eq!(name("whisper-large-v3-turbo"), "whisper-turbo");
+    let m = find("whisper-turbo").unwrap();
+    assert_eq!(m.repo(), "handy-computer/whisper-large-v3-turbo-gguf");
+    assert_eq!(m.file(), "whisper-large-v3-turbo-Q8_0.gguf");
   }
 
   #[test]
