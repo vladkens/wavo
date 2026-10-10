@@ -51,8 +51,10 @@ fn main() -> ExitCode {
 }
 
 fn cli(args: &[&str]) -> Result<()> {
+  let help = args.iter().any(|a| matches!(*a, "-h" | "--help"));
   match args {
-    [] | ["help" | "-h" | "--help"] => println!("{}", usage()),
+    [] | ["help"] => println!("{}", usage()),
+    _ if help => println!("{}", usage()),
     ["-V" | "--version"] => println!("wavo {}", env!("CARGO_PKG_VERSION")),
     ["run", args @ ..] => run(args)?,
     ["pull", name] => pull(name)?,
