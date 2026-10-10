@@ -36,6 +36,10 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       recordings: the same text in 99.9% (GigaAM) and 98.9% (Parakeet V3) of them, every
       difference from a near-tie; speed by length in `docs/perf.md` → "Real recordings".
 
+After the models: **fast build.** A clean release build takes 42 s, mostly the wgpu chain (naga →
+wgpu-core → wgpu); rebuilding the library after a change takes 14 s, and 58% of its code is
+`rustfft`'s generic planner. Plan: [docs/plans/20261010-fast-build.md](plans/20261010-fast-build.md).
+
 Later, only on request: Whisper, streaming, slowing fast speech down before recognition
 (pitch-keeping time-stretch such as WSOLA; first measure WER on samples sped up with ffmpeg
 `atempo`, with and without slowing them back down).
