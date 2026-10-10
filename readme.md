@@ -1,6 +1,8 @@
-# `wavo` – speech to text on your GPU
-
 <div align="center">
+
+<img src="https://github.com/vladkens/wavo/blob/assets/wavo.png?raw=true" alt="wavo" width="600" />
+
+**Speech to text on your GPU, in pure Rust**
 
 [<img src="https://badges.ws/github/license/vladkens/wavo" alt="license" />](https://github.com/vladkens/wavo/blob/main/LICENSE)
 
