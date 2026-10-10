@@ -1,8 +1,9 @@
 # Other engines
 
-After Whisper lands. On the M2, the same audio, each engine with its defaults: warm median, first
-call, load (cold and cached), peak memory and, where possible, power (`powermetrics` or `macmon`).
-Conclusions go to `docs/perf.md` and the readme's Speed section.
+After Whisper lands. On the M2, the same audio, each engine in wavo's setup (greedy, the same
+language) and with its own defaults: warm median, first call, load (cold and cached), peak memory
+and, where possible, power (`powermetrics` or `macmon`). Conclusions go to `docs/perf.md`; the
+readme compares only with transcribe.cpp.
 
 - [x] Whisper large-v3-turbo: whisper.cpp (Metal).
 - [ ] Whisper large-v3-turbo: WhisperKit (Core ML, Neural Engine).
