@@ -129,10 +129,11 @@ is RSS plus the iGPU buffers (DRM fdinfo) for wavo, RSS for the reference. Load 
 - The reference's four CPU threads throttle after ~20 s on this fanless box (ru-long 8478 → ~9850,
   dots 8929 → ~11 000 ms per call). wavo's iGPU stays at 750 MHz with the CPU idle.
 - wavo's iGPU buffers are 529 MiB (GigaAM) and 914 MiB (Parakeet) at any clip length.
-- i915 cancels a GPU request after 20 s ("Fence expiration time out"), and wavo then returns the
-  previous call's output or nothing. One encoder submission takes 7.3 s on ru-long and 11.6 s
-  on dots alone, so the fixture tests pass one at a time but not six in parallel, and
-  `wavo run parakeet-v2` on 5 minutes (60 s segments) prints nothing; `--segment 30` works.
+- i915 cancels a GPU request 20 s after it was queued ("Fence expiration time out") while wgpu
+  reports success. With the encoder in one submission (7.3 s on ru-long, 11.6 s on dots alone)
+  wavo returned the previous call's output or nothing: the fixture tests passed one at a time
+  but not six in parallel, and `wavo run parakeet-v2` on 5 minutes (60 s segments) printed
+  nothing. Fixed by one submission per block and a completion mark (see Log).
 - llvmpipe (`VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`, native, `-n 3`): ru 15.1 s,
   ru-short 41.2 s, jfk 61.9 s warm; load 6–19 s.
 
@@ -476,6 +477,19 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 ## Log
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
+
+- 2026-10-10, all models, GPU work that fails or that a driver cancels is an error, and the
+  portable path submits each Conformer block on its own. i915 cancels a request 20 s after it
+  was queued and wgpu reports success, so every submission now ends with a `mark` dispatch that
+  writes the call's number to its own slot, read back with the output; wgpu's uncaptured and
+  device-lost errors are kept too. Per-block submissions only helped once each waited for the
+  one before (i915 starts the clock when a request is queued). N100: `make test` in parallel
+  0 → 6 of 6, `wavo run parakeet-v2` on 5 minutes 0 → 808 words, a 5-minute call in one pass an
+  error instead of stale text. M2, per block for every GPU (A/B/A/B/A, warm median): ru 43.4–43.8
+  → 44.0–44.2, jfk 141.6–143.2 → 142.9–144.2, dots 452.8–453.1 → 455.1–456.5 ms, ru-long equal;
+  so the fast path stays one submission, and against the code before the change ru 43.4–44.0 →
+  43.5–43.7, ru-long 297.6–298.2 → 298.0–298.7, jfk 142.5–143.8 → 141.9–142.3, dots 453.6–456.7
+  → 453.9–456.4 ms, first call and load within noise. Kept.
 
 - 2026-10-10, Linux N100 (ANV), `MemoryHints::MemoryUsage` in the device descriptor: iGPU buffers
   529 → 324 MiB (GigaAM), 914 → 777 MiB (Parakeet V2); ru 828 → 828, jfk 3645 → 3646 ms (one run

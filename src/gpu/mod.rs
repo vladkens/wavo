@@ -1,5 +1,5 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! wgpu device, weight upload, and a recorder that encodes kernel dispatches into one compute pass.
+//! wgpu device, weight upload, and a recorder that encodes kernel dispatches into compute passes.
 //! Each kernel has a portable version; a fast one (subgroups, cooperative matrices) replaces it
 //! when the device supports it and a probe dispatch of that pipeline succeeds.
 
@@ -361,9 +361,16 @@ impl Gpu {
     if self.flash(head_dim, relative).is_some() { 1 } else { heads * t * t }
   }
 
-  /// Encodes one compute pass with `record`, runs it, and reads back `len` f32s of `out` through
-  /// the `read` buffer. `groups` caches bind groups by dispatch index, so a caller must record the
-  /// same dispatch sequence over the same buffers each time, and clear it when buffers change.
+  fn begin(&self) -> (wgpu::CommandEncoder, wgpu::ComputePass<'static>) {
+    let mut encoder = self.device.create_command_encoder(&Default::default());
+    let pass = encoder.begin_compute_pass(&Default::default()).forget_lifetime();
+    (encoder, pass)
+  }
+
+  /// Records the dispatches of `record` (one submission, or more with `Pass::flush`), runs them,
+  /// and reads back `len` f32s of `out` through the `read` buffer. `groups` caches bind groups by
+  /// dispatch index, so a caller must record the same dispatch sequence over the same buffers each
+  /// time, and clear it when buffers change.
   pub fn run(
     &self,
     groups: &mut Vec<BindGroup>,
@@ -492,13 +499,34 @@ pub struct Pass<'a> {
   /// The call's number and the submissions marked so far (see `Gpu::marks`).
   call: u32,
   marked: u32,
+  /// The last submission `flush` made.
+  queued: Option<wgpu::SubmissionIndex>,
 }
 
 impl<'a> Pass<'a> {
   fn new(gpu: &'a Gpu, groups: &'a mut Vec<BindGroup>, call: u32) -> Self {
-    let mut encoder = gpu.device.create_command_encoder(&Default::default());
-    let pass = encoder.begin_compute_pass(&Default::default()).forget_lifetime();
-    Self { gpu, encoder, pass, groups, next: 0, call, marked: 0 }
+    let (encoder, pass) = gpu.begin();
+    Self { gpu, encoder, pass, groups, next: 0, call, marked: 0, queued: None }
+  }
+
+  /// Submits the work recorded so far, marked done once `after` is written, and waits for the
+  /// submission before it. A driver may cancel a long request (i915 20 s after it was queued,
+  /// while a slow GPU runs a minute of Parakeet for longer), so each request is short and at
+  /// most two are queued. Errors show in `Gpu::run`'s last poll. With the fast kernels (Apple) a
+  /// call stays one submission: splitting costs ~1% there, and a 20 s call ran fine.
+  pub fn flush(&mut self, after: &Buffer) {
+    if self.gpu.fast.gemm.is_some() {
+      return;
+    }
+    self.mark(after);
+    let (encoder, pass) = self.gpu.begin();
+    drop(std::mem::replace(&mut self.pass, pass));
+    let done = std::mem::replace(&mut self.encoder, encoder);
+    let index = self.gpu.queue.submit([done.finish()]);
+    if let Some(previous) = self.queued.replace(index) {
+      let wait = wgpu::PollType::Wait { submission_index: Some(previous), timeout: None };
+      let _ = self.gpu.device.poll(wait);
+    }
   }
 
   /// Marks the work recorded since the last mark done, once `after` is written.
