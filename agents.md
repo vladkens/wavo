@@ -185,6 +185,8 @@ the first call matter as much as warm speed.
      deleted. Never commit or push to `main` directly.
   7. On conflicts, the orchestrator (or an agent it asks) rebases the branch onto `main`, reruns the
      checks and pushes with `--force-with-lease`.
+- A release is the one exception: a single `release: vX.Y.Z` commit on `main` with only
+  `changelog.md` and the version bump, without a branch or pull request.
 - An orchestrating agent writes each task, verifies every report itself (`make check`, `make test`,
   the diff, benchmarks) instead of trusting it, and keeps the person informed.
 - Build in vertical slices: the first commit for a model already produces a transcript; speed
