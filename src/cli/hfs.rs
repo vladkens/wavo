@@ -79,9 +79,9 @@ impl Cache {
   }
 
   /// Downloads the file at `main` unless that revision is cached, as huggingface_hub does.
-  pub fn pull(&self, repo: &str, file: &str) -> Result<PathBuf> {
+  pub fn pull(&self, repo: &str, file: &str, live: bool) -> Result<PathBuf> {
     let remote = head(repo, file)?;
-    self.install(repo, file, &remote, |part| download(&remote.url, part, remote.size, file))
+    self.install(repo, file, &remote, |part| download(&remote.url, part, remote.size, file, live))
   }
 
   /// Holds `<root>/.locks/<repo folder>/<name>.lock` until the file is dropped.
@@ -218,8 +218,9 @@ fn head(repo: &str, file: &str) -> Result<Remote> {
   })
 }
 
-/// Appends to `part` from where an interrupted pull stopped; progress goes to stderr.
-fn download(url: &str, part: &Path, size: u64, file: &str) -> Result<()> {
+/// Appends to `part` from where an interrupted pull stopped; progress goes to stderr, updated in
+/// place when `live` and stderr is a terminal.
+fn download(url: &str, part: &Path, size: u64, file: &str, live: bool) -> Result<()> {
   let mut out = OpenOptions::new().create(true).append(true).open(part)?;
   let have = out.metadata()?.len();
   let mut done = if have < size { have } else { 0 };
@@ -232,7 +233,7 @@ fn download(url: &str, part: &Path, size: u64, file: &str) -> Result<()> {
   let resume = if done > 0 { format!(", resuming at {:.0} MB", mb(done)) } else { String::new() };
   eprintln!("downloading {file} ({:.2} GB{resume})", mb(size) / 1e3);
   let (mut body, mut buf) = (resp.into_body().into_reader(), vec![0; 1 << 20]);
-  let (start, from, tty) = (Instant::now(), done, io::stderr().is_terminal());
+  let (start, from, tty) = (Instant::now(), done, live && io::stderr().is_terminal());
   let mut shown = start;
   let show = |done: u64| {
     let speed = mb(done - from) / start.elapsed().as_secs_f64();
@@ -250,7 +251,7 @@ fn download(url: &str, part: &Path, size: u64, file: &str) -> Result<()> {
       eprint!("\r{}", show(done));
     }
   }
-  eprintln!("{}{}", if tty { "\r" } else { "" }, show(done));
+  eprintln!("{}{file}: {}", if tty { "\r" } else { "" }, show(done));
   Ok(())
 }
 

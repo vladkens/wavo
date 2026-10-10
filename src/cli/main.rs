@@ -21,7 +21,7 @@ Usage:
                                  --json adds tokens with start times, --srt prints subtitles;
                                  longer audio is split at pauses into segments of up to SECS
                                  (25 for GigaAM, 30 for Whisper, else 60; 0 for one pass)
-  wavo pull MODEL                download a model
+  wavo pull MODEL...             download models, several at once
   wavo list                      list downloaded models
   wavo rm MODEL                  delete a downloaded model
   wavo bench MODEL AUDIO [-n N]  time the model load, the first call and N more (10)
@@ -63,7 +63,7 @@ fn cli(args: &[&str]) -> Result<()> {
     _ if help => println!("{}", usage()),
     ["-V" | "--version"] => println!("wavo {}", env!("CARGO_PKG_VERSION")),
     ["run", args @ ..] => run(args)?,
-    ["pull", name] => pull(name)?,
+    ["pull", names @ ..] if !names.is_empty() => pull(names)?,
     ["list" | "ls"] => list()?,
     ["rm", name] => rm(name)?,
     ["bench", model, audio] => bench(model, audio, 10)?,
@@ -146,10 +146,29 @@ fn named(arg: &str) -> Result<&'static models::Model> {
   }
 }
 
-fn pull(arg: &str) -> Result<()> {
-  let m = named(arg)?;
-  let path = hfs::Cache::new().pull(&m.repo(), &m.file());
-  println!("{}", path.with_context(|| format!("pulling {}", m.name))?.display());
+/// One thread per model; live progress only for a single one, whose line would be overwritten.
+fn pull(args: &[&str]) -> Result<()> {
+  let models = args.iter().map(|arg| named(arg)).collect::<Result<Vec<_>>>()?;
+  let (cache, live) = (hfs::Cache::new(), models.len() == 1);
+  let results: Vec<_> = std::thread::scope(|s| {
+    let cache = &cache;
+    let pulls: Vec<_> =
+      models.iter().map(|m| s.spawn(move || cache.pull(&m.repo(), &m.file(), live))).collect();
+    pulls.into_iter().map(|pull| pull.join().unwrap()).collect()
+  });
+  let mut failed = 0;
+  for (m, result) in models.iter().zip(results) {
+    match result {
+      Ok(path) => println!("{}", path.display()),
+      Err(e) => {
+        eprintln!("error: pulling {}: {e:#}", m.name);
+        failed += 1;
+      }
+    }
+  }
+  if failed > 0 {
+    bail!("{failed} of {} pulls failed", models.len());
+  }
   Ok(())
 }
 

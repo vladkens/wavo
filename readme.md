@@ -93,6 +93,7 @@ RTX 4060 laptop transcribes 11 s of audio in 64 ms (`gigaam-v3`), 102 ms (`parak
 
 ```sh
 wavo pull parakeet-v3                 # download a model
+wavo pull gigaam-v3 whisper-turbo     # or several at once
 wavo run talk.m4a                     # transcribe with parakeet-v3
 wavo run gigaam-v3 talk.mp3           # or with another model
 wavo run talk.wav --json              # text and every token with its start time
