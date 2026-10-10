@@ -178,3 +178,14 @@ fn softmax(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index
     sm_s[base + j] *= inv;
   }
 }
+
+// Writes the call's number p.ch to slot p.t of mk_marks once mk_after (bound only to order this
+// after its last writer) is written: proof that a submission ran to its end.
+
+@group(0) @binding(0) var<storage, read> mk_after: array<f32>;
+@group(0) @binding(1) var<storage, read_write> mk_marks: array<u32>;
+
+@compute @workgroup_size(1)
+fn mark() {
+  mk_marks[p.t] = p.ch | (bitcast<u32>(mk_after[0]) & 0u);
+}
