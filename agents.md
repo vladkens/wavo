@@ -144,8 +144,8 @@ the first call matter as much as warm speed.
   1. Agree the plan with the person. For multi-step work keep a checklist in
      `docs/plans/yyyymmdd-<name>.md`; in it, only tick checkboxes: no evidence, progress or status
      prose.
-  2. Branch from `main`. Each agent works in its own git worktree, so parallel tasks don't touch
-     each other's files.
+  2. Branch from `main` as `feat/<name>`, whatever the change. Each agent works in its own git
+     worktree, so parallel tasks don't touch each other's files.
   3. Commit on the branch every step that passes `make check` and `make test`: one short lowercase
      line, no body, roadmap/docs updated in the same commit. Any agent on the task may commit;
      fix-ups are fine, the branch is squashed.
