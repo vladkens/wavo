@@ -1,7 +1,6 @@
 name: main
 
-# Never add pull_request_target or issue_comment: they run untrusted code with the base branch's
-# rights and can poison its cache. With push and pull_request GitHub keeps PR caches to the PR.
+# Never pull_request_target or issue_comment: they run PR code with the base branch's rights.
 on:
   push:
     branches: [main]
@@ -18,37 +17,47 @@ concurrency:
 
 jobs:
   test:
-    runs-on: macos-latest
+    runs-on: macos-latest # the only GitHub runners with a GPU: the tests run models on Metal
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
         with:
-          persist-credentials: false
-      - uses: actions/cache@v6
-        with:
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-
-      - run: rustup update --no-self-update stable && rustup default stable
+          shared-key: release
+          save-if: ${{ github.event_name != 'pull_request' }}
       - run: rustup toolchain install nightly --profile minimal --component rustfmt
+      - run: make build
+      - run: make models-ci > "$RUNNER_TEMP/models.log" 2>&1 & # downloads in the background
       - run: make check
-      - run: make test-unit
+      - run: make samples
+      - run: make models-ci # waits for those downloads, or retries a failed one
+      - run: make test-ci
 
-  # `dev` builds the archives as a workflow artifact, on main and on manual runs; on main,
-  # `dev-release` publishes them as the `dev` pre-release. Only the job that builds nothing gets
-  # write access, so dependency build scripts never run with it.
-  dev:
-    if: github.event_name != 'pull_request'
-    runs-on: macos-latest
-    needs: test
-    permissions:
-      contents: read
+  # A slowdown only warns; a broken build or a failing model fails the job.
+  bench:
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest # a GPU, as for `test`
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
-          persist-credentials: false
+          fetch-depth: 2 # the parent commit too, to see whether src/ changed
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: false
+      - run: make bench-compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  # Main only: `dev` builds the archives next to `test`, `dev-release` publishes them as the `dev`
+  # pre-release once both pass. Two jobs, so the token that can write to the repo never sits on
+  # the machine that runs the build scripts of every dependency.
+  dev:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-latest # the macOS binary needs a Mac; Linux and Windows cross-compile
+    steps:
+      - uses: actions/checkout@v7
       # One cache for the registry, cargo-cross, the targets' dependencies and the cross toolchains.
       - uses: Swatinem/rust-cache@v2
         with:
@@ -62,9 +71,8 @@ jobs:
           path: target/distrib/*
 
   dev-release:
-    if: github.ref == 'refs/heads/main'
-    runs-on: macos-latest
-    needs: dev
+    runs-on: ubuntu-latest # no GPU or build here, and Linux runners start faster
+    needs: [test, dev]
     permissions:
       attestations: write
       contents: write

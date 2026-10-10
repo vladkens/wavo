@@ -18,7 +18,7 @@ test:
 
 build:
 	cargo build $(CARGO_FLAGS)
-	ls -lh target/release/$(shell basename $(CURDIR))
+	ls -lh target/release/wavo
 
 # Prebuilt binaries as target/distrib/wavo-dev-<target>.tar.gz (.zip for Windows), from an Apple
 # Silicon Mac: Linux (glibc 2.28) and Windows through cargo-cross, installed at a fixed version.
@@ -46,24 +46,43 @@ clean:
 	cargo clean
 
 # wavo
-.PHONY: test-unit models reference fixtures compare
+.PHONY: test-unit test-ci models models-ci samples reference fixtures compare bench-compare
 
 MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
 	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 whisper-large-v3-turbo
+# CI downloads and tests (by these names in tests/models.rs) only the smallest model of each
+# family; switch when a smaller one is added (e.g. whisper-small). `make test` covers them all.
+CI_MODELS := gigaam-v3-e2e-rnnt parakeet-tdt-0.6b-v3 whisper-large-v3-turbo
+CI_TESTS := gigaam_v3_e2e_rnnt parakeet_tdt_v3 whisper_large_v3_turbo
 REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
 CLI := 3rd/transcribe.cpp/build/bin/transcribe-cli
 # Whisper has segment timestamps only: TIMESTAMPS=segment.
 TIMESTAMPS := token
 
-# CI has no models: unit tests only.
+# Unit tests only: no models or 3rd/ needed.
 test-unit:
 	cargo test $(CARGO_FLAGS) --lib --bins
 
-models:
-	for m in $(MODELS); do hf download handy-computer/$$m-gguf $$m-Q8_0.gguf; done
+test-ci: test-unit
+	cargo test $(CARGO_FLAGS) --test models -- --exact $(CI_TESTS)
+
+# All at once with our own `wavo pull`. A second run waits on the first one's locks.
+models: build
+	target/release/wavo pull $(MODELS)
+
+models-ci:
+	$(MAKE) models MODELS="$(CI_MODELS)"
+
+# Only the reference's samples/, for `make test` without building it.
+samples:
+	test -d 3rd/transcribe.cpp || { git clone --filter=blob:none --no-checkout --sparse \
+		https://github.com/handy-computer/transcribe.cpp 3rd/transcribe.cpp \
+		&& git -C 3rd/transcribe.cpp sparse-checkout set samples \
+		&& git -C 3rd/transcribe.cpp checkout -q --detach $(REFERENCE_REV); }
 
 reference:
 	test -d 3rd/transcribe.cpp || git clone https://github.com/handy-computer/transcribe.cpp 3rd/transcribe.cpp
+	git -C 3rd/transcribe.cpp sparse-checkout disable
 	git -C 3rd/transcribe.cpp checkout --detach $(REFERENCE_REV)
 	cmake -S 3rd/transcribe.cpp -B 3rd/transcribe.cpp/build -DCMAKE_BUILD_TYPE=Release -DTRANSCRIBE_BUILD_TOOLS=ON \
 		"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=$(CURDIR)/3rd/transcribe.cpp/build/bin"
@@ -82,3 +101,7 @@ fixtures:
 # make compare MODEL=gigaam-v3-e2e-rnnt LIST=wavs.txt OUT=dir (see the script)
 compare:
 	scripts/compare.sh "$(MODEL)" "$(LIST)" "$(OUT)"
+
+# Coarse speed check against main's dev build, for CI (see the script).
+bench-compare:
+	scripts/ci-bench.sh
