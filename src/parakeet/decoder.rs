@@ -2,8 +2,10 @@
 //! TDT greedy decoding on the CPU: a predictor of stacked LSTM layers over the last emitted token,
 //! and a joint `out(relu(enc + pred(h)))` whose outputs are the token logits, then one logit per
 //! duration (how many frames to advance). The encoder side of the joint is projected on the GPU.
+//! Weights stay Q8_0, so an LSTM step and a joint (V3's: 13.5 MB) stay in the performance cores'
+//! L2.
 
-use crate::cpu::{matmul, rows4};
+use crate::cpu::{Q8, matvecs};
 use crate::error::{Result, bail};
 use crate::gguf::Gguf;
 
@@ -16,20 +18,20 @@ pub struct Decoder {
   durations: Vec<usize>,
   max_symbols: usize,
   /// `[classes][hidden]`
-  embed: Vec<f32>,
+  embed: Q8,
   lstm: Vec<Lstm>,
-  /// `[joint][hidden]`, rows padded to a multiple of 4.
-  pred_w: Vec<f32>,
+  /// `[joint][hidden]`
+  pred_w: Q8,
   pred_b: Vec<f32>,
-  /// `[classes + durations][joint]`, rows padded to a multiple of 4.
-  out_w: Vec<f32>,
+  /// `[classes + durations][joint]`
+  out_w: Q8,
   out_b: Vec<f32>,
 }
 
 struct Lstm {
   /// `[4·hidden][hidden]`, gates i, f, g, o.
-  wx: Vec<f32>,
-  wh: Vec<f32>,
+  wx: Q8,
+  wh: Q8,
   /// `bias_ih + bias_hh`
   bias: Vec<f32>,
 }
@@ -49,11 +51,12 @@ impl Decoder {
       bail!("stt.parakeet.tdt.max_symbols is 0");
     }
     let t = |name: &str, dims: &[usize]| g.tensor(name, dims).and_then(|t| t.to_f32());
+    let q = |name: &str, dims: &[usize]| g.tensor(name, dims).and_then(|t| Q8::new(&t));
     let lstm = (0..u("predictor.n_layers")?)
       .map(|l| {
         Ok(Lstm {
-          wx: t(&format!("pred.lstm.{l}.Wx"), &[hidden, 4 * hidden])?,
-          wh: t(&format!("pred.lstm.{l}.Wh"), &[hidden, 4 * hidden])?,
+          wx: q(&format!("pred.lstm.{l}.Wx"), &[hidden, 4 * hidden])?,
+          wh: q(&format!("pred.lstm.{l}.Wh"), &[hidden, 4 * hidden])?,
           bias: t(&format!("pred.lstm.{l}.bias"), &[4 * hidden])?,
         })
       })
@@ -66,11 +69,11 @@ impl Decoder {
       blank,
       durations: durations.into_iter().map(|d| d as usize).collect(),
       max_symbols,
-      embed: t("pred.embed.weight", &[hidden, classes])?,
+      embed: q("pred.embed.weight", &[hidden, classes])?,
       lstm,
-      pred_w: rows4(t("joint.pred.weight", &[hidden, joint])?, hidden),
+      pred_w: q("joint.pred.weight", &[hidden, joint])?,
       pred_b: t("joint.pred.bias", &[joint])?,
-      out_w: rows4(t("joint.out.weight", &[joint, outputs])?, joint),
+      out_w: q("joint.out.weight", &[joint, outputs])?,
       out_b: t("joint.out.bias", &[outputs])?,
     })
   }
@@ -94,19 +97,14 @@ impl Decoder {
   /// or zeros. Returns the next state and the joint's predictor projection of the top h.
   fn predict(&self, token: Option<usize>, state: &[f32]) -> (Vec<f32>, Vec<f32>) {
     let n = self.hidden;
-    let mut x = token.map_or(vec![0.0; n], |t| self.embed[t * n..][..n].to_vec());
+    let mut x = token.map_or(vec![0.0; n], |t| self.embed.row(t));
     let mut next = vec![0.0; state.len()];
     let sigmoid = |v: f32| 1.0 / (1.0 + (-v).exp());
     for ((l, s), out) in
       self.lstm.iter().zip(state.chunks_exact(2 * n)).zip(next.chunks_exact_mut(2 * n))
     {
       let (h, c) = s.split_at(n);
-      // Each product streams 6.5 MB of weights, more than a core's share of the L2: two cores.
-      let (gx, gh) = std::thread::scope(|s| {
-        let gx = s.spawn(|| matmul(&l.wx, &x, n));
-        let gh = matmul(&l.wh, h, n);
-        (gx.join().unwrap(), gh)
-      });
+      let [gx, gh] = matvecs([(&l.wx, &x), (&l.wh, h)]);
       let gate = |i: usize| gx[i] + gh[i] + l.bias[i];
       let (nh, nc) = out.split_at_mut(n);
       for k in 0..n {
@@ -116,14 +114,15 @@ impl Decoder {
       }
       x = nh.to_vec();
     }
-    let pred = matmul(&self.pred_w, &x, n).iter().zip(&self.pred_b).map(|(d, b)| d + b).collect();
+    let [pred] = matvecs([(&self.pred_w, &x)]);
+    let pred = pred.iter().zip(&self.pred_b).map(|(d, b)| d + b).collect();
     (next, pred)
   }
 
   /// The joint's token and duration index for one frame (each argmax takes the first maximum).
   fn joint(&self, enc: &[f32], pred: &[f32]) -> (usize, usize) {
     let z: Vec<f32> = enc.iter().zip(pred).map(|(e, p)| (e + p).max(0.0)).collect();
-    let d = matmul(&self.out_w, &z, self.joint);
+    let [d] = matvecs([(&self.out_w, &z)]);
     let logits: Vec<f32> = d.iter().zip(&self.out_b).map(|(d, b)| d + b).collect();
     let (tokens, durations) = logits.split_at(self.classes);
     (argmax(tokens), argmax(durations))

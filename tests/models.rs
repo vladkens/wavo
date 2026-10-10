@@ -86,3 +86,8 @@ fn gigaam_v3_ctc() {
 fn parakeet_tdt_v2() {
   check("parakeet-tdt-0.6b-v2", &["jfk", "dots", "jobs-silence"]);
 }
+
+#[test]
+fn parakeet_tdt_v3() {
+  check("parakeet-tdt-0.6b-v3", &["jfk", "ru-short", "uk-short"]);
+}

@@ -5,8 +5,8 @@ Speech-to-text in pure Rust. Runs the GGUF ASR models published by
 custom WGSL kernels: no C/C++, ONNX or BLAS, just `cargo build`.
 
 Works now, on Apple Silicon: the four GigaAM v3 models (Russian) and Parakeet TDT 0.6B v2
-(English), with output that matches transcribe.cpp exactly (text, tokens and timestamps). More
-models are next: [docs/roadmap.md](docs/roadmap.md).
+(English) and v3 (25 European languages), with output that matches transcribe.cpp exactly (text,
+tokens and timestamps). More models are next: [docs/roadmap.md](docs/roadmap.md).
 
 | Model | Head | Output |
 |---|---|---|
@@ -15,6 +15,7 @@ models are next: [docs/roadmap.md](docs/roadmap.md).
 | `gigaam-v3-rnnt` | RNN-T | lowercase letters and spaces |
 | `gigaam-v3-ctc` | CTC | lowercase letters and spaces |
 | `parakeet-tdt-0.6b-v2` | TDT | English, cased, punctuated (1024 SentencePiece pieces) |
+| `parakeet-tdt-0.6b-v3` | TDT | 25 European languages, cased, punctuated (8192 SentencePiece pieces) |
 
 ## Usage
 
@@ -53,8 +54,11 @@ model load are from a fresh process; memory is the peak footprint. Measured back
 | `gigaam-v3-ctc` | 4.5 s | 39.8 / 41.3 | 43.1 / 52.3 | 74 / 123 | 288 / 313 |
 |  | 11 s | 85.0 / 91.5 | 89.5 / 94.0 | 75 / 129 | 293 / 314 |
 |  | 34 s | 269 / 291 | 275 / 295 | 77 / 125 | 314 / 322 |
-| `parakeet-tdt-0.6b-v2` | 11 s | 149 / 189 | 153 / 252 | 169 / 271 | 765 / 821 |
-|  | 35 s | 503 / 681 | 504 / 695 | 172 / 269 | 790 / 834 |
-|  | 5 s, silent | 83.2 / 97.2 | 87.2 / 115 | 171 / 270 | 757 / 815 |
+| `parakeet-tdt-0.6b-v2` | 11 s | 143 / 199 | 149 / 232 | 159 / 274 | 740 / 820 |
+|  | 35 s | 461 / 699 | 476 / 767 | 167 / 275 | 767 / 833 |
+|  | 5 s, silent | 83.4 / 97.1 | 87.7 / 116 | 175 / 280 | 735 / 816 |
+| `parakeet-tdt-0.6b-v3` | 11 s, English | 154 / 215 | 159 / 281 | 169 / 284 | 763 / 884 |
+|  | 11 s, Russian | 161 / 246 | 173 / 349 | 167 / 285 | 762 / 884 |
+|  | 11 s, Ukrainian | 167 / 254 | 170 / 304 | 188 / 317 | 762 / 884 |
 
 Built by coding agents; the rules are in [agents.md](agents.md).

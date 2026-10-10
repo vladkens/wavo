@@ -2,9 +2,10 @@
 
 Apple M2 (8 CPU and 10 GPU cores, 24 GiB), macOS 27, wgpu 30.0.1 Metal. Times are warm medians
 without model load unless stated. GigaAM clips: `ru` 4.5 s, `ru-short` 11 s, `ru-long` 33.8 s.
-Parakeet clips: `jfk` 11 s, `dots` 35.3 s, `jobs-silence` 5.3 s.
+Parakeet clips: `jfk` 11 s, `dots` 35.3 s, `jobs-silence` 5.3 s; for V3 `jfk`, `ru-short` and
+`uk-short`, 11 s each.
 
-## Benchmark: all models vs transcribe.cpp (2026-10-10, end of phase 5)
+## Benchmark: all models vs transcribe.cpp (2026-10-10, end of phase 6)
 
 On the M2 above. Each cell is wavo / reference, ms (MiB for the footprint), on the same Q8_0 GGUF;
 transcribe.cpp at commit 5bb2deb on Metal (`transcribe-bench`). Per model and clip, two rounds of:
@@ -14,6 +15,9 @@ wavo MODEL AUDIO` (peak footprint), `transcribe-bench --warmup 0 --iters 1` unde
 (first call, load, peak footprint). wavo and the reference alternate step by step, so background
 load hits both alike; the page cache and both engines' shader caches were warm. Ranges are the two
 rounds. On AC power, load average 1.7–3.9 (a VM at ~15% of a core, no other work); 3 minutes in all.
+That session ended phase 5; the GigaAM rows are from it. The Parakeet rows are a second session at
+the end of phase 6 (Q8_0 decoder weights), same protocol and reference build: load average 2.6–4.0
+with the VM at up to ~120% of a core; 2 minutes.
 
 | Model | Clip | Warm median | Warm min | First call | Load | Peak footprint |
 |---|---|---|---|---|---|---|
@@ -29,16 +33,23 @@ rounds. On AC power, load average 1.7–3.9 (a VM at ~15% of a core, no other wo
 | GigaAM ctc | ru | 39.7–39.8 / 41.3–41.4 | 39.5 / 41.1 | 43.0–43.3 / 44.3–60.3 | 73–75 / 121–126 | 287–289 / 312–314 |
 | GigaAM ctc | ru-short | 85.0 / 91.5–91.6 | 84.9 / 90.5 | 89.0–89.9 / 93.0–95.1 | 74–75 / 125–132 | 293 / 314 |
 | GigaAM ctc | ru-long | 269.0–269.2 / 290.2–292.5 | 268.2 / 288.8 | 273.5–275.8 / 289.5–301.1 | 75–79 / 123–129 | 314 / 322 |
-| Parakeet TDT V2 | jfk | 148.6–149.2 / 188.8–189.2 | 147.7 / 186.6 | 153.1–153.2 / 205.0–298.7 | 148–189 / 268–275 | 765 / 821 |
-| Parakeet TDT V2 | dots | 501.9–503.5 / 670.9–690.3 | 492.3 / 657.9 | 503.4–503.6 / 667.5–722.0 | 156–188 / 268–270 | 789–792 / 834 |
-| Parakeet TDT V2 | jobs-silence | 83.2 / 94.5–99.9 | 82.9 / 94.1 | 87.0–87.3 / 109.9–119.5 | 158–183 / 268–271 | 757 / 814–816 |
+| Parakeet TDT V2 | jfk | 142.2–142.9 / 198.1–200.3 | 141.2 / 191.1 | 147.1–150.0 / 204.7–259.0 | 158–159 / 272–276 | 740 / 820 |
+| Parakeet TDT V2 | dots | 459.7–461.5 / 691.8–706.9 | 453.3 / 664.0 | 467.8–483.6 / 675.3–857.7 | 158–175 / 270–280 | 766–768 / 833–834 |
+| Parakeet TDT V2 | jobs-silence | 83.4 / 95.4–98.9 | 82.9 / 94.0 | 87.3–88.0 / 115.7–115.8 | 168–181 / 274–285 | 734–736 / 816 |
+| Parakeet TDT V3 | jfk | 153.0–155.2 / 212.7–218.2 | 148.5 / 209.2 | 155.9–161.5 / 277.9–284.2 | 167–170 / 280–287 | 762–764 / 883–884 |
+| Parakeet TDT V3 | ru-short | 159.7–162.3 / 238.5–253.0 | 158.5 / 235.8 | 172.9 / 321.6–376.6 | 165–170 / 280–290 | 762–763 / 884 |
+| Parakeet TDT V3 | uk-short | 159.1–175.6 / 232.6–275.3 | 157.1 / 228.9 | 169.4–170.6 / 273.6–333.8 | 184–192 / 281–354 | 761–762 / 884 |
 
-- Warm median is faster on all 15: GigaAM by 1–9% (e2e-rnnt 2–4%, the CTC models 4–9%, rnnt
-  1–3%), Parakeet by 14–26%. Warm minimum too.
+- Warm median is faster on all 18: GigaAM by 1–9% (e2e-rnnt 2–4%, the CTC models 4–9%, rnnt
+  1–3%), Parakeet V2 by 14–34%, V3 by 28–35%. Warm minimum too. In the second uk-short round both
+  engines hit a background burst (wavo 175.6 against a minimum of 159.2 ms, the reference 275.3
+  against 233.2); a second full Parakeet run right after (load average 3.3–5.9) gave V3 149.3–150.6
+  / 159.7–160.6 / 158.6–159.0 ms against 241.6–243.8 / 249.0–279.0 / 237.7–259.8 ms.
 - First call is on par with or below the reference everywhere; the closest are e2e-rnnt ru
   (46.6–47.0 vs 46.5–48.7) and rnnt ru-short (99.0–99.4 vs 99.0–100.1). Load is ~40% below for
-  GigaAM (73–79 vs 121–136 ms) and 30–45% below for Parakeet (148–189 vs 268–275 ms); peak
-  footprint is 8–29 MiB below for GigaAM and 42–58 MiB below for Parakeet.
+  GigaAM (73–79 vs 121–136 ms) and 35–45% below for Parakeet (158–192 vs 270–354 ms); peak
+  footprint is 8–29 MiB below for GigaAM, 66–82 MiB below for Parakeet V2 and 120–123 MiB below
+  for V3.
 - The reference ran faster than in earlier sessions (Parakeet dots 671–690 ms vs 799–821 on a
   machine at load average 3–5): its decoder runs on CPU threads and gains most from a quiet
   machine. wavo's numbers moved less (dots 492–504 ms here, 499–531 ms in the busier phase-5 A/B
@@ -159,17 +170,19 @@ loop; their reference reads the encoder output back and runs the head and a log-
 
 ## Current state: Parakeet TDT V2 (phase 5 done)
 
-Numbers: the benchmark table above (warm 14–26% faster than the reference, first call 21–49%
-below, load 30–45% and peak footprint 42–58 MiB below). Phase 4 ended at warm 181 / 756–763 / 94
-ms and peak 810 / 877 / 800 MiB (jfk / dots / jobs-silence); see the Log for each step.
+Numbers: the benchmark table above (end of phase 6: warm 14–34% faster than the reference, first
+call 24–38% below, load ~40% and peak footprint 66–82 MiB below). Phase 4 ended at warm 181 /
+756–763 / 94 ms and peak 810 / 877 / 800 MiB (jfk / dots / jobs-silence), phase 5 at 149 / 503 /
+83 ms and 765 / 790 / 757 MiB; see the Log for each step.
 
 Where the time goes at the end of phase 5 (the temporary profiling tool, warm, ms, jfk / dots):
 GPU span 140 / 420 (kernels 145 / 456 with overlap): FFN GEMMs 70 / 204, the other GEMMs 54 /
 161 (`[q | k | v]` 14 / 42, `linear_pos` 12 / 55 with overlap, attention out 13 / 28, pointwise
 14 / 36), attention 10 / 64, LayerNorm 4.6 / 8.5, conv_glu 2.1 / 7.4, subsampling and joint
-projection 3.6 / 10.6. CPU: mel 2.7 / 8.8, decoder 20 / 113 (LSTM on two threads). Not done:
-conv_glu's taps as [tap][ch] (≤ 2% of GPU time, shared with GigaAM) and GEMM tile shapes at
-M = 138 (GigaAM's tile experiments gained nothing); the encoder is far ahead of the reference.
+projection 3.6 / 10.6. CPU: mel 2.7 / 8.8, decoder 20 / 113 (LSTM on two threads; 13–15 / 71–78
+with phase 6's Q8_0 decoder). Not done: conv_glu's taps as [tap][ch] (≤ 2% of GPU time, shared
+with GigaAM) and GEMM tile shapes at M = 138 (GigaAM's tile experiments gained nothing); the
+encoder is far ahead of the reference.
 
 How it runs: the shared Conformer block (`src/conformer.rs`) with relative attention: one GEMM for
 `[q | k | v]` whose epilogue writes `[q + u | k | v | q + v]` (biases `pos_bias_u`, 0, 0 and q again
@@ -180,9 +193,8 @@ shared memory (see Log). The sinusoidal table is cached on the CPU for the longe
 conv0 + ReLU fused into the first depthwise conv (conv0's output is never stored), pointwise convs
 and the projection through the GEMM, a flatten kernel to `[t][c·16 + f]`; conv0 to conv5 run in 8
 chunks of output rows, so their outputs fit in the blocks' buffers. The joint's encoder projection
-is the last GEMM; the TDT loop and two LSTM layers run on the CPU with the NEON tiles, each layer's
-`Wx·x` on a scoped second thread next to `Wh·h`. BatchNorm is folded into a per-channel affine at
-load.
+is the last GEMM; the TDT loop and two LSTM layers run on the CPU over Q8_0 weights on four
+threads (see Parakeet TDT V3). BatchNorm is folded into a per-channel affine at load.
 
 ### Profile at the start of phase 5 (2026-10-10, GPU timestamps per dispatch, warm, ms per call)
 
@@ -219,6 +231,26 @@ GEMM is charged 46.9 ms on dots, 31.6 ms when recorded before it (the rest moves
   jfk 192, dots 448) is 35 / 93 MB; on dots `h` and `qk` are 29.4 MB each, sized by the
   subsampling's [2T][32][256] (4× what the blocks need), `ps` 12.8, `s` 6.4, `yr` + `pos` 7.3 MB.
 - First call over warm: +8 / +0–9 / +4 ms.
+
+## Current state: Parakeet TDT V3 (phase 6 done)
+
+Numbers: the benchmark table above (warm 28–35% faster than the reference, first call 43–51%
+below, load ~40% and peak footprint ~120 MiB below). Encoder, frontend and TDT settings are V2's
+(identical metadata); the vocabulary has 8193 pieces, so the joint has 8198 outputs (21 MB per
+decision in F32, V2 2.6 MB) and the embedding table 8193 rows. The reference keeps both in F32
+and runs its decoder as ggml CPU graphs on up to 8 threads, plus a softmax over 8193 tokens per
+emission for its confidence: `decode_ms` 72–118 on these clips.
+
+How the decoder runs (both Parakeet models): every decoder weight stays Q8_0 (`cpu::Q8`, int8
+values and an f32 scale per 32) and is dequantized in NEON registers; `q·d` is exact in f32 and
+the lanes, fused multiply-adds and pairwise sum are `dot`'s, so the results are bit-identical to
+the F32 path. A step's LSTM (6.6 MB) and joint (5.2 MB) plus scales fit in the performance
+cores' 16 MB L2. Each product goes out in blocks of 64 rows to four scoped threads that take the
+next block when free (`matvecs`), so a thread on an efficiency core takes fewer; a layer's
+`Wx·x` and `Wh·h` share one queue. Decoder (direct timer, median of 18 calls) jfk / ru-short /
+uk-short: 21 / 31–36 / 29–31 ms, from 76 / 68 / 70 ms in F32. Per decision the joint takes
+~0.18 ms (F32 0.75–0.9), per token the predictor ~0.32 ms (F32 0.9–1.1: the joint's 21 MB evicted
+the LSTM's weights from L2).
 
 ## Research history: `research` branch (all weights expanded to F32)
 
@@ -329,6 +361,38 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 ## Log
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
+
+- 2026-10-10, Parakeet TDT V2 and V3, end-of-phase-6 benchmark against `transcribe-bench`: see
+  "Benchmark" above (the Parakeet rows).
+
+- 2026-10-10, Parakeet TDT V3 and V2, decoder weights Q8_0 on four threads (direct timer, median
+  of 18 calls; V3 jfk / ru-short / uk-short, V2 jfk / dots). F32 as in phase 5: V3 decode 76 / 68
+  / 70 ms, of which the joint (8198 × 640) 35–42 / 33 / 31–34 ms, and the predictor 0.9–1.1 ms per
+  token against V2's 0.52; V2 20.5 / 114 ms.
+  - Every decoder weight Q8_0, dequantized in NEON registers, bit-identical (unit test against
+    `dot`, fixtures exact): one thread per product V3 51 / 77 / 73, V2 27 / 150 ms; with each
+    layer's `Wx·x` on a second thread as in phase 5, V3 41 / 61 / 58, V2 18 / 100 ms. The kernel
+    alone (8200 × 640 rows): 486 µs, ~10.8 G weights/s, near its limit of 19 NEON ops per 16
+    weights.
+  - Rows split evenly over scoped threads: the kernel alone on 2 / 3 / 4 / 6 / 8 threads 265 /
+    194–200 / 159–163 / 211 / 181–183 µs (past four the efficiency cores set the pace; a scoped
+    spawn costs 7–15 µs). In place the V3 jfk joint on four threads took 8–17 ms from run to run.
+  - Blocks of 64 rows handed to four threads as they come free (a locked chunk iterator; a layer's
+    two products share it): the kernel alone 149–152 µs; decode V3 21–25 / 31–36 / 29–35, V2 13–15
+    / 71–78 ms. On 3, 6 and 8 threads V3 jfk 23.6 / 22.6 / 24.8, V2 dots 80.9 / 79.8 / 91.3 ms.
+    Kept at four. The 640-row `joint.pred` on one thread or four: the same within noise, so
+    `matvecs` always uses four.
+  - Rejected: dequantizing each group of 4 rows into a buffer for the F32 `tile::<4, 1>` (no NEON
+    kernel of its own, ~29 lines less): 1965 vs 486 µs per kernel call.
+  - Warm A/B/A/B against de4fef2 (load average 2.4–10): V3 jfk 175.3 / 149.6 / 174.6 / 150.0,
+    ru-short 197.1 / 160.0 / 197.3 / 160.6, uk-short 193.7 / 161.7 / 193.6 / 164.3 ms; V2 jfk
+    150.3 / 144.3 / 149.7 / 143.7, dots 498.1 / 461.1 / 497.4 / 461.0, jobs-silence 84.8 / 84.1 /
+    84.2 / 84.0 ms; GigaAM e2e-rnnt (its decoder unchanged) ru 45.2 / 45.0 / 45.5 / 44.9, ru-long
+    302.1 / 309.1 / 299.3 / 299.0 ms. Peak footprint V3 808 → 762 (jfk), 806 → 761 MiB
+    (uk-short); V2 763 → 741 (jfk), 794 → 766 MiB (dots). Kept: +95 lines in `src/cpu.rs`.
+- 2026-10-10, Parakeet TDT V3, first run on the V2 code path: fixtures `jfk`, `ru-short` and
+  `uk-short` exact with no code change. Warm 175 / 198 / 196 ms (reference 216 / 251 / 240 ms in a
+  quick check), peak 804 vs 884 MiB.
 
 - 2026-10-10, all models, the same benchmark on an Apple M1 (macOS 15.8.1) with the M2-built
   binaries: see "Second machine" under "Benchmark".

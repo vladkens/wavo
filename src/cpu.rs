@@ -1,6 +1,13 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! CPU dot products for the frontends and decoders, with NEON tiles on aarch64.
 
+use std::sync::{Mutex, PoisonError};
+
+use half::f16;
+
+use crate::error::Result;
+use crate::gguf::Tensor;
+
 /// Dot product with 16 independent accumulators (four FMA vectors in flight), summed pairwise so
 /// the final reduction also vectorizes.
 pub fn dot(a: &[f32], b: &[f32]) -> f32 {
@@ -92,6 +99,94 @@ fn tile<const R: usize, const F: usize>(w: &[f32], z: &[f32], k: usize) -> [[f32
   std::array::from_fn(|f| std::array::from_fn(|r| dot(&w[r * k..][..k], &z[f * k..][..k])))
 }
 
+/// Q8_0 weights `[rows][k]` (k a multiple of 32) as int8 values and one f32 scale per 32. A
+/// weight is `q · d`, exact in f32, so every product below equals `dot` on the dequantized row.
+pub struct Q8 {
+  k: usize,
+  q: Vec<i8>,
+  d: Vec<f32>,
+}
+
+impl Q8 {
+  pub fn new(t: &Tensor) -> Result<Self> {
+    let mut b = Vec::new();
+    t.read(1 << 20, |_, piece| b.extend_from_slice(piece))?;
+    let blocks = b.as_chunks::<34>().0;
+    let d = blocks.iter().map(|b| f16::from_le_bytes([b[0], b[1]]).to_f32()).collect();
+    let q = blocks.iter().flat_map(|b| b[2..].iter().map(|&v| v as i8)).collect();
+    Ok(Self { k: t.dims[0], q, d })
+  }
+
+  pub fn row(&self, r: usize) -> Vec<f32> {
+    let (q, d) = (&self.q[r * self.k..][..self.k], &self.d[r * self.k / 32..]);
+    q.iter().enumerate().map(|(i, &q)| q as f32 * d[i / 32]).collect()
+  }
+
+  /// Rows from `r0` times `x` into `out`, four rows per pass over x.
+  #[cfg(target_arch = "aarch64")]
+  fn rows(&self, r0: usize, x: &[f32], out: &mut [f32]) {
+    use std::arch::aarch64::*;
+    let k = self.k;
+    let (q, d, x) = (&self.q[r0 * k..][..out.len() * k], &self.d[r0 * k / 32..], &x[..k]);
+    // SAFETY: NEON is part of aarch64; the loads read 16 int8 of a row of `q` and 4 floats of `x`
+    // below k, and a short last group repeats its last row, so every row is inside `q`.
+    unsafe {
+      for (g, out) in out.chunks_mut(4).enumerate() {
+        let row = |j: usize| 4 * g + j.min(out.len() - 1);
+        let mut acc = [[vdupq_n_f32(0.0); 4]; 4];
+        for i in (0..k).step_by(16) {
+          let xs = [0, 1, 2, 3].map(|c| vld1q_f32(x.as_ptr().add(i + 4 * c)));
+          for (j, acc) in acc.iter_mut().enumerate() {
+            let at = row(j) * k + i;
+            let v = vld1q_s8(q.as_ptr().add(at));
+            let (lo, hi) = (vmovl_s8(vget_low_s8(v)), vmovl_high_s8(v));
+            let w = [vget_low_s16(lo), vget_high_s16(lo), vget_low_s16(hi), vget_high_s16(hi)];
+            for (a, (w, x)) in acc.iter_mut().zip(w.into_iter().zip(xs)) {
+              let w = vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(w)), d[at / 32]);
+              *a = vfmaq_f32(*a, w, x);
+            }
+          }
+        }
+        for (o, [a0, a1, a2, a3]) in out.iter_mut().zip(acc) {
+          let lanes = vaddq_f32(vaddq_f32(a0, a2), vaddq_f32(a1, a3));
+          let pair = vadd_f32(vget_low_f32(lanes), vget_high_f32(lanes));
+          *o = vget_lane_f32::<0>(pair) + vget_lane_f32::<1>(pair);
+        }
+      }
+    }
+  }
+
+  #[cfg(not(target_arch = "aarch64"))]
+  fn rows(&self, r0: usize, x: &[f32], out: &mut [f32]) {
+    for (r, o) in out.iter_mut().enumerate() {
+      *o = dot(&self.row(r0 + r), x);
+    }
+  }
+}
+
+/// `w · x` for each job `(w, x)`. Blocks of 64 rows go to four scoped threads (an M1/M2 has four
+/// performance cores) as they come free, so a thread on an efficiency core takes fewer.
+pub fn matvecs<const N: usize>(jobs: [(&Q8, &[f32]); N]) -> [Vec<f32>; N] {
+  let mut out = jobs.map(|(w, _)| vec![0.0; w.q.len() / w.k]);
+  let blocks = out.iter_mut().zip(jobs).flat_map(|(out, (w, x))| {
+    out.chunks_mut(64).enumerate().map(move |(i, out)| (w, x, 64 * i, out))
+  });
+  let blocks = Mutex::new(blocks);
+  let next = || blocks.lock().unwrap_or_else(PoisonError::into_inner).next();
+  let work = || {
+    while let Some((w, x, r0, out)) = next() {
+      w.rows(r0, x, out);
+    }
+  };
+  std::thread::scope(|s| {
+    for _ in 1..4 {
+      s.spawn(work);
+    }
+    work();
+  });
+  out
+}
+
 #[cfg(test)]
 mod tests {
   #[test]
@@ -105,5 +200,19 @@ mod tests {
       .collect();
     let got: Vec<u32> = super::matmul(w, z, k).into_iter().map(f32::to_bits).collect();
     assert_eq!(got, want);
+  }
+
+  #[test]
+  fn matvecs_match_dot() {
+    // 70 rows: a full 64-row block and a short one whose last 4-row group has 2 rows.
+    let (k, rows) = (96, 70);
+    let q = (0..rows * k).map(|i| (i * 7919 % 255) as u8 as i8).collect();
+    let d = (0..rows * k / 32).map(|i| (i % 7 + 1) as f32 * 1e-3).collect();
+    let w = super::Q8 { k, q, d };
+    let x: Vec<f32> = (0..k).map(|i| (i * 31 % 17) as f32 / 8.0 - 1.0).collect();
+    let want: Vec<u32> = (0..rows).map(|r| super::dot(&w.row(r), &x).to_bits()).collect();
+    let [got, again] = super::matvecs([(&w, &x), (&w, &x)]);
+    assert_eq!(got.into_iter().map(f32::to_bits).collect::<Vec<_>>(), want);
+    assert_eq!(again.into_iter().map(f32::to_bits).collect::<Vec<_>>(), want);
   }
 }
