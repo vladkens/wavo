@@ -1,12 +1,6 @@
-.PHONY: prepare check test test-unit build dist update clean models reference fixtures compare
+.PHONY: prepare check test build dist update clean
 
 CARGO_FLAGS := --release --locked
-MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
-	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 whisper-large-v3-turbo
-REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
-CLI := 3rd/transcribe.cpp/build/bin/transcribe-cli
-# Whisper has segment timestamps only: TIMESTAMPS=segment.
-TIMESTAMPS := token
 
 prepare:
 	cargo +nightly fmt
@@ -21,10 +15,6 @@ check:
 
 test:
 	cargo test $(CARGO_FLAGS)
-
-# CI has no models: unit tests only.
-test-unit:
-	cargo test $(CARGO_FLAGS) --lib --bins
 
 build:
 	cargo build $(CARGO_FLAGS)
@@ -52,6 +42,20 @@ update:
 
 clean:
 	cargo clean
+
+# wavo
+.PHONY: test-unit models reference fixtures compare
+
+MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
+	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 whisper-large-v3-turbo
+REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
+CLI := 3rd/transcribe.cpp/build/bin/transcribe-cli
+# Whisper has segment timestamps only: TIMESTAMPS=segment.
+TIMESTAMPS := token
+
+# CI has no models: unit tests only.
+test-unit:
+	cargo test $(CARGO_FLAGS) --lib --bins
 
 models:
 	for m in $(MODELS); do hf download handy-computer/$$m-gguf $$m-Q8_0.gguf; done
