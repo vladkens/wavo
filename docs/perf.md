@@ -291,10 +291,11 @@ in 0.2–0.4 s while Metal compiles and caches the new shaders.
 
 How it runs: the GGUF header is read at load and each tensor is streamed from the file straight
 into weight buffers that are mapped on unified memory (no staging copy); weights stay Q8_0/F16
-on the GPU. Load ends with an encoder run on 8 silent frames to pay the GPU's first use of
-pipelines and weights. Per call: CPU log-mel (rustfft, one frame at a time), then the whole
-encoder as one compute pass over an arena sized for the longest input so far, with bind groups
-cached per dispatch. Fast kernels (cooperative-matrix GEMM with Q8_0/F16 dequantized while
+on the GPU. With the fast kernels, load ends with an encoder run on 8 silent frames to pay the
+GPU's first use of pipelines and weights (the portable path skips it). Per call: CPU log-mel
+(rustfft, one frame at a time), then the encoder over an arena sized for the longest input so
+far, with bind groups cached per dispatch: one submission with the fast kernels, one per layer on
+the portable path (`Pass::layers`). Fast kernels (cooperative-matrix GEMM with Q8_0/F16 dequantized while
 staging and rounded to f16 like the reference's, barrier-free flash attention, one subgroup per
 row for LayerNorm and the conv module) each turn on after a probe dispatch; portable WGSL
 kernels run otherwise. The head's linear layer is the last GEMM: the joint's encoder projection
