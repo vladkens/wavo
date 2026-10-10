@@ -1,8 +1,10 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! `wavo`: speech to text with models pulled by name into the Hugging Face cache.
 
+mod audio;
 mod hfs;
 mod models;
+mod output;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -13,13 +15,16 @@ use models::{MODELS, Source};
 
 const USAGE: &str = "\
 Usage:
-  wavo run [MODEL] AUDIO         transcribe AUDIO, with parakeet-v3 unless MODEL is given
+  wavo run [MODEL] AUDIO [--json | --srt]
+                                 transcribe AUDIO, with parakeet-v3 unless MODEL is given;
+                                 --json adds tokens with start times, --srt prints subtitles
   wavo pull MODEL                download a model
   wavo list                      list downloaded models
   wavo rm MODEL                  delete a downloaded model
   wavo bench MODEL AUDIO [-n N]  time the model load, the first call and N more (10)
 
-MODEL is a name below, its full name or a path to a .gguf file. AUDIO is a 16 kHz mono WAV.
+MODEL is a name below, its full name or a path to a .gguf file. AUDIO is wav, mp3, m4a, flac
+or ogg (Vorbis), downmixed to mono and resampled to 16 kHz.
 Models live in the Hugging Face cache (HF_HUB_CACHE or HF_HOME), shared with the hf CLI;
 only `wavo pull` uses the network.
 
@@ -71,22 +76,34 @@ fn model_path(arg: &str) -> Result<PathBuf> {
   }
 }
 
-fn load(model: &str) -> Result<wavo::Model> {
-  let path = model_path(model)?;
-  wavo::Model::load(&path).with_context(|| format!("loading {}", path.display()))
+fn load(path: &Path) -> Result<wavo::Model> {
+  wavo::Model::load(path).with_context(|| format!("loading {}", path.display()))
 }
 
 fn run(args: &[&str]) -> Result<()> {
+  let (flags, args): (Vec<&str>, Vec<&str>) = args.iter().partition(|a| a.starts_with("--"));
+  let (json, srt) = (flags == ["--json"], flags == ["--srt"]);
+  if !(flags.is_empty() || json || srt) {
+    bail!("usage: wavo run [MODEL] AUDIO [--json | --srt]");
+  }
   let (model, audio) = match *args {
     [arg] if models::find(arg).is_some() && !Path::new(arg).exists() => {
       bail!("no audio file given: wavo run {arg} AUDIO")
     }
     [audio] => (models::DEFAULT, audio),
     [model, audio] => (model, audio),
-    _ => bail!("usage: wavo run [MODEL] AUDIO"),
+    _ => bail!("usage: wavo run [MODEL] AUDIO [--json | --srt]"),
   };
-  let model = load(model)?;
-  println!("{}", model.transcribe(&read_wav(audio)?)?.text);
+  let path = model_path(model)?;
+  let pcm = audio::read(audio)?;
+  let transcript = load(&path)?.transcribe(&pcm)?;
+  if json {
+    println!("{}", output::json(&transcript));
+  } else if srt {
+    print!("{}", output::srt(&transcript.tokens, (pcm.len() / 16) as u32));
+  } else {
+    println!("{}", transcript.text);
+  }
   Ok(())
 }
 
@@ -135,11 +152,11 @@ fn bench(model: &str, audio: &str, n: usize) -> Result<()> {
   if n == 0 {
     bail!("-n must be at least 1");
   }
-  let pcm = read_wav(audio)?;
+  let pcm = audio::read(audio)?;
   let path = model_path(model)?;
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
   let t = Instant::now();
-  let model = wavo::Model::load(&path).with_context(|| format!("loading {}", path.display()))?;
+  let model = load(&path)?;
   let load = ms(t);
   let t = Instant::now();
   model.transcribe(&pcm)?;
@@ -157,21 +174,4 @@ fn bench(model: &str, audio: &str, n: usize) -> Result<()> {
     warm[0]
   );
   Ok(())
-}
-
-/// Reads mono 16 kHz PCM16 or F32 samples.
-fn read_wav(path: &str) -> Result<Vec<f32>> {
-  let mut wav = hound::WavReader::open(path).with_context(|| format!("reading {path}"))?;
-  let spec = wav.spec();
-  if spec.channels != 1 || spec.sample_rate != 16000 {
-    bail!("{path}: {} channels at {} Hz, expected mono 16 kHz", spec.channels, spec.sample_rate);
-  }
-  let pcm = match (spec.sample_format, spec.bits_per_sample) {
-    (hound::SampleFormat::Int, 16) => {
-      wav.samples::<i16>().map(|s| s.map(|s| s as f32 / 32768.0)).collect::<Result<_, _>>()?
-    }
-    (hound::SampleFormat::Float, 32) => wav.samples::<f32>().collect::<Result<_, _>>()?,
-    (format, bits) => bail!("{path}: {bits}-bit {format:?} samples, expected PCM16 or F32"),
-  };
-  Ok(pcm)
 }
