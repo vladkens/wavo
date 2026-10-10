@@ -61,7 +61,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: wavo-dev
-          path: target/dist/*
+          path: target/distrib/*
 
       - name: Update dev pre-release
         if: github.ref == 'refs/heads/main'
@@ -77,8 +77,8 @@ jobs:
           git tag -f dev
           git push -f origin refs/tags/dev
           if gh release view dev >/dev/null 2>&1; then
-            gh release upload dev target/dist/* --clobber
+            gh release upload dev target/distrib/* --clobber
             gh release edit dev --title "Dev build" --notes "$NOTES"
           else
-            gh release create dev target/dist/* --prerelease --title "Dev build" --notes "$NOTES"
+            gh release create dev target/distrib/* --prerelease --title "Dev build" --notes "$NOTES"
           fi

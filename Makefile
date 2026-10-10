@@ -20,22 +20,23 @@ build:
 	cargo build $(CARGO_FLAGS)
 	ls -lh target/release/$(shell basename $(CURDIR))
 
-# Prebuilt binaries as target/dist/wavo-dev-<target>.tar.gz (.zip for Windows), from an Apple
+# Prebuilt binaries as target/distrib/wavo-dev-<target>.tar.gz (.zip for Windows), from an Apple
 # Silicon Mac: Linux (glibc 2.28) and Windows through cargo-cross (cargo install cargo-cross).
-# macOS keeps its file and line info in wavo.dSYM, which has to stay next to the binary.
+# macOS keeps its file and line info in wavo.dSYM, which has to stay next to the binary. Not
+# target/dist: cargo keeps the dist profile's build scripts there.
 dist: T := $(or $(CARGO_TARGET_DIR),target)
 dist:
 	CARGO_PROFILE_DIST_SPLIT_DEBUGINFO=packed cargo build --profile dist --locked --target aarch64-apple-darwin
 	cargo cross build --profile dist --locked --glibc-version 2.28 \
 		--targets x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-pc-windows-gnu
-	rm -rf $(T)/dist && mkdir -p $(T)/dist
-	tar czhf $(T)/dist/wavo-dev-aarch64-apple-darwin.tar.gz readme.md LICENSE \
+	rm -rf $(T)/distrib && mkdir -p $(T)/distrib
+	tar czhf $(T)/distrib/wavo-dev-aarch64-apple-darwin.tar.gz readme.md LICENSE \
 		-C $(T)/aarch64-apple-darwin/dist wavo wavo.dSYM
 	for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do \
-		tar czf $(T)/dist/wavo-dev-$$t.tar.gz readme.md LICENSE -C $(T)/$$t/dist wavo; done
-	zip -jq $(T)/dist/wavo-dev-x86_64-pc-windows-gnu.zip readme.md LICENSE \
+		tar czf $(T)/distrib/wavo-dev-$$t.tar.gz readme.md LICENSE -C $(T)/$$t/dist wavo; done
+	zip -jq $(T)/distrib/wavo-dev-x86_64-pc-windows-gnu.zip readme.md LICENSE \
 		$(T)/x86_64-pc-windows-gnu/dist/wavo.exe
-	ls -lh $(T)/dist
+	ls -lh $(T)/distrib
 
 update:
 	cargo upgrade -i
