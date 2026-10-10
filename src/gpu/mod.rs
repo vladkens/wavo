@@ -97,26 +97,13 @@ pub enum Epilogue {
 impl Gpu {
   /// The device with the fast kernels that pass their probes, or only the portable ones.
   pub fn new(fast: bool) -> Result<Self> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-      power_preference: wgpu::PowerPreference::HighPerformance,
-      ..Default::default()
-    }))?;
-    let coop = wgpu::Features::SUBGROUP
-      | wgpu::Features::SUBGROUP_BARRIER
-      | wgpu::Features::EXPERIMENTAL_COOPERATIVE_MATRIX;
-    let fast = fast
-      && adapter.features().contains(coop)
-      && adapter.cooperative_matrix_properties().iter().any(|p| {
-        (p.m_size, p.n_size, p.k_size) == (8, 8, 8)
-          && p.ab_type == wgpu::CooperativeScalarType::F32
-          && p.cr_type == wgpu::CooperativeScalarType::F32
-      });
+    let adapter = adapter()?;
+    let fast = fast && offers_fast(&adapter);
     let mappable = adapter.get_info().device_type == wgpu::DeviceType::IntegratedGpu
       && adapter.features().contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
     let mut features = wgpu::Features::IMMEDIATES;
     if fast {
-      features |= coop;
+      features |= COOP;
     }
     if mappable {
       features |= wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
@@ -381,6 +368,31 @@ pub fn half(n: usize) -> usize {
   (n - 1) / 2 + 1
 }
 
+const COOP: wgpu::Features = wgpu::Features::SUBGROUP
+  .union(wgpu::Features::SUBGROUP_BARRIER)
+  .union(wgpu::Features::EXPERIMENTAL_COOPERATIVE_MATRIX);
+
+fn adapter() -> Result<wgpu::Adapter> {
+  let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+  Ok(pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    power_preference: wgpu::PowerPreference::HighPerformance,
+    ..Default::default()
+  }))?)
+}
+
+/// Whether `adapter` has what the fast kernels need: 8×8 F32 cooperative matrices and 32-lane
+/// subgroups. Apple GPUs do; Vulkan drivers so far offer F16/int8 matrices at best.
+fn offers_fast(adapter: &wgpu::Adapter) -> bool {
+  let info = adapter.get_info();
+  adapter.features().contains(COOP)
+    && (info.subgroup_min_size..=info.subgroup_max_size).contains(&32)
+    && adapter.cooperative_matrix_properties().iter().any(|p| {
+      (p.m_size, p.n_size, p.k_size) == (8, 8, 8)
+        && p.ab_type == wgpu::CooperativeScalarType::F32
+        && p.cr_type == wgpu::CooperativeScalarType::F32
+    })
+}
+
 fn module(device: &wgpu::Device, source: &str) -> wgpu::ShaderModule {
   let desc =
     wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(source.into()) };
@@ -591,17 +603,19 @@ mod tests {
   use super::*;
   use crate::gguf::Gguf;
 
-  /// The portable path, then the fast one.
+  /// The portable path, then the fast one (also portable where the adapter doesn't offer it).
   fn gpus() -> &'static [Gpu; 2] {
     static GPUS: OnceLock<[Gpu; 2]> = OnceLock::new();
     GPUS.get_or_init(|| {
       let fast = Gpu::new(true).unwrap();
       let f = &fast.fast;
       let ops = [&f.layer_norm, &f.conv_glu, &f.attention, &f.relative];
-      assert!(
-        f.gemm.is_some() && ops.iter().all(|k| k.is_some()),
-        "a fast kernel failed its probe"
-      );
+      if offers_fast(&adapter().unwrap()) {
+        assert!(
+          f.gemm.is_some() && ops.iter().all(|k| k.is_some()),
+          "a fast kernel failed its probe"
+        );
+      }
       [Gpu::new(false).unwrap(), fast]
     })
   }
