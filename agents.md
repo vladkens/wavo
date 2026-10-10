@@ -137,6 +137,9 @@ the first call matter as much as warm speed.
 ## Performance
 
 - Read [docs/perf.md](docs/perf.md) before speed work. Log every attempt there, kept or rejected.
+- Profile with GPU timestamp queries in a temporary local tool. Never run Instruments or `xcrun
+  xctrace` (Metal System Trace): on this Mac it froze the window server twice and needed a hard
+  reset.
 - Compare `wavo bench` with the reference `transcribe-bench` on the same GGUF and WAV: at least 10
   warm calls, median and min. Measure a change A/B/A back to back. When the two A runs differ by
   more than 3%, rerun later instead of concluding. Run one GPU job at a time.
