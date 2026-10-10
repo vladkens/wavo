@@ -157,9 +157,13 @@ impl Cache {
         emptied.push(snapshot.file_name().unwrap().to_string_lossy().into_owned());
       }
     }
+    // Blobs are content-addressed: another file name may still point at the same one.
+    let used = linked(&dir.join("snapshots"));
     for blob in blobs.iter().filter(|b| b.is_file()) {
-      freed += fs::metadata(blob)?.len();
-      fs::remove_file(blob)?;
+      if !used.iter().any(|u| Some(u.as_os_str()) == blob.file_name()) {
+        freed += fs::metadata(blob)?.len();
+        fs::remove_file(blob)?;
+      }
     }
     for r in fs::read_dir(dir.join("refs")).into_iter().flatten().flatten() {
       if fs::read_to_string(r.path()).is_ok_and(|c| emptied.iter().any(|e| e == c.trim())) {
@@ -171,6 +175,16 @@ impl Cache {
     }
     Ok(Some(freed))
   }
+}
+
+/// The blob names the symlinks anywhere under `dir` point at.
+fn linked(dir: &Path) -> Vec<OsString> {
+  let entries = fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path());
+  (entries.flat_map(|p| match fs::read_link(&p) {
+    Ok(target) => target.file_name().map(OsString::from).into_iter().collect(),
+    Err(_) => linked(&p),
+  }))
+  .collect()
 }
 
 fn head(repo: &str, file: &str) -> Result<Remote> {
@@ -383,6 +397,14 @@ mod tests {
     assert!(!dir.join("refs/main").exists(), "refs/main named the removed snapshot");
     assert!(cache.find("org/m", "other.gguf").is_some());
     assert_eq!(cache.remove("org/m", "m.gguf").unwrap(), None);
+
+    // Two names with the same content share a blob: it goes with the last of them.
+    cache.install("org/m", "x.gguf", &remote('c', '4', 4), write("four")).unwrap();
+    cache.install("org/m", "y.gguf", &remote('c', '4', 4), write("four")).unwrap();
+    assert_eq!(cache.remove("org/m", "x.gguf").unwrap(), Some(0));
+    assert_eq!(fs::read_to_string(cache.find("org/m", "y.gguf").unwrap()).unwrap(), "four");
+    assert_eq!(cache.remove("org/m", "y.gguf").unwrap(), Some(4));
+    assert!(!dir.join("blobs").join("4".repeat(64)).exists());
     assert_eq!(cache.remove("org/m", "other.gguf").unwrap(), Some(3));
     assert!(!dir.exists());
     fs::remove_dir_all(&cache.root).unwrap();
