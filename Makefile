@@ -55,4 +55,4 @@ fixtures:
 
 # make compare MODEL=gigaam-v3-e2e-rnnt LIST=wavs.txt OUT=dir (see the script)
 compare:
-	scripts/compare.sh $(MODEL) $(LIST) $(OUT)
+	scripts/compare.sh "$(MODEL)" "$(LIST)" "$(OUT)"

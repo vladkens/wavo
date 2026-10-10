@@ -8,8 +8,8 @@
 
 `wavo` turns speech into text locally, on the GPU, in pure Rust. Give it a recording of any
 length, a voice note or a two-hour meeting, and get the text with timestamps. It runs the open ASR
-models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes with the
-same output, at least as fast. Use it as a command-line tool with an ollama-like model manager, or
+models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes with
+practically the same output and comparable or better speed. Use it as a command-line tool with an ollama-like model manager, or
 as a library that builds with a plain `cargo build`.
 
 ## 🌟 Features
