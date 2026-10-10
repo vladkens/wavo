@@ -36,6 +36,9 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       recordings: the same text in 99.9% (GigaAM) and 98.9% (Parakeet V3) of them, every
       difference from a near-tie; speed by length in `docs/perf.md` → "Real recordings".
 
+After Whisper: **other engines.** Measure wavo against the other ways to run the same models on a
+Mac, not only transcribe.cpp. Plan: [docs/plans/20261010-other-engines.md](plans/20261010-other-engines.md).
+
 After the models: **fast build.** A clean release build takes 42 s, mostly the wgpu chain (naga →
 wgpu-core → wgpu); rebuilding the library after a change takes 14 s, and 58% of its code is
 `rustfft`'s generic planner. Plan: [docs/plans/20261010-fast-build.md](plans/20261010-fast-build.md).
