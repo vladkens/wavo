@@ -39,7 +39,7 @@ the first call matter as much as warm speed.
 - Keep the public API to `Model::load(path)`, `model.transcribe(&pcm)` → `Transcript { text,
   tokens }` and `model.max_audio_ms()` (the window a model was trained for, `None` without one),
   where pcm is 16 kHz mono `f32` and tokens carry id, piece and start time in ms. The CLI is
-  `wavo pull MODEL`, `wavo list`, `wavo rm MODEL`, `wavo run [MODEL] AUDIO [--json | --srt]
+  `wavo pull MODEL...`, `wavo list`, `wavo rm MODEL`, `wavo run [MODEL] AUDIO [--json | --srt]
   [--segment SECS]` (default model `parakeet-v3`) and `wavo bench MODEL AUDIO [-n N]`, where
   MODEL is a short name, a full published name or a path to a `.gguf`. Change either only with
   the user's approval.
