@@ -287,21 +287,25 @@ mod tests {
 
   #[test]
   fn root_follows_huggingface_hub() {
+    // Paths compare as `Path`s, so the test holds with Windows' separators too.
     let root = |vars: &[(&str, &str)]| {
-      Cache::from_env(|k| vars.iter().rev().find(|v| v.0 == k).map(|v| v.1.into())).describe()
+      let cache = Cache::from_env(|k| vars.iter().rev().find(|v| v.0 == k).map(|v| v.1.into()));
+      (cache.root, cache.from)
     };
     let mut vars = vec![("USERPROFILE", "/u")];
-    assert_eq!(root(&vars), "/u/.cache/huggingface/hub");
-    for (var, value, expected) in [
-      ("HOME", "/h", "/h/.cache/huggingface/hub"),
-      ("XDG_CACHE_HOME", "/x", "/x/huggingface/hub"),
-      ("HF_HOME", "/hf", "/hf/hub (set by HF_HOME)"),
-      ("HUGGINGFACE_HUB_CACHE", "/old", "/old (set by HUGGINGFACE_HUB_CACHE)"),
-      ("HF_HUB_CACHE", "/c", "/c (set by HF_HUB_CACHE)"),
+    assert_eq!(root(&vars), (PathBuf::from("/u/.cache/huggingface/hub"), None));
+    for (var, value, expected, from) in [
+      ("HOME", "/h", "/h/.cache/huggingface/hub", None),
+      ("XDG_CACHE_HOME", "/x", "/x/huggingface/hub", None),
+      ("HF_HOME", "/hf", "/hf/hub", Some("HF_HOME")),
+      ("HUGGINGFACE_HUB_CACHE", "/old", "/old", Some("HUGGINGFACE_HUB_CACHE")),
+      ("HF_HUB_CACHE", "/c", "/c", Some("HF_HUB_CACHE")),
     ] {
       vars.push((var, value));
-      assert_eq!(root(&vars), expected, "{var}");
+      assert_eq!(root(&vars), (PathBuf::from(expected), from), "{var}");
     }
+    let cache = Cache { root: PathBuf::from("/c"), from: Some("HF_HUB_CACHE") };
+    assert_eq!(cache.describe(), "/c (set by HF_HUB_CACHE)");
   }
 
   #[cfg(unix)]
