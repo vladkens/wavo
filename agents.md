@@ -121,7 +121,8 @@ the first call matter as much as warm speed.
   intermediates.
 - Unit-test only logic that can break silently: GGUF parsing, tokenizer, decoder loops, kernels
   against a CPU loop on small shapes; in the CLI, model names, the cache layout, audio decoding (a
-  16 kHz mono WAV gives exactly the samples the fixtures use) and SRT cues.
+  16 kHz mono WAV gives exactly the samples the fixtures use) and SRT cues. Unit tests run in CI
+  (`make test-unit`) without models or `3rd/`: synthesize their inputs.
 
 ## Performance
 
