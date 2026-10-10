@@ -68,6 +68,9 @@ the first call matter as much as warm speed.
   reference docs say.
 - Start every `.rs` and `.wgsl` file with the line
   `// Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo`.
+- Put helper scripts in `scripts/`, named in kebab-case (`compare.sh`, `make-fixtures.py`):
+  `sh`, or Python run with `uv run`. A Makefile target that needs more than a line or two calls a
+  script instead of holding it.
 
 ## External sources
 
