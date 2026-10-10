@@ -20,7 +20,10 @@ const MIN_TAIL: usize = 16000;
 /// energy counts, so the level and steady noise don't matter, and without a pause the cut still
 /// lands on a quiet 10 ms. `max` must be at least 5 s.
 pub fn segments(pcm: &[f32], max: usize) -> Vec<Range<usize>> {
-  let energy: Vec<f32> = pcm.chunks(FRAME).map(|f| f.iter().map(|x| x * x).sum()).collect();
+  // Audio that fits takes no energy pass.
+  let fits = pcm.len() <= max;
+  let frames = pcm.chunks(FRAME).take(if fits { 0 } else { usize::MAX });
+  let energy: Vec<f32> = frames.map(|f| f.iter().map(|x| x * x).sum()).collect();
   let (mut out, mut start) = (Vec::new(), 0);
   while pcm.len() - start > max {
     let first = (start + max / 2) / FRAME;
