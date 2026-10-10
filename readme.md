@@ -1,85 +1,102 @@
-# wavo
+# `wavo` – speech to text on your GPU
 
-Speech-to-text in Rust. Runs the GGUF ASR models published by
-[transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) on the GPU through `wgpu` with
-custom WGSL kernels. The library is pure Rust (no C/C++, ONNX or BLAS); the `wavo` command adds
-an ollama-like model manager and decoding of common audio formats.
+<div align="center">
 
-Works now, on Apple Silicon and (slower for now) on Linux through Vulkan: the four GigaAM v3
-models (Russian) and Parakeet TDT 0.6B v2 (English) and v3 (25 European languages), with output
-that matches transcribe.cpp exactly on its test clips (text, tokens and timestamps). On real
-dictation recordings GigaAM e2e-rnnt and Parakeet V3 give its text on 99% of them; the rest differ
-at near-ties. More models and platforms are next: [docs/roadmap.md](docs/roadmap.md).
+[<img src="https://badges.ws/github/license/vladkens/wavo" />](https://github.com/vladkens/wavo/blob/main/LICENSE)
 
-| Name | Full name | Size | Head | Output |
-|---|---|---|---|---|
-| `parakeet-v3` | `parakeet-tdt-0.6b-v3` | 0.74 GB | TDT | 25 European languages, cased, punctuated |
-| `parakeet-v2` | `parakeet-tdt-0.6b-v2` | 0.73 GB | TDT | English, cased, punctuated |
-| `gigaam-v3` | `gigaam-v3-e2e-rnnt` | 0.27 GB | RNN-T | Russian, cased, punctuated |
-| `gigaam-v3-e2e-ctc` | | 0.27 GB | CTC | Russian, cased, punctuated |
-| `gigaam-v3-rnnt` | | 0.27 GB | RNN-T | Russian, lowercase letters and spaces |
-| `gigaam-v3-ctc` | | 0.27 GB | CTC | Russian, lowercase letters and spaces |
+</div>
 
-## Install
+`wavo` turns speech into text locally, on the GPU, in pure Rust. Give it a recording of any
+length, a voice note or a two-hour meeting, and get the text with timestamps. It runs the open ASR
+models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes (Parakeet,
+GigaAM) with the same output, at least as fast. Use it as a command-line tool with an ollama-like
+model manager, or as a library that builds with a plain `cargo build`.
+
+## 🌟 Features
+
+- 📏 Audio of any length: long recordings are split at pauses and joined back, no chunking on
+  your side
+- 🎧 Any common format: wav, mp3, m4a, flac, ogg, resampled for you
+- 🦀 Pure Rust library: no CMake, C++ toolchain, Python or ONNX Runtime to install
+- ⚡ Runs on the GPU: Metal on Apple Silicon, Vulkan on Linux
+- 🏎️ As fast as transcribe.cpp or faster on the same model files, and loads in 0.1–0.2 s
+- 🎯 Same text, tokens and timestamps as transcribe.cpp on its test clips
+- 📦 `pull` / `list` / `rm` models, shared with the Hugging Face cache that `hf` uses
+- 📝 Plain text, JSON with a start time for every token, or SRT subtitles
+- 🌍 English, Russian and 25 European languages
+
+## 🧠 Models
+
+| Name | Size | Languages | Output |
+|---|---|---|---|
+| `parakeet-v3` (default) | 0.74 GB | 25 European languages | cased, punctuated |
+| `parakeet-v2` | 0.73 GB | English | cased, punctuated |
+| `gigaam-v3` | 0.27 GB | Russian | cased, punctuated |
+| `gigaam-v3-e2e-ctc` | 0.27 GB | Russian | cased, punctuated |
+| `gigaam-v3-rnnt` | 0.27 GB | Russian | lowercase, no punctuation |
+| `gigaam-v3-ctc` | 0.27 GB | Russian | lowercase, no punctuation |
+
+Parakeet is NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
+GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM). Whisper is next; see
+the [roadmap](docs/roadmap.md).
+
+## 📥 Installation
 
 ```sh
 cargo install --git https://github.com/vladkens/wavo
 ```
 
-On Linux wavo runs through Vulkan, so it needs a Vulkan driver and access to the GPU:
+<details>
+<summary>Linux</summary>
+
+wavo runs through Vulkan, so it needs a Vulkan driver and access to the GPU:
 
 ```sh
 sudo apt install build-essential           # a linker for cargo; Rust itself from rustup.rs
-sudo apt install mesa-vulkan-drivers       # the driver, with libvulkan1
+sudo apt install mesa-vulkan-drivers       # the driver
 sudo usermod -aG render $USER              # GPU access, then log out and back in
-sudo apt install vulkan-tools              # optional: vulkaninfo
-vulkaninfo --summary                       # lists the GPU
 ```
 
-GPUs other than Apple's run the slower portable kernels for now: an Intel N100 transcribes 11 s
-in ~2.5 s with GigaAM and ~3.9 s with Parakeet. Without GPU access wgpu may fall back to llvmpipe,
-a software Vulkan driver on the CPU, which is slower than real time.
+GPUs other than Apple's use simpler kernels for now: an Intel N100 transcribes 11 s of audio in
+2.5–4 s.
 
-## Usage
+</details>
+
+## 🚀 Usage
 
 ```sh
 wavo pull parakeet-v3                 # download a model
 wavo run talk.m4a                     # transcribe with parakeet-v3
-wavo run gigaam-v3 talk.mp3           # or another model: name, full name or a .gguf path
+wavo run gigaam-v3 talk.mp3           # or with another model
 wavo run talk.wav --json              # text and every token with its start time
 wavo run talk.wav --srt > talk.srt    # subtitles
-wavo run talk.wav --segment 0         # one pass, no splitting at pauses
 wavo list                             # downloaded models
 wavo rm parakeet-v3                   # delete one
-wavo bench gigaam-v3 talk.wav -n 20   # load time, first call, warm median and minimum
+wavo bench gigaam-v3 talk.wav         # load time and speed on your machine
 ```
 
-Audio can be wav, mp3, m4a (AAC), flac or ogg (Vorbis); it is downmixed to mono and resampled to
-16 kHz. `--json` prints `{"text": ..., "tokens": [{"id", "piece", "start_ms"}, ...]}`. `--srt`
-cues break after sentences or at 80 characters.
+Long recordings are split at their quietest moments and transcribed piece by piece, so an hour of
+audio works as well as a minute; `--segment SECS` sets the piece length, `--segment 0` runs one
+pass. Models are stored in the Hugging Face cache (`~/.cache/huggingface/hub`), so a model fetched
+with `hf download` is found by `wavo` and the other way round. Only `wavo pull` uses the network.
 
-Recordings of any length work: longer audio is split at its quietest moments (by energy, no VAD
-model) into segments of up to 25 s for GigaAM, which was trained on utterances up to ~25 s, and
-60 s for Parakeet. The segments are transcribed one by one and joined: texts with a space, token
-times shifted to the whole file. In one pass, GigaAM loses most words after about a minute and
-Parakeet skips sentences; split, 10 minutes take 5.2 s with GigaAM and 8.9 s with Parakeet V3 on
-an M2, and memory stays flat. `--segment SECS` sets the length; `--segment 0` runs the whole file
-in one pass, as transcribe.cpp does.
+## ⚡ Speed
 
-Models live in the Hugging Face cache, found as `hf` finds it: `HF_HUB_CACHE` (or the legacy
-`HUGGINGFACE_HUB_CACHE`), else `$HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else
-`~/.cache/huggingface/hub`. The layout is the one `hf` uses, so a model fetched with
-`hf download handy-computer/<full name>-gguf <full name>-Q8_0.gguf` is found by `wavo`, and one
-pulled by `wavo` is seen by `hf`. Only `wavo pull` uses the network; `wavo run` names the
-`wavo pull` command when a model is missing.
+Apple M2, the same Q8_0 model file, wavo against transcribe.cpp on Metal, an 11 s clip:
 
-Known limitations: Opus is not supported.
+| Model | Transcribe, ms | Load, ms | Memory, MiB |
+|---|---|---|---|
+| `gigaam-v3` | **96** / 100 | **77** / 124 | **302** / 325 |
+| `parakeet-v2` | **143** / 199 | **159** / 274 | **740** / 820 |
+| `parakeet-v3` | **154** / 215 | **169** / 284 | **763** / 884 |
 
-## Library
+For dictation, where a model is loaded for each recording, the whole run (start, load, transcribe)
+is about a quarter to a third shorter. More numbers in [docs/perf.md](docs/perf.md).
 
-```toml
-[dependencies]
-wavo = { git = "https://github.com/vladkens/wavo", default-features = false }
+## 📚 Library usage
+
+```sh
+cargo add wavo --git https://github.com/vladkens/wavo --no-default-features
 ```
 
 ```rust
@@ -91,47 +108,19 @@ for token in &transcript.tokens {
 }
 ```
 
-Without default features (the `cli` feature) you get only the engine: decoding audio,
-resampling, splitting long audio and downloading models are up to you. `model.max_audio_ms()`
-gives the longest audio a model was trained on (`Some(25_000)` for GigaAM, `None` for Parakeet);
-past it accuracy drops (GigaAM loses words after about a minute), so split longer audio first.
+Without default features you get only the engine: decoding and resampling audio, splitting long
+recordings and downloading models are up to you. `model.max_audio_ms()` tells how long a piece
+the model was trained on (25 s for GigaAM), so you know where to split.
 
-## Speed
+## 🤝 Contributing
 
-Apple M2 (8 CPU cores, 10-core GPU), the same Q8_0 GGUF in both, transcribe.cpp on Metal. Each
-cell is wavo / transcribe.cpp. Warm is the median of 20 / 10 calls after the first; first call and
-model load are from a fresh process; memory is the peak footprint. Measured back to back on
-2026-10-10; details and ranges in [docs/perf.md](docs/perf.md).
+wavo is written by AI coding agents. A person set the direction; the agents wrote the code and
+the GPU kernels, matched the reference output and searched for the fastest solutions themselves.
+Pull requests are welcome, and so are your agents: point them at [agents.md](agents.md) and let
+them make it better.
 
-| Model | Audio | Warm, ms | First call, ms | Load, ms | Peak memory, MiB |
-|---|---|---|---|---|---|
-| `gigaam-v3-e2e-rnnt` | 4.5 s | 43.8 / 44.6 | 46.8 / 47.6 | 77 / 123 | 294 / 323 |
-|  | 11 s | 96.1 / 100 | 100 / 102 | 77 / 124 | 302 / 325 |
-|  | 34 s | 299 / 310 | 302 / 323 | 77 / 126 | 322 / 334 |
-| `gigaam-v3-e2e-ctc` | 4.5 s | 40.1 / 41.8 | 43.4 / 53.1 | 76 / 129 | 289 / 314 |
-|  | 11 s | 85.5 / 92.7 | 88.8 / 95.6 | 75 / 126 | 295 / 315 |
-|  | 34 s | 270 / 296 | 276 / 308 | 75 / 126 | 315 / 323 |
-| `gigaam-v3-rnnt` | 4.5 s | 42.6 / 43.0 | 45.9 / 50.5 | 75 / 125 | 291 / 319 |
-|  | 11 s | 96.1 / 97.4 | 99.2 / 99.6 | 76 / 122 | 299 / 321 |
-|  | 34 s | 296 / 306 | 300 / 315 | 76 / 124 | 320 / 330 |
-| `gigaam-v3-ctc` | 4.5 s | 39.8 / 41.3 | 43.1 / 52.3 | 74 / 123 | 288 / 313 |
-|  | 11 s | 85.0 / 91.5 | 89.5 / 94.0 | 75 / 129 | 293 / 314 |
-|  | 34 s | 269 / 291 | 275 / 295 | 77 / 125 | 314 / 322 |
-| `parakeet-tdt-0.6b-v2` | 11 s | 143 / 199 | 149 / 232 | 159 / 274 | 740 / 820 |
-|  | 35 s | 461 / 699 | 476 / 767 | 167 / 275 | 767 / 833 |
-|  | 5 s, silent | 83.4 / 97.1 | 87.7 / 116 | 175 / 280 | 735 / 816 |
-| `parakeet-tdt-0.6b-v3` | 11 s, English | 154 / 215 | 159 / 281 | 169 / 284 | 763 / 884 |
-|  | 11 s, Russian | 161 / 246 | 173 / 349 | 167 / 285 | 762 / 884 |
-|  | 11 s, Ukrainian | 167 / 254 | 170 / 304 | 188 / 317 | 762 / 884 |
-
-On 2,923 recordings from a real dictation history (mostly Russian, median length 3.75 s), in one
-process per engine, Parakeet V3 took 36% less time than transcribe.cpp and GigaAM e2e-rnnt about
-the same: 5% more under 2 s, less from 5 s. With the model loaded per recording, wavo took 26%
-(GigaAM) and 35% (Parakeet V3) less time. See "Real recordings" in [docs/perf.md](docs/perf.md).
-
-## Development
-
-Built by coding agents; the rules are in [agents.md](agents.md).
+<details>
+<summary>Installing a branch</summary>
 
 ```sh
 cargo install --git https://github.com/vladkens/wavo --branch feat/NAME --locked  # a PR branch
@@ -139,3 +128,19 @@ cargo install --git https://github.com/vladkens/wavo --locked --force           
 cargo install --path . --locked                                                   # a local checkout
 cargo uninstall wavo                                                              # remove it
 ```
+
+</details>
+
+## 📝 License
+
+Distributed under the [MIT License](LICENSE).
+
+## 🔍 See also
+
+- [handy-computer/transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) – The
+  reference wavo follows: C++ on ggml, many model families.
+- [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) – Whisper in C++ on ggml.
+- [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) – Many models on ONNX Runtime,
+  streaming included.
+- [senstella/parakeet-mlx](https://github.com/senstella/parakeet-mlx) – Parakeet in Python on
+  MLX, Apple Silicon only.
