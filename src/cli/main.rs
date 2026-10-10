@@ -124,6 +124,10 @@ fn run(args: &[&str]) -> Result<()> {
   let (transcript, starts) = split::join(parts.collect::<Result<Vec<_>>>()?);
   match format {
     Some("--json") => println!("{}", output::json(&transcript)),
+    // Whisper times segments, not tokens; its published files are named whisper-*.
+    Some(_) if path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("whisper")) => {
+      print!("{}", output::srt_segments(&transcript.tokens, (pcm.len() / 16) as u32))
+    }
     Some(_) => print!("{}", output::srt(&transcript.tokens, &starts, (pcm.len() / 16) as u32)),
     None => println!("{}", transcript.text),
   }
