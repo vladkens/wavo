@@ -221,6 +221,40 @@ AC (2026-10-10, after the x86 decoder and per-layer submissions).
   and a 10-minute English m4a (Parakeet, 60 s): text byte-identical to the earlier run, which
   matched the M2's; 2.1 / 7.0 s (were 16.3 / 46.1 s), peak 146 / 276 MiB.
 
+## Other engines (2026-10-10)
+
+### Whisper large-v3-turbo vs whisper.cpp
+
+M2, whisper.cpp v1.9.5 (d1be6fd), CMake Release with Metal, its `ggml-large-v3-turbo-q8_0.bin`
+(874 MB; our GGUF 886 MB). wavo / whisper.cpp, ms (MiB for the footprint), two rounds alternating
+step by step, load average 1.5–8. wavo: `wavo bench whisper-turbo CLIP.wav -n 10`, footprint of
+`wavo run whisper-turbo CLIP.wav --segment 0`. whisper.cpp: `whisper-cli -bs 1` (greedy; its
+default is beam 5) with the language given, defaults
+otherwise (4 threads, flash attention); a call is its `total − load` in a fresh process, 11 calls
+in one process average the same. The last column gives `-l auto`, which wavo always does.
+
+| Clip | Warm median | First call | Load | Peak footprint | whisper.cpp `-l auto` |
+|---|---|---|---|---|---|
+| jfk, 11 s | 1244–1281 / 1242–1260 | 1243–1284 / 1242–1260 | 208–277 / 268–287 | 1017 / 1038–1039 | 2357–2448 |
+| german, 29 s | 1319–1321 / 1317–1321 | 1322–1323 / 1317–1321 | 216–224 / 265–269 | 1019 / 1036–1038 | 2432–2447 |
+| ru-long, 34 s | 2696 / 2674–2710 | 2693–2695 / 2674–2710 | 212–214 / 264–276 | 1019–1021 / 1048–1050 | 3783–3869 |
+| dots-full, 306 s | 16583 / 20240–20633 | 16567–16637 / 20240–20633 | 220–226 / 268–279 | 1072 / 1133–1134 | 21512–21740 |
+
+- Speed is a tie on one or two windows (`whisper-bench`: 1.11 s per encoder window, 3.0 ms per
+  token). With `-l auto` whisper.cpp runs one extra encoder pass per file (+1.1 s); wavo reads the
+  language from the first window's logits. On dots-full wavo is 18% faster: not investigated.
+- Text: the same words on all four; jfk and ru-long identical (wavo one pass), german ends in ","
+  vs ".", dots-full (808 words) differs in 8 punctuation marks at window joins (whisper.cpp feeds
+  the previous text as a prompt, wavo doesn't). Beam 5: the same text, +2–13% time, +70 MiB.
+  `wavo run`'s 30 s split puts a "." mid-sentence on ru-long.
+- Both cut long audio into 30 s windows themselves. `whisper-cli` reads wav, mp3, flac and ogg at
+  any rate and channel count (it resamples) without ffmpeg; m4a/AAC fails unless built with
+  `WHISPER_COMMON_FFMPEG` against the ffmpeg libraries. Its defaults are `-l en` and beam 5; turbo
+  still transcribed German and Russian with them.
+- Setup: clone, `cmake` configure 11 s and build 28 s, then 8.2 MB in 7 files (`whisper-cli` and
+  6 dylibs, rpath into the build tree); the first run compiles its Metal library in 5.8 s, cached
+  after. wavo: a clean `cargo build --release` in 41 s, one 13.2 MB binary (9.2 MB stripped).
+
 ## Long audio: one pass, no chunking (2026-10-10, phase 7)
 
 On the M2, `wavo run` and `transcribe-cli` once each per file under `/usr/bin/time -l`: process
