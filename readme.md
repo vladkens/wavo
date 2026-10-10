@@ -53,6 +53,9 @@ is `parakeet-tdt-0.6b-v2`, `gigaam-v3` is `gigaam-v3-e2e-rnnt` and `whisper-turb
 cargo install wavo
 ```
 
+Or take prebuilt dev binaries for macOS, Linux and Windows from the
+[dev release](https://github.com/vladkens/wavo/releases/tag/dev).
+
 <details>
 <summary>Linux</summary>
 
