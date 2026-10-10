@@ -122,4 +122,13 @@ model load are from a fresh process; memory is the peak footprint. Measured back
 |  | 11 s, Russian | 161 / 246 | 173 / 349 | 167 / 285 | 762 / 884 |
 |  | 11 s, Ukrainian | 167 / 254 | 170 / 304 | 188 / 317 | 762 / 884 |
 
+## Development
+
 Built by coding agents; the rules are in [agents.md](agents.md).
+
+```sh
+cargo install --git https://github.com/vladkens/wavo --branch feat/<name> --locked  # a PR branch
+cargo install --git https://github.com/vladkens/wavo --locked --force               # back to main
+cargo install --path . --locked                                                     # a local checkout
+cargo uninstall wavo                                                                # remove it
+```

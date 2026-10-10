@@ -80,8 +80,9 @@ the first call matter as much as warm speed.
   only inside the repo folder and leaves `hf`'s shared blob store to `hf cache rm`.
 - Keep third-party checkouts in `3rd/` (gitignored) and never modify them. The reference is
   transcribe.cpp at commit `5bb2deb2a4afb1fd50534ecb51cfcb521ef94944`; `make reference` clones and
-  builds it in `3rd/transcribe.cpp`. Use it to read source, generate fixtures and benchmark, never
-  as a dependency.
+  builds it in `3rd/transcribe.cpp` (cmake and a C++ toolchain; on Linux its Vulkan build,
+  `-DTRANSCRIBE_VULKAN=ON`, also needs `libvulkan-dev glslc spirv-headers`). Use it to read
+  source, generate fixtures and benchmark, never as a dependency.
 - The GGUF container is standard (written with llama.cpp's `gguf-py`; `general.*` and
   `tokenizer.ggml.*` keys), but the `stt.*` keys, the tensor names and the bundled frontend
   tensors (window, mel filterbank) are transcribe.cpp's own schema. Its
