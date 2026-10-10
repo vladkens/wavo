@@ -42,8 +42,9 @@ models:
 reference:
 	test -d 3rd/transcribe.cpp || git clone https://github.com/handy-computer/transcribe.cpp 3rd/transcribe.cpp
 	git -C 3rd/transcribe.cpp checkout --detach $(REFERENCE_REV)
-	cmake -S 3rd/transcribe.cpp -B 3rd/transcribe.cpp/build -DCMAKE_BUILD_TYPE=Release -DTRANSCRIBE_BUILD_TOOLS=ON
-	cmake --build 3rd/transcribe.cpp/build --target transcribe-cli transcribe-bench -j
+	cmake -S 3rd/transcribe.cpp -B 3rd/transcribe.cpp/build -DCMAKE_BUILD_TYPE=Release -DTRANSCRIBE_BUILD_TOOLS=ON \
+		"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=$(CURDIR)/3rd/transcribe.cpp/build/bin"
+	cmake --build 3rd/transcribe.cpp/build --config Release --target transcribe-cli transcribe-bench -j
 
 # make fixtures MODEL=gigaam-v3-e2e-rnnt SAMPLES="ru ru-short ru-long"
 fixtures:

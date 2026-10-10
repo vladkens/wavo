@@ -179,6 +179,48 @@ the correct slice (382a72c). Load average 1.6–3.0.
   run, both faster on a rerun (2870 / 3155, 1206 / 1292 ms). One pass over dots-full (306 s) 16.8 /
   18.0 s, 1071 / 1087 MiB; death (233 s) 13.6 / 14.5 s, 1059 / 1078 MiB.
 
+### Windows: RTX 4060 Laptop (Ryzen 9 7945HX, 32 GiB), Windows 11 23H2, NVIDIA 610.62
+
+wgpu's Vulkan backend with HighPerformance picks the RTX 4060 over the Radeon 610M iGPU. Neither
+offers 8×8 F32 cooperative matrices (NVIDIA: F16 16×16 and 16×8, AMD: F16 16×16), so the fast
+kernels are never probed and every kernel is the portable one. Per clip, back to back: wavo
+`bench -n 20` (default build), `transcribe-bench --warmup 1 --iters 10` for the reference's CPU
+and Vulkan builds, then once each under a 10 ms poll of `PeakWorkingSet64`: `wavo run` and both
+`transcribe-bench --warmup 0 --iters 1`. transcribe.cpp 5bb2deb: the CPU build (MSVC, AVX-512, no
+BLAS: scalar RNN-T decoder) and the Vulkan build (Vulkan SDK 1.4.357, `-DTRANSCRIBE_VULKAN=ON`;
+it picks the RTX 4060, NV_coopmat2). Cells are wavo / reference CPU / reference Vulkan, ms and
+working-set MiB. GigaAM on `jfk` and `dots` (English) is for timing only. Balanced power plan,
+AC (2026-10-10, after the x86 decoder and per-layer submissions).
+
+| Model | Clip | Warm median | Warm min | First call | Load | Peak, MiB |
+|---|---|---|---|---|---|---|
+| GigaAM e2e-rnnt | ru | 25.5 / 310 / 134 | 24.9 / 309 / 134 | 38.4 / 310 / 147 | 576 (cold shader cache) / 147 / 281 | 129 / 280 / 339 |
+| GigaAM e2e-rnnt | ru-long | 202 / 4032 / 1075 | 196 / 4023 / 988 | 210 / 4058 / 1001 | 235 / 147 / 295 | 128 / 341 / 341 |
+| GigaAM e2e-rnnt | jfk | 64.1 / 1081 / 573 | 63.8 / 1080 / 533 | 77.2 / 1088 / 548 | 230 / 145 / 286 | 130 / 287 / 339 |
+| GigaAM e2e-rnnt | dots | 234 / 5994 / 2799 | 224 / 5985 / 2688 | 242 / 6015 / 2632 | 231 / 146 / 297 | 129 / 346 / 341 |
+| Parakeet TDT V3 | ru | 46.4 / 149 / 45.3 | 46.2 / 146 / 44.7 | 85.1 / 148 / 54.2 | 341 / 726 / 630 | 204 / 1108 / 779 |
+| Parakeet TDT V3 | ru-long | 310 / 1219 / 208 | 295 / 1194 / 207 | 345 / 1235 / 218 | 350 / 648 / 638 | 196 / 1241 / 780 |
+| Parakeet TDT V3 | jfk | 102 / 353 / 90.8 | 99.8 / 351 / 85.3 | 137 / 358 / 99.9 | 342 / 661 / 626 | 196 / 1139 / 779 |
+| Parakeet TDT V3 | dots | 340 / 1294 / 255 | 325 / 1284 / 250 | 356 / 1335 / 263 | 358 / 648 / 643 | 216 / 1248 / 781 |
+| Whisper large-v3-turbo | jfk | 1143 / 3579 / 225 | 1139 / 3564 / 224 | 1221 / 3574 / 264 | 349 / 709 / 718 | 301 / 980 / 949 |
+
+- `make check` and `make test` pass with the MSVC toolchain from Git Bash (no PATH change: rustc
+  finds MSVC's `link.exe` itself); all 7 models' fixtures are exact, Whisper included, since the
+  portable GEMM rounds W to f16 by hand (see Log).
+- Against the reference's Vulkan build: GigaAM 5.3–12× faster (85–91% of the reference's time is
+  its scalar decoder); Parakeet on par on `ru`, 12% slower on `jfk`, 1.3–1.5× on the long clips;
+  Whisper 5.1× slower (its encoder 158 ms on cooperative matrices, wavo's portable one most of
+  1143). Load is 20–50% below, the working set 128–301 MiB against 339–949; wavo's weights sit
+  in VRAM (dedicated 415 / 801 / 1229 MiB for GigaAM / Parakeet / Whisper).
+- Against the earlier run of this table (before the runtime AVX2 + FMA decoder): the default build
+  is 6–15× faster, 4–9% behind that run's `-C target-cpu=native` build on GigaAM and 1.5–1.7×
+  ahead of it on Parakeet. Load fell (GigaAM 272 → 230, Parakeet ~440 → ~345 ms) without
+  the warm-up run, which moved into the first call (+13 ms GigaAM, +35–39 ms Parakeet on short
+  clips).
+- `wavo run` on mp3 and m4a (44.1 and 48 kHz), a 5-minute Russian mp3 (GigaAM, 25 s segments)
+  and a 10-minute English m4a (Parakeet, 60 s): text byte-identical to the earlier run, which
+  matched the M2's; 2.1 / 7.0 s (were 16.3 / 46.1 s), peak 146 / 276 MiB.
+
 ## Long audio: one pass, no chunking (2026-10-10, phase 7)
 
 On the M2, `wavo run` and `transcribe-cli` once each per file under `/usr/bin/time -l`: process
@@ -563,6 +605,15 @@ Add entries here, newest first: date, model, idea, before → after (median, A/B
 - 2026-10-10, Whisper and GigaAM, flash attention with the output in registers, 9.5 KB shared:
   Whisper jfk 1550 → 1403, GigaAM ru-long 297 → 276 ms, Parakeet unchanged; fixtures exact. Kept.
 - 2026-10-10, Whisper, decoder gemv over 4 rows per 32 threads: jfk 1603 → 1563 ms. Kept.
+
+- 2026-10-10, Windows RTX 4060, `-C target-cpu=native` (A/B/A, warm median): ru 234 → 24,
+  ru-long 1763 → 189, V3 jfk 605 → 156, V3 dots 2799 → 585 ms, fixtures exact. Not kept as a
+  flag: the decoder's x86 fallback is Linux Task 4.
+
+- 2026-10-10, all models, Windows RTX 4060: NVIDIA's Vulkan driver folds the portable GEMM's
+  `pack2x16float` round trip into a no-op (AMD's truncates), so W was not rounded to f16 and
+  e2e-ctc ru-short missed its fixture; rounding to nearest even by hand fixes it. Warm A/B/A/B
+  ru-long 1749 / 1755 / 1757 / 1758, jfk 601.5 / 602.8 / 602.6 / 607.0 ms. Kept.
 
 - 2026-10-10, GigaAM e2e-rnnt, Parakeet TDT V3 (and V2 on 87 recordings), 2,923 of the person's
   dictation recordings against transcribe.cpp's batch mode (`make compare`): text the same in

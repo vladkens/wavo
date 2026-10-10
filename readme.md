@@ -68,6 +68,23 @@ GPUs other than Apple's use simpler kernels for now: an Intel N100 transcribes 1
 
 </details>
 
+<details>
+<summary>Windows</summary>
+
+Rust on Windows needs Microsoft's C++ build tools for its linker. In PowerShell:
+
+```powershell
+winget install Rustlang.Rustup
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+wavo uses the GPU through its Vulkan driver (NVIDIA, AMD and Intel ship one); on a laptop with
+two GPUs it takes the discrete one. GPUs other than Apple's use simpler kernels for now: an
+RTX 4060 laptop transcribes 11 s of audio in 64 ms (`gigaam-v3`), 102 ms (`parakeet-v3`) or
+1.1 s (`whisper-turbo`).
+
+</details>
+
 ## 🚀 Usage
 
 ```sh
@@ -135,6 +152,31 @@ cargo install --git https://github.com/vladkens/wavo --locked --force           
 cargo install --path . --locked                                                   # a local checkout
 cargo uninstall wavo                                                              # remove it
 ```
+
+</details>
+
+<details>
+<summary>A Windows machine for testing over SSH</summary>
+
+In an administrator PowerShell: OpenSSH server, Git (its bash becomes the SSH shell), CMake and
+make, and the Rust toolchain with Microsoft's build tools, as in Installation → Windows. sshd
+reads an administrator's key from `C:\ProgramData\ssh`, not from `~\.ssh`.
+
+```powershell
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+Start-Service sshd; Set-Service sshd -StartupType Automatic
+winget install Git.Git Kitware.CMake ezwinports.make
+New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell -Value "C:\Program Files\Git\bin\bash.exe" -PropertyType String -Force
+Add-Content C:\ProgramData\ssh\administrators_authorized_keys "ssh-ed25519 AAAA... you@host"
+icacls C:\ProgramData\ssh\administrators_authorized_keys /inheritance:r /grant "Administrators:F" /grant "SYSTEM:F"
+```
+
+`ssh user@host` then opens Git Bash, where `make check` and `make test` work as on macOS (rustup
+fetches the nightly toolchain for `cargo +nightly fmt` on first use), and `make reference` builds
+transcribe.cpp for the CPU with Visual Studio's compiler; for its GPU build run `winget install
+KhronosGroup.VulkanSDK` (in PowerShell) and add `-DTRANSCRIBE_VULKAN=ON` to the cmake configure
+step. `ssh user@host wsl` opens the default WSL distribution instead, a separate Linux with its own
+toolchain.
 
 </details>
 

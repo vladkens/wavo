@@ -50,7 +50,7 @@ impl Cache {
       .unwrap_or_else(|| {
         let user = || PathBuf::from(var("HOME").or_else(|| var("USERPROFILE")).unwrap_or_default());
         let xdg = var("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| user().join(".cache"));
-        (xdg.join("huggingface/hub"), None)
+        (xdg.join("huggingface").join("hub"), None)
       });
     Self { root, from }
   }
