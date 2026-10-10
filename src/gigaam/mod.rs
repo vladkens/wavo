@@ -64,7 +64,7 @@ impl Gigaam {
       bail!("vocabulary of {} tokens, {classes} classes, blank {blank}", vocab.len());
     }
 
-    let gpu = Gpu::new()?;
+    let gpu = Gpu::new(true)?;
     let frontend = Frontend::new(g, mels)?;
     let encoder = |head: (&str, &[usize])| Encoder::new(&gpu, g, cfg, mels, theta, head);
     let (head, encoder) = if kind == "rnnt" {

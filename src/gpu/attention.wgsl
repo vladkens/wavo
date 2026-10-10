@@ -2,10 +2,9 @@
 // Portable multi-head attention, heads of head_dim ≤ 128 (ch = heads · head_dim). The projections
 // are rows of `stride` floats with q at 0 and k at ch: [q | k], or [q + u | k | v | q + v] for
 // relative positions. scores writes scale · q·k into s [heads][t][t], softmax (in ops.wgsl)
-// normalizes each row in place, values computes o [t][ch] = s·v. For relative positions,
-// pos_scores first writes ps [heads][t][2t − 1] = (q + v)·P, P being the projected positions
-// [2t − 1][ch] (row r is position t − 1 − r), and scores adds ps[h][i][j − i + t − 1] before the
-// scale.
+// normalizes each row in place, values computes o [t][ch] = s·v. For relative positions, scores
+// adds (q + v)_i·P[j − i + t − 1] before the scale, P being the projected positions [2t − 1][ch]
+// from row 16 on (row 16 + r is position t − 1 − r).
 
 struct Params {
   t: u32,
@@ -21,24 +20,13 @@ struct Params {
 
 var<immediate> p: Params;
 
-// [16][head_dim + 1] tiles of query rows and key (or position) rows.
+@group(0) @binding(0) var<storage, read> sc_qk: array<f32>;
+@group(0) @binding(1) var<storage, read> sc_pos: array<f32>;
+@group(0) @binding(2) var<storage, read_write> sc_s: array<f32>;
+
+// [16][head_dim + 1] tiles of query rows and key rows.
 var<workgroup> qs: array<f32, 2064>;
 var<workgroup> ks: array<f32, 2064>;
-
-// The dot of tile rows l.y of qs and l.x of ks.
-fn tile_dot(l: vec3<u32>) -> f32 {
-  let hd = p.head_dim;
-  workgroupBarrier();
-  var acc = 0.0;
-  for (var c = 0u; c < hd; c++) {
-    acc += qs[l.y * (hd + 1u) + c] * ks[l.x * (hd + 1u) + c];
-  }
-  return acc;
-}
-
-@group(0) @binding(0) var<storage, read> sc_qk: array<f32>;
-@group(0) @binding(1) var<storage, read> sc_ps: array<f32>;
-@group(0) @binding(2) var<storage, read_write> sc_s: array<f32>;
 
 // One workgroup per 16×16 scores of one head.
 @compute @workgroup_size(16, 16)
@@ -61,48 +49,24 @@ fn scores(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l:
     qs[r * (hd + 1u) + c] = q;
     ks[r * (hd + 1u) + c] = k;
   }
-  var acc = tile_dot(l);
+  workgroupBarrier();
+  var acc = 0.0;
+  for (var c = 0u; c < hd; c++) {
+    acc += qs[l.y * (hd + 1u) + c] * ks[l.x * (hd + 1u) + c];
+  }
   let i = i0 + l.y;
   let j = j0 + l.x;
   if (i < p.t && j < p.t) {
     if (p.relative != 0u) {
-      acc += sc_ps[(h * p.t + i) * (2u * p.t - 1u) + j + p.t - 1u - i];
+      let qv = i * p.stride + 3u * p.ch + h * hd;
+      let pr = (j + p.t + 15u - i) * p.ch + h * hd;
+      var pos = 0.0;
+      for (var c = 0u; c < hd; c++) {
+        pos += sc_qk[qv + c] * sc_pos[pr + c];
+      }
+      acc += pos;
     }
     sc_s[(h * p.t + i) * p.t + j] = acc * p.scale;
-  }
-}
-
-@group(0) @binding(0) var<storage, read> pos_q: array<f32>;
-@group(0) @binding(1) var<storage, read> pos_p: array<f32>;
-@group(0) @binding(2) var<storage, read_write> pos_s: array<f32>;
-
-// One workgroup per 16 queries × 16 positions of one head; q + v is the last ch of each row.
-@compute @workgroup_size(16, 16)
-fn pos_scores(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
-  let hd = p.head_dim;
-  let h = wg.z;
-  let i0 = wg.y * 16u;
-  let r0 = wg.x * 16u;
-  let n = 2u * p.t - 1u;
-  for (var e = l.y * 16u + l.x; e < 16u * hd; e += 256u) {
-    let r = e / hd;
-    let c = e % hd;
-    var q = 0.0;
-    var k = 0.0;
-    if (i0 + r < p.t) {
-      q = pos_q[(i0 + r) * p.stride + p.stride - p.ch + h * hd + c];
-    }
-    if (r0 + r < n) {
-      k = pos_p[(r0 + r) * p.ch + h * hd + c];
-    }
-    qs[r * (hd + 1u) + c] = q;
-    ks[r * (hd + 1u) + c] = k;
-  }
-  let acc = tile_dot(l);
-  let i = i0 + l.y;
-  let r = r0 + l.x;
-  if (i < p.t && r < n) {
-    pos_s[(h * p.t + i) * n + r] = acc;
   }
 }
 

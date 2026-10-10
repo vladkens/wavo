@@ -16,6 +16,8 @@ struct Params {
   // 0: bias, 1: bias + SiLU, 2: bias + ReLU, 3: c += alpha · (a·Wᵀ + bias)
   mode: u32,
   alpha: f32,
+  // Rows of c are n + dual wide: outputs j < dual are written again at n + j with bias[n + j].
+  dual: u32,
 }
 
 var<immediate> p: Params;
@@ -44,12 +46,15 @@ var<workgroup> wt: array<f32, 2112>;
 
 fn epilogue(m: u32, n: u32, acc: f32) {
   let v = acc + bias[n];
-  let i = m * p.n + n;
+  let i = m * (p.n + p.dual) + n;
   switch p.mode {
     case 1u: { c[i] = v / (1.0 + exp(-v)); }
     case 2u: { c[i] = max(v, 0.0); }
     case 3u: { c[i] += p.alpha * v; }
     default: { c[i] = v; }
+  }
+  if (n < p.dual) {
+    c[i + p.n] = acc + bias[p.n + n];
   }
 }
 

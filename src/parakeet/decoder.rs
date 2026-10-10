@@ -75,18 +75,18 @@ impl Decoder {
     })
   }
 
-  /// Greedy search over `enc` `[frames][joint]` (encoder projection with bias). Returns
-  /// `(token, frame)` pairs. The first predictor input and state are zeros.
-  pub fn decode(&self, enc: &[f32]) -> Vec<(u32, u32)> {
+  /// Greedy search over `enc`, rows of `width` that start with the joint's encoder projection
+  /// (with bias). Returns `(token, frame)` pairs. The first predictor input and state are zeros.
+  pub fn decode(&self, enc: &[f32], width: usize) -> Vec<(u32, u32)> {
     let j = self.joint;
     let mut state = vec![0.0; 2 * self.lstm.len() * self.hidden];
     let (mut next, mut pred) = self.predict(None, &state);
-    greedy(enc.len() / j, self.blank, &self.durations, self.max_symbols, |t, emitted| {
+    greedy(enc.len() / width, self.blank, &self.durations, self.max_symbols, |t, emitted| {
       if let Some(token) = emitted {
         state = std::mem::take(&mut next);
         (next, pred) = self.predict(Some(token), &state);
       }
-      self.joint(&enc[t * j..][..j], &pred)
+      self.joint(&enc[t * width..][..j], &pred)
     })
   }
 
@@ -101,7 +101,12 @@ impl Decoder {
       self.lstm.iter().zip(state.chunks_exact(2 * n)).zip(next.chunks_exact_mut(2 * n))
     {
       let (h, c) = s.split_at(n);
-      let (gx, gh) = (matmul(&l.wx, &x, n), matmul(&l.wh, h, n));
+      // Each product streams 6.5 MB of weights, more than a core's share of the L2: two cores.
+      let (gx, gh) = std::thread::scope(|s| {
+        let gx = s.spawn(|| matmul(&l.wx, &x, n));
+        let gh = matmul(&l.wh, h, n);
+        (gx.join().unwrap(), gh)
+      });
       let gate = |i: usize| gx[i] + gh[i] + l.bias[i];
       let (nh, nc) = out.split_at_mut(n);
       for k in 0..n {

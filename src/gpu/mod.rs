@@ -20,17 +20,17 @@ pub struct Gpu {
   weights: wgpu::BufferUsages,
   kernels: Kernels,
   fast: Fast,
+  /// Bound for a writable output a dispatch doesn't use, so no writable binding aliases another.
+  spare: Buffer,
 }
 
 struct Kernels {
   /// One per weight type.
   gemm: Vec<Pipeline>,
   layer_norm: Pipeline,
-  layer_norm_rope: Pipeline,
   im2col: Pipeline,
   conv_glu: Pipeline,
   scores: Pipeline,
-  pos_scores: Pipeline,
   softmax: Pipeline,
   values: Pipeline,
   depthwise: Pipeline,
@@ -42,10 +42,11 @@ struct Kernels {
 struct Fast {
   gemm: Option<Vec<Pipeline>>,
   layer_norm: Option<Pipeline>,
-  layer_norm_rope: Option<Pipeline>,
   conv_glu: Option<Pipeline>,
   /// Flash attention for head_dim ≤ 64.
   attention: Option<Pipeline>,
+  /// Flash attention with relative positions for head_dim ≤ 128.
+  relative: Option<Pipeline>,
 }
 
 /// A linear layer `y = x·Wᵀ + b` with `W` row-major `[n][k]`, kept in its GGUF type. Q8_0 is
@@ -53,6 +54,8 @@ struct Fast {
 pub struct Linear {
   n: usize,
   k: usize,
+  /// Outputs written a second time after the n others, with their own bias.
+  dual: usize,
   /// GEMM pipeline index: 0: F32, 1: F16, 2: Q8_0
   ty: usize,
   weight: Buffer,
@@ -61,20 +64,15 @@ pub struct Linear {
 }
 
 impl Linear {
-  /// Output columns: the rows of `W` padded to a multiple of 64.
+  /// Output columns: the rows of `W` padded to a multiple of 64, and the dual outputs.
   pub fn width(&self) -> usize {
-    self.n
+    self.n + self.dual
   }
 }
 
-/// LayerNorm gain and bias, or a per-channel affine `x·g + b`.
-pub struct Norm {
-  g: Buffer,
-  b: Buffer,
-}
-
-/// A depthwise conv's weight `[ch][taps]` and bias.
-pub struct Depthwise {
+/// Per-channel weights and biases: a LayerNorm's gain and bias, a per-channel affine `x·w + b`, or
+/// a depthwise conv's taps and bias.
+pub struct Channels {
   w: Buffer,
   b: Buffer,
 }
@@ -97,11 +95,8 @@ pub enum Epilogue {
 }
 
 impl Gpu {
-  pub fn new() -> Result<Self> {
-    Self::with_fast_paths(true)
-  }
-
-  pub(crate) fn with_fast_paths(fast: bool) -> Result<Self> {
+  /// The device with the fast kernels that pass their probes, or only the portable ones.
+  pub fn new(fast: bool) -> Result<Self> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
       power_preference: wgpu::PowerPreference::HighPerformance,
@@ -152,11 +147,9 @@ impl Gpu {
     let kernels = Kernels {
       gemm: gemms(&device, &gemm),
       layer_norm: pipeline(&device, &ops, "layer_norm", &[]),
-      layer_norm_rope: pipeline(&device, &ops, "layer_norm_rope", &[]),
       im2col: pipeline(&device, &ops, "im2col", &[]),
       conv_glu: pipeline(&device, &ops, "conv_glu", &[]),
       scores: pipeline(&device, &attention, "scores", &[]),
-      pos_scores: pipeline(&device, &attention, "pos_scores", &[]),
       softmax: pipeline(&device, &ops, "softmax", &[]),
       values: pipeline(&device, &attention, "values", &[]),
       depthwise: pipeline(&device, &spatial, "depthwise", &[]),
@@ -167,43 +160,49 @@ impl Gpu {
     if mappable {
       weights |= wgpu::BufferUsages::MAP_WRITE;
     }
-    let mut gpu = Self { device, queue, weights, kernels, fast: Fast::default() };
+    let usage = wgpu::BufferUsages::STORAGE;
+    let desc = wgpu::BufferDescriptor { label: None, size: 4, usage, mapped_at_creation: false };
+    let spare = device.create_buffer(&desc);
+    let mut gpu = Self { device, queue, weights, kernels, fast: Fast::default(), spare };
     if fast {
       gpu.fast = gpu.fast_kernels();
     }
     Ok(gpu)
   }
 
-  /// Compiles the fast kernels and keeps each one whose probe reports four 32-lane subgroups.
+  /// Compiles the fast kernels and keeps each one whose probe reports its subgroup layout.
   fn fast_kernels(&self) -> Fast {
     let scopes = [wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation]
       .map(|f| self.device.push_error_scope(f));
     let gemm = module(&self.device, include_str!("gemm_fast.wgsl"));
     let ops = module(&self.device, include_str!("ops_fast.wgsl"));
+    let attention = module(&self.device, include_str!("attention_fast.wgsl"));
     let gemm = gemms(&self.device, &gemm);
-    let kernels = ["layer_norm", "layer_norm_rope", "conv_glu", "attention"]
-      .map(|entry| pipeline(&self.device, &ops, entry, &[]));
+    let kernels = ["layer_norm", "conv_glu"].map(|entry| pipeline(&self.device, &ops, entry, &[]));
+    let [attention, relative] =
+      [0.0, 1.0].map(|rel| pipeline(&self.device, &attention, "attention", &[("REL", rel)]));
     let errors = scopes.into_iter().rev().filter_map(|s| pollster::block_on(s.pop())).count();
     if errors > 0 {
       return Fast::default();
     }
-    let [layer_norm, layer_norm_rope, conv_glu, attention] = kernels;
-    // All params zero: the kernel sees an empty problem and reports its subgroup layout.
-    let probe = |k: Pipeline, bindings: usize, out: usize, params: usize| {
+    let [layer_norm, conv_glu] = kernels;
+    // All params zero: the kernel sees an empty problem and reports its subgroup layout, which
+    // must be `subgroups` of 32 lanes.
+    let probe = |k: Pipeline, bindings: usize, out: usize, params: usize, subgroups: f32| {
       let buffers: Vec<Buffer> = (0..bindings).map(|_| self.buffer(16)).collect();
       let refs: Vec<&Buffer> = buffers.iter().collect();
       let read = self.readback(2);
       let r = self.run(&mut Vec::new(), &buffers[out], &read, 2, |p| {
-        p.run(&k, &refs, &[0; 6][..params], [1, 1, 1]);
+        p.run(&k, &refs, &[0; 8][..params], [1, 1, 1]);
       });
-      matches!(r.as_deref(), Ok([32.0, 4.0])).then_some(k)
+      (r.ok() == Some(vec![32.0, subgroups])).then_some(k)
     };
     Fast {
-      gemm: gemm.into_iter().map(|k| probe(k, 5, 2, 5)).collect(),
-      layer_norm: probe(layer_norm, 4, 3, 4),
-      layer_norm_rope: probe(layer_norm_rope, 6, 3, 4),
-      conv_glu: probe(conv_glu, 6, 5, 6),
-      attention: probe(attention, 3, 2, 4),
+      gemm: gemm.into_iter().map(|k| probe(k, 5, 2, 6, 4.0)).collect(),
+      layer_norm: probe(layer_norm, 6, 3, 4, 4.0),
+      conv_glu: probe(conv_glu, 6, 5, 6, 4.0),
+      attention: probe(attention, 4, 3, 8, 4.0),
+      relative: probe(relative, 4, 3, 8, 1.0),
     }
   }
 
@@ -253,7 +252,9 @@ impl Gpu {
 
   /// Uploads weights `[.., n_i]` of one type and inner size, stacked along n, with the bias of
   /// the stacked rows, or zeros when `bias` is empty. The GEMM computes 64 outputs at a time, so
-  /// the rows are padded with zeros to a multiple of 64; the extra outputs are `epilogue(0)`.
+  /// the rows are padded with zeros to a multiple of 64; the extra outputs are `epilogue(0)`. A
+  /// bias with `dual` more values has the first `dual` outputs written again after the others
+  /// with those biases (one q with two position biases).
   pub fn linear(&self, weights: &[Tensor], bias: &[f32]) -> Result<Linear> {
     let w0 = &weights[0];
     let k = w0.len() / w0.dims.last().unwrap();
@@ -310,29 +311,29 @@ impl Gpu {
         (2, data, Some(scales))
       }
     };
-    if !bias.is_empty() && bias.len() != rows {
+    let dual = bias.len().saturating_sub(rows);
+    if !bias.is_empty() && bias.len() < rows || dual > rows {
       bail!("linear layer {k}→{rows}: bias has {} values", bias.len());
     }
-    let mut padded = vec![0.0; n];
-    padded[..bias.len()].copy_from_slice(bias);
-    Ok(Linear { n, k, ty, weight, scales, bias: self.upload(&padded)? })
+    let (own, second) = bias.split_at(bias.len() - dual);
+    let mut padded = vec![0.0; n + dual];
+    padded[..own.len()].copy_from_slice(own);
+    padded[n..].copy_from_slice(second);
+    Ok(Linear { n, k, dual, ty, weight, scales, bias: self.upload(&padded)? })
   }
 
-  pub fn norm(&self, g: &[f32], b: &[f32]) -> Result<Norm> {
-    Ok(Norm { g: self.upload(g)?, b: self.upload(b)? })
+  pub fn channels(&self, w: &[f32], b: &[f32]) -> Result<Channels> {
+    Ok(Channels { w: self.upload(w)?, b: self.upload(b)? })
   }
 
-  pub fn depthwise(&self, w: &[f32], b: &[f32]) -> Result<Depthwise> {
-    Ok(Depthwise { w: self.upload(w)?, b: self.upload(b)? })
-  }
-
-  fn flash(&self, head_dim: usize) -> Option<&Pipeline> {
-    self.fast.attention.as_ref().filter(|_| head_dim <= 64 && head_dim.is_multiple_of(8))
+  fn flash(&self, head_dim: usize, relative: bool) -> Option<&Pipeline> {
+    let (k, max) = if relative { (&self.fast.relative, 128) } else { (&self.fast.attention, 64) };
+    k.as_ref().filter(|_| head_dim <= max && head_dim.is_multiple_of(8))
   }
 
   /// Floats of attention scratch for `t` frames: the portable path keeps all scores.
-  pub fn scores_len(&self, t: usize, heads: usize, head_dim: usize) -> usize {
-    if self.flash(head_dim).is_some() { 1 } else { heads * t * t }
+  pub fn scores_len(&self, t: usize, heads: usize, head_dim: usize, relative: bool) -> usize {
+    if self.flash(head_dim, relative).is_some() { 1 } else { heads * t * t }
   }
 
   /// Encodes one compute pass with `record`, runs it, and reads back `len` f32s of `out` through
@@ -368,17 +369,16 @@ impl Gpu {
   }
 }
 
+/// Rows of projected positions for relative attention over `t` frames: positions t + 15 down to
+/// 1 − t. The first 16 are only read by the fast kernel's partial tiles, as are 64 more rows past
+/// the end, which a buffer must have (finite) too.
+pub fn pos_rows(t: usize) -> usize {
+  2 * t + 15
+}
+
 /// Output length of a stride-2 conv with kernel 3 and padding 1 (or kernel 5 and padding 2).
 pub fn half(n: usize) -> usize {
   (n - 1) / 2 + 1
-}
-
-/// attention.wgsl's params: `[stride, v_stride, v_offset, relative]` after t, ch, head_dim and the
-/// scale.
-fn attention_params(t: usize, ch: usize, head_dim: usize, rest: [usize; 4]) -> [u32; 8] {
-  let scale = 1.0 / (head_dim as f32).sqrt();
-  let [a, b, c, d] = rest.map(|v| v as u32);
-  [t as u32, ch as u32, head_dim as u32, scale.to_bits(), a, b, c, d]
 }
 
 fn module(device: &wgpu::Device, source: &str) -> wgpu::ShaderModule {
@@ -449,7 +449,7 @@ impl Pass<'_> {
       Epilogue::Relu => (2, 0.0),
       Epilogue::Residual(alpha) => (3, alpha),
     };
-    let params = [m as u32, l.n as u32, l.k as u32, mode, alpha.to_bits()];
+    let params = [m as u32, l.n as u32, l.k as u32, mode, alpha.to_bits(), l.dual as u32];
     // Only Q8_0 reads scales; other types bind the bias in their place.
     let buffers = [a, &l.bias, c, &l.weight, l.scales.as_ref().unwrap_or(&l.bias)];
     match &gpu.fast.gemm {
@@ -458,36 +458,25 @@ impl Pass<'_> {
     }
   }
 
-  /// LayerNorm over `rows` rows of `cols`.
-  pub fn layer_norm(&mut self, x: &Buffer, n: &Norm, y: &Buffer, rows: usize, cols: usize) {
-    let gpu = self.gpu;
-    let params = [rows as u32, cols as u32];
-    match &gpu.fast.layer_norm {
-      Some(k) => self.run(k, &[x, &n.g, &n.b, y], &params, [rows.div_ceil(4), 1, 1]),
-      None => self.run(&gpu.kernels.layer_norm, &[x, &n.g, &n.b, y], &params, [rows, 1, 1]),
-    }
-  }
-
-  /// LayerNorm into `y`, and the same with rotary embedding into `yr`. `rope` holds per position
-  /// `head_dim / 2` cosines followed by as many sines.
-  #[allow(clippy::too_many_arguments)]
-  pub fn layer_norm_rope(
+  /// LayerNorm over `rows` rows of `cols` into `y`; with `rope` (a table, `yr`, head_dim) also the
+  /// same with rotary embedding into `yr`. The table holds per position head_dim / 2 cosines
+  /// followed by as many sines.
+  pub fn layer_norm(
     &mut self,
     x: &Buffer,
-    n: &Norm,
+    n: &Channels,
     y: &Buffer,
-    rope: &Buffer,
-    yr: &Buffer,
     rows: usize,
     cols: usize,
-    head_dim: usize,
+    rope: Option<(&Buffer, &Buffer, usize)>,
   ) {
     let gpu = self.gpu;
+    let (table, yr, head_dim) = rope.unwrap_or((x, &gpu.spare, 0));
     let params = [rows as u32, cols as u32, head_dim as u32];
-    let buffers = [x, &n.g, &n.b, y, rope, yr];
-    match &gpu.fast.layer_norm_rope {
+    let buffers = [x, &n.w, &n.b, y, table, yr];
+    match &gpu.fast.layer_norm {
       Some(k) => self.run(k, &buffers, &params, [rows.div_ceil(4), 1, 1]),
-      None => self.run(&gpu.kernels.layer_norm_rope, &buffers, &params, [rows, 1, 1]),
+      None => self.run(&gpu.kernels.layer_norm, &buffers, &params, [rows, 1, 1]),
     }
   }
 
@@ -503,16 +492,16 @@ impl Pass<'_> {
   pub fn conv_glu(
     &mut self,
     h: &Buffer,
-    dw: &Depthwise,
+    dw: &Channels,
     kernel: usize,
-    n: &Norm,
+    n: &Channels,
     norm: ConvNorm,
     y: &Buffer,
     t: usize,
     ch: usize,
   ) {
     let gpu = self.gpu;
-    let buffers = [h, &dw.w, &dw.b, &n.g, &n.b, y];
+    let buffers = [h, &dw.w, &dw.b, &n.w, &n.b, y];
     let layer_norm = (norm == ConvNorm::LayerNorm) as u32;
     let params = [t as u32, ch as u32, 0, 0, kernel as u32, layer_norm];
     match &gpu.fast.conv_glu {
@@ -521,99 +510,69 @@ impl Pass<'_> {
     }
   }
 
-  /// Multi-head attention: `qk` is `[t][q | k]`, `v` and `o` are `[t][heads · head_dim]`, `s`
-  /// holds `scores_len` floats. The fast path reads rows of `qk` and `v` up to `t` rounded up to
-  /// 64, which must be finite.
+  /// Multi-head attention over `qk` `[t][q | k]` and `v` `[t][heads · head_dim]` into `o`, or with
+  /// relative positions `pos`, the projected positions `[pos_rows(t)][heads · head_dim]` (row r is
+  /// position t + 15 − r), over `qk` `[t][q + u | k | v | q + v]` (`v` is unused): score (i, j)
+  /// is then `((q + u)_i·k_j + (q + v)_i·pos[j − i + t + 15]) / √head_dim`. `s` holds `scores_len`
+  /// floats. The fast path reads rows of `qk` and `v` up to `t` rounded up to 64, which must be
+  /// finite.
   #[allow(clippy::too_many_arguments)]
   pub fn attention(
     &mut self,
     qk: &Buffer,
     v: &Buffer,
+    pos: Option<&Buffer>,
     s: &Buffer,
     o: &Buffer,
     t: usize,
     heads: usize,
     head_dim: usize,
   ) {
-    let ch = heads * head_dim;
-    let params = attention_params(t, ch, head_dim, [2 * ch, ch, 0, 0]);
-    if let Some(k) = self.gpu.flash(head_dim) {
-      return self.run(k, &[qk, v, o], &params[..4], [t.div_ceil(64), heads, 1]);
+    let ch = (heads * head_dim) as u32;
+    // attention.wgsl's params: stride, v_stride, v_offset and relative after t, ch, head_dim and
+    // the scale. A flash workgroup takes 64 queries, with relative positions 16.
+    let (v, [a, b, c, d], queries) = match pos {
+      None => (v, [2 * ch, ch, 0, 0], 64),
+      Some(_) => (qk, [4 * ch, 4 * ch, 2 * ch, 1], 16),
+    };
+    let scale = (1.0 / (head_dim as f32).sqrt()).to_bits();
+    let params = [t as u32, ch, head_dim as u32, scale, a, b, c, d];
+    let pos = pos.unwrap_or(qk);
+    if let Some(k) = self.gpu.flash(head_dim, d == 1) {
+      return self.run(k, &[qk, v, pos, o], &params, [t.div_ceil(queries), heads, 1]);
     }
-    self.scores_softmax_values([qk, qk, v], s, o, t, heads, &params);
-  }
-
-  /// Multi-head attention with relative positions: `qkv` is `[t][q + u | k | v | q + v]`, `pos`
-  /// the projected positions `[2t − 1][heads · head_dim]` (row r is position t − 1 − r), `ps`
-  /// holds `heads · t · (2t − 1)` floats and `s` `heads · t · t`. Score (i, j) is
-  /// `((q + u)_i·k_j + (q + v)_i·pos[j − i + t − 1]) / √head_dim`.
-  #[allow(clippy::too_many_arguments)]
-  pub fn relative_attention(
-    &mut self,
-    qkv: &Buffer,
-    pos: &Buffer,
-    ps: &Buffer,
-    s: &Buffer,
-    o: &Buffer,
-    t: usize,
-    heads: usize,
-    head_dim: usize,
-  ) {
-    let ch = heads * head_dim;
-    let params = attention_params(t, ch, head_dim, [4 * ch, 4 * ch, 2 * ch, 1]);
-    let k = &self.gpu.kernels.pos_scores;
-    self.run(k, &[qkv, pos, ps], &params, [(2 * t - 1).div_ceil(16), t.div_ceil(16), heads]);
-    self.scores_softmax_values([qkv, ps, qkv], s, o, t, heads, &params);
-  }
-
-  /// The portable attention: scores from `[qk, ps]` into `s`, softmax, values from `v` into `o`.
-  fn scores_softmax_values(
-    &mut self,
-    [qk, ps, v]: [&Buffer; 3],
-    s: &Buffer,
-    o: &Buffer,
-    t: usize,
-    heads: usize,
-    params: &[u32],
-  ) {
     let (k, tiles) = (&self.gpu.kernels, t.div_ceil(16));
-    self.run(&k.scores, &[qk, ps, s], params, [tiles, tiles, heads]);
+    self.run(&k.scores, &[qk, pos, s], &params, [tiles, tiles, heads]);
     self.run(&k.softmax, &[s], &params[..1], [t, heads, 1]);
-    self.run(&k.values, &[s, v, o], params, [tiles, heads, 1]);
+    self.run(&k.values, &[s, v, o], &params, [tiles, heads, 1]);
   }
 
-  /// Depthwise 3×3 conv, stride 2, padding 1, + bias over `x` `[t][f][ch]` into `y`
-  /// `[⌈t/2⌉][⌈f/2⌉][ch]`.
+  /// Depthwise 3×3 conv, stride 2, padding 1, + bias (weight `[9][ch]`) over the image
+  /// `[t][f][ch]` into output rows t0..t0 + rows of `y` `[⌈t/2⌉][⌈f/2⌉][ch]`; `x` holds the
+  /// image's rows from 2·t0 − 1 on. With `first` the image is ReLU(`first` + bias), a 3×3
+  /// stride-2 conv from the one-channel image `x` `[t][f]` to ch channels that is never stored,
+  /// and `y` gets `rows` rows of `[⌈f/4⌉][ch]`, the output rows from 2·t0 − 1 on.
+  #[allow(clippy::too_many_arguments)]
   pub fn depthwise(
     &mut self,
     x: &Buffer,
-    dw: &Depthwise,
+    first: Option<&Channels>,
+    dw: &Channels,
     y: &Buffer,
-    t: usize,
-    f: usize,
-    ch: usize,
+    image: [usize; 3],
+    t0: usize,
+    rows: usize,
   ) {
-    let k = &self.gpu.kernels.depthwise;
-    self.run(k, &[x, &dw.w, &dw.b, y], &[t as u32, f as u32, ch as u32], [half(f), half(t), 1]);
-  }
-
-  /// `depthwise` over ReLU(`first` + bias), a 3×3 stride-2 conv from the one-channel image `x`
-  /// `[t][f]` to ch channels, whose output is never stored. `y` is `[⌈t/4⌉][⌈f/4⌉][ch]`.
-  #[allow(clippy::too_many_arguments)]
-  pub fn first_depthwise(
-    &mut self,
-    x: &Buffer,
-    first: &Depthwise,
-    dw: &Depthwise,
-    y: &Buffer,
-    t: usize,
-    f: usize,
-    ch: usize,
-  ) {
-    let k = &self.gpu.kernels.first_depthwise;
-    let buffers = [x, &dw.w, &dw.b, y, &first.w, &first.b];
-    let grid = [half(half(f)), half(half(t)), 1];
-    self.run(k, &buffers, &[t as u32, f as u32, ch as u32], grid);
+    let k = &self.gpu.kernels;
+    let [t, f, ch] = image.map(|v| v as u32);
+    let params = [t, f, ch, t0 as u32];
+    match first {
+      None => self.run(&k.depthwise, &[x, &dw.w, &dw.b, y], &params, [half(image[1]), rows, 1]),
+      Some(c) => {
+        let buffers = [x, &dw.w, &dw.b, y, &c.w, &c.b];
+        self.run(&k.first_depthwise, &buffers, &params, [half(half(image[1])), rows, 1]);
+      }
+    }
   }
 
   /// `x` `[t][f][ch]` to `y` `[t][ch · f]`, channel-major.
@@ -636,14 +595,14 @@ mod tests {
   fn gpus() -> &'static [Gpu; 2] {
     static GPUS: OnceLock<[Gpu; 2]> = OnceLock::new();
     GPUS.get_or_init(|| {
-      let fast = Gpu::new().unwrap();
+      let fast = Gpu::new(true).unwrap();
       let f = &fast.fast;
-      let ops = [&f.layer_norm, &f.layer_norm_rope, &f.conv_glu, &f.attention];
+      let ops = [&f.layer_norm, &f.conv_glu, &f.attention, &f.relative];
       assert!(
         f.gemm.is_some() && ops.iter().all(|k| k.is_some()),
         "a fast kernel failed its probe"
       );
-      [Gpu::with_fast_paths(false).unwrap(), fast]
+      [Gpu::new(false).unwrap(), fast]
     })
   }
 
@@ -698,9 +657,11 @@ mod tests {
   #[test]
   fn gemm() {
     // 100 rows: the GEMM pads them to 128 output columns, which come out as epilogue(0).
-    let (n, k, width) = (100, 96, 128);
+    let (n, k) = (100, 96);
     let w = random(n * k, 1);
     let bias = random(n, 2);
+    // 64 more biases: the first 64 outputs again at columns 128.., with no epilogue.
+    let dual: Vec<f32> = bias.iter().copied().chain(random(64, 5)).collect();
     let f32s: &[u8] = bytemuck::cast_slice(&w);
     let f16s: Vec<u8> = w.iter().flat_map(|x| f16::from_f32(*x).to_le_bytes()).collect();
     let q8: Vec<u8> = (w.chunks(32))
@@ -721,8 +682,9 @@ mod tests {
       let half = |x: &f32| f16::from_f32(*x).to_f32();
       let wf: Vec<f32> = [t("w1").to_f32().unwrap(), t("w2").to_f32().unwrap()].concat();
       let wf: Vec<f32> = wf.iter().map(half).collect();
-      // With the bias, and without: zeros.
-      for (bias, b) in [(&bias, &bias[..]), (&vec![0.0; n], &[][..])] {
+      // With the bias, without (zeros), and with dual outputs.
+      for b in [&bias[..], &[], &dual] {
+        let width = if b.len() > n { 192 } else { 128 };
         for gpu in gpus() {
           let l = gpu.linear(&[t("w1"), t("w2")], b).unwrap();
           assert_eq!(l.width(), width);
@@ -735,7 +697,10 @@ mod tests {
                 .map(|i| {
                   let (r, j) = (i / width, i % width);
                   let dot = |j: usize| (0..k).map(|x| a[r * k + x] * wf[j * k + x]).sum::<f32>();
-                  let v = if j < n { bias[j] + dot(j) } else { 0.0 };
+                  if j >= 128 {
+                    return b[n + j - 128] + dot(j - 128);
+                  }
+                  let v = if j < n { b.get(j).unwrap_or(&0.0) + dot(j) } else { 0.0 };
                   match e {
                     Epilogue::Bias => v,
                     Epilogue::Silu => silu(v),
@@ -767,12 +732,13 @@ mod tests {
       })
       .collect();
     for gpu in gpus() {
-      let n = gpu.norm(&g, &b).unwrap();
+      let n = gpu.channels(&g, &b).unwrap();
       let (xb, rb) = (up(gpu, &x), up(gpu, &rope));
       let zeros = vec![0.0; rows * cols];
-      assert_close(&run(gpu, &zeros, |p, y| p.layer_norm(&xb, &n, y, rows, cols)), &y);
+      assert_close(&run(gpu, &zeros, |p, y| p.layer_norm(&xb, &n, y, rows, cols, None)), &y);
       let yb = gpu.buffer(rows * cols);
-      let got = run(gpu, &zeros, |p, yr| p.layer_norm_rope(&xb, &n, &yb, &rb, yr, rows, cols, hd));
+      let got =
+        run(gpu, &zeros, |p, yr| p.layer_norm(&xb, &n, &yb, rows, cols, Some((&rb, yr, hd))));
       assert_close(&got, &yr);
     }
   }
@@ -818,7 +784,8 @@ mod tests {
       };
       let want: Vec<f32> = want.into_iter().map(silu).collect();
       for gpu in gpus() {
-        let (n, dw, hb) = (gpu.norm(&g, &b).unwrap(), gpu.depthwise(&w, &wb).unwrap(), up(gpu, &h));
+        let (n, dw, hb) =
+          (gpu.channels(&g, &b).unwrap(), gpu.channels(&w, &wb).unwrap(), up(gpu, &h));
         let got =
           run(gpu, &vec![0.0; t * ch], |p, y| p.conv_glu(&hb, &dw, kernel, &n, norm, y, t, ch));
         assert_close(&got, &want);
@@ -854,8 +821,9 @@ mod tests {
       }
       for gpu in gpus() {
         let (qb, vb) = (up(gpu, &qk), up(gpu, &v));
-        let s = gpu.buffer(gpu.scores_len(t, heads, hd));
-        let got = run(gpu, &vec![0.0; t * d], |p, o| p.attention(&qb, &vb, &s, o, t, heads, hd));
+        let s = gpu.buffer(gpu.scores_len(t, heads, hd, false));
+        let got =
+          run(gpu, &vec![0.0; t * d], |p, o| p.attention(&qb, &vb, None, &s, o, t, heads, hd));
         assert_close(&got, &want);
       }
     }
@@ -863,40 +831,42 @@ mod tests {
 
   #[test]
   fn relative_attention() {
-    let (t, heads, hd) = (37, 2, 40);
-    let d = heads * hd;
-    let (qkv, pos) = (random(t * 4 * d, 17), random((2 * t - 1) * d, 18));
-    let scale = 1.0 / (hd as f32).sqrt();
-    let dot = |a: &[f32], b: &[f32]| a[..hd].iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
-    let mut want = vec![0.0; t * d];
-    for h in 0..heads {
-      for i in 0..t {
-        let row = |j: usize, part: usize| &qkv[j * 4 * d + part * d + h * hd..];
-        let s: Vec<f32> = (0..t)
-          .map(|j| {
-            (dot(row(i, 0), row(j, 1)) + dot(row(i, 3), &pos[(j + t - 1 - i) * d + h * hd..]))
-              * scale
-          })
-          .collect();
-        let mx = s.iter().fold(f32::MIN, |m, x| m.max(*x));
-        let e: Vec<f32> = s.iter().map(|x| (x - mx).exp()).collect();
-        let sum: f32 = e.iter().sum();
-        for c in 0..hd {
-          want[i * d + h * hd + c] = (0..t).map(|j| e[j] / sum * row(j, 2)[c]).sum();
+    for (t, heads, hd) in [(5usize, 2, 40), (37, 2, 40), (100, 3, 128)] {
+      let d = heads * hd;
+      // The fast path reads rows of qkv up to t rounded up to 64 and 64 rows of pos past the end.
+      let (qkv, pos) =
+        (random(t.next_multiple_of(64) * 4 * d, 17), random((pos_rows(t) + 64) * d, 18));
+      let scale = 1.0 / (hd as f32).sqrt();
+      let dot = |a: &[f32], b: &[f32]| a[..hd].iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+      let mut want = vec![0.0; t * d];
+      for h in 0..heads {
+        for i in 0..t {
+          let row = |j: usize, part: usize| &qkv[j * 4 * d + part * d + h * hd..];
+          let s: Vec<f32> = (0..t)
+            .map(|j| {
+              (dot(row(i, 0), row(j, 1)) + dot(row(i, 3), &pos[(j + t + 15 - i) * d + h * hd..]))
+                * scale
+            })
+            .collect();
+          let mx = s.iter().fold(f32::MIN, |m, x| m.max(*x));
+          let e: Vec<f32> = s.iter().map(|x| (x - mx).exp()).collect();
+          let sum: f32 = e.iter().sum();
+          for c in 0..hd {
+            want[i * d + h * hd + c] = (0..t).map(|j| e[j] / sum * row(j, 2)[c]).sum();
+          }
         }
       }
-    }
-    for gpu in gpus() {
-      let (qb, pb) = (up(gpu, &qkv), up(gpu, &pos));
-      let (ps, s) = (gpu.buffer(heads * t * (2 * t - 1)), gpu.buffer(heads * t * t));
-      let got = run(gpu, &vec![0.0; t * d], |p, o| {
-        p.relative_attention(&qb, &pb, &ps, &s, o, t, heads, hd)
-      });
-      assert_close(&got, &want);
+      for gpu in gpus() {
+        let (qb, pb) = (up(gpu, &qkv), up(gpu, &pos));
+        let s = gpu.buffer(gpu.scores_len(t, heads, hd, true));
+        let got =
+          run(gpu, &vec![0.0; t * d], |p, o| p.attention(&qb, &qb, Some(&pb), &s, o, t, heads, hd));
+        assert_close(&got, &want);
+      }
     }
   }
 
-  /// 3×3 stride-2 conv with padding 1 per channel over `x` `[t][f][ch]`, `w` `[ch][9]`.
+  /// 3×3 stride-2 conv with padding 1 per channel over `x` `[t][f][ch]`, `w` `[9][ch]`.
   fn depthwise(x: &[f32], w: &[f32], b: &[f32], t: usize, f: usize, ch: usize) -> Vec<f32> {
     let fo = half(f);
     (0..half(t) * fo * ch)
@@ -904,7 +874,7 @@ mod tests {
         let (r, j, c) = (e / (fo * ch), e / ch % fo, e % ch);
         let taps = (0..9).filter_map(|k| {
           let (ti, fi) = ((2 * r + k / 3).checked_sub(1)?, (2 * j + k % 3).checked_sub(1)?);
-          (ti < t && fi < f).then(|| w[c * 9 + k] * x[(ti * f + fi) * ch + c])
+          (ti < t && fi < f).then(|| w[k * ch + c] * x[(ti * f + fi) * ch + c])
         });
         b[c] + taps.sum::<f32>()
       })
@@ -913,7 +883,7 @@ mod tests {
 
   #[test]
   fn subsampling() {
-    let (t, f, ch) = (13, 11, 5);
+    let (t, f, ch) = (29, 11, 5);
     let mel = random(t * f, 19);
     let ws: Vec<_> = (0..6).map(|i| random(ch * 9, 20 + i)).collect();
     let [w0, b0, w2, b2, w5, b5] =
@@ -921,23 +891,25 @@ mod tests {
     let wide: Vec<f32> = mel.iter().flat_map(|&v| std::iter::repeat_n(v, ch)).collect();
     let first: Vec<f32> =
       depthwise(&wide, w0, b0, t, f, ch).into_iter().map(|v| v.max(0.0)).collect();
-    let want = depthwise(&first, w2, b2, half(t), half(f), ch);
+    let (t2, f2) = (half(half(t)), half(half(f)));
+    let second = depthwise(&first, w2, b2, half(t), half(f), ch);
+    // Four output rows of conv5.
+    let want = depthwise(&second, w5, b5, t2, f2, ch);
     let x = random(t * f * ch, 26);
-    let want5 = depthwise(&x, w5, b5, t, f, ch);
     let flat: Vec<f32> =
       (0..t * f * ch).map(|e| x[(e / (f * ch) * f + e % f) * ch + e % (f * ch) / f]).collect();
     for gpu in gpus() {
-      let [c0, c2, c5] = [(w0, b0), (w2, b2), (w5, b5)].map(|(w, b)| gpu.depthwise(w, b).unwrap());
+      let [c0, c2, c5] = [(w0, b0), (w2, b2), (w5, b5)].map(|(w, b)| gpu.channels(w, b).unwrap());
       let (mb, xb) = (up(gpu, &mel), up(gpu, &x));
-      let n = want.len();
-      assert_close(
-        &run(gpu, &vec![0.0; n], |p, y| p.first_depthwise(&mb, &c0, &c2, y, t, f, ch)),
-        &want,
-      );
-      assert_close(
-        &run(gpu, &vec![0.0; want5.len()], |p, y| p.depthwise(&xb, &c5, y, t, f, ch)),
-        &want5,
-      );
+      // Two chunks of two rows, each from five rows of conv2's output.
+      let chunk = gpu.buffer(5 * f2 * ch);
+      let got = run(gpu, &vec![0.0; want.len()], |p, y| {
+        for t0 in [0, 2] {
+          p.depthwise(&mb, Some(&c0), &c2, &chunk, [t, f, ch], t0, 5);
+          p.depthwise(&chunk, None, &c5, y, [t2, f2, ch], t0, 2);
+        }
+      });
+      assert_close(&got, &want);
       assert_close(&run(gpu, &vec![0.0; flat.len()], |p, y| p.flatten(&xb, y, t, f, ch)), &flat);
     }
   }

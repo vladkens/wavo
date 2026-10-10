@@ -17,7 +17,7 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **4. Parakeet TDT V2, correct.** `parakeet-tdt-0.6b-v2`: FastConformer, relative
       positional attention, TDT decoder. Fixtures `jfk`, `dots`, `jobs-silence` match exactly;
       first benchmark against the reference recorded in `docs/perf.md`.
-- [ ] **5. Parakeet TDT V2, fast.** Warm, first call, load and peak memory at least on par with
+- [x] **5. Parakeet TDT V2, fast.** Warm, first call, load and peak memory at least on par with
       transcribe.cpp, the same way as phase 2.
 - [ ] **6. Parakeet TDT V3.** `parakeet-tdt-0.6b-v3`: same architecture with a bigger vocab/joint.
       Fixtures `jfk`, `ru-short`, `uk-short`.

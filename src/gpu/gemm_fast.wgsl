@@ -13,6 +13,7 @@ struct Params {
   k: u32,
   mode: u32,
   alpha: f32,
+  dual: u32,
 }
 
 var<immediate> p: Params;
@@ -138,12 +139,15 @@ fn gemm(
     if (m < p.m) {
       let n = n0 + i % 64u;
       let v = tile[i] + bias[n];
-      let o = m * p.n + n;
+      let o = m * (p.n + p.dual) + n;
       switch p.mode {
         case 1u: { c[o] = v / (1.0 + exp(-v)); }
         case 2u: { c[o] = max(v, 0.0); }
         case 3u: { c[o] += p.alpha * v; }
         default: { c[o] = v; }
+      }
+      if (n < p.dual) {
+        c[o + p.n] = tile[i] + bias[p.n + n];
       }
     }
   }

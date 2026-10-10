@@ -34,22 +34,27 @@ and `tokens` (id, piece, `start_ms`); `pcm` is 16 kHz mono `f32`.
 
 ## Speed
 
-Apple M2, same Q8_0 GGUF, transcribe.cpp on Metal. Warm is the median of 10–20 calls. For
-`gigaam-v3-e2e-rnnt`:
+Apple M2 (8 CPU cores, 10-core GPU), the same Q8_0 GGUF in both, transcribe.cpp on Metal. Each
+cell is wavo / transcribe.cpp. Warm is the median of 20 / 10 calls after the first; first call and
+model load are from a fresh process; memory is the peak footprint. Measured back to back on
+2026-10-10; details and ranges in [docs/perf.md](docs/perf.md).
 
-| Clip | wavo warm | transcribe.cpp warm | wavo first call | transcribe.cpp first call |
-|---|---|---|---|---|
-| 4.5 s | 43–44 ms | 44–45 ms | 48–49 ms | 48–73 ms |
-| 11 s | 96 ms | 102–103 ms | 101 ms | 103–124 ms |
-| 34 s | 297–298 ms | 312–326 ms | 305 ms | 319–353 ms |
-
-Model load: wavo 0.08–0.11 s, transcribe.cpp 0.13–0.17 s. Peak memory: wavo 0.31–0.34 GB,
-transcribe.cpp 0.34–0.35 GB. The other three models are 2–17% faster than transcribe.cpp warm
-with less memory; the CTC ones take 39–42 ms on the 4.5 s clip and 268–273 ms on the 34 s one.
-
-`parakeet-tdt-0.6b-v2` on 11 s / 35 s / 5 s of silence: wavo warm 181 / 756–763 / 94 ms,
-transcribe.cpp 209–213 / 799–821 / 95–97 ms (median; its multi-threaded decoder varies, minimum
-702 ms on the 35 s clip). Model load: wavo 0.16–0.19 s, transcribe.cpp 0.26–0.27 s. Peak memory:
-wavo 0.84–0.92 GB, transcribe.cpp 0.85–0.87 GB. Details: [docs/perf.md](docs/perf.md).
+| Model | Audio | Warm, ms | First call, ms | Load, ms | Peak memory, MiB |
+|---|---|---|---|---|---|
+| `gigaam-v3-e2e-rnnt` | 4.5 s | 43.8 / 44.6 | 46.8 / 47.6 | 77 / 123 | 294 / 323 |
+|  | 11 s | 96.1 / 100 | 100 / 102 | 77 / 124 | 302 / 325 |
+|  | 34 s | 299 / 310 | 302 / 323 | 77 / 126 | 322 / 334 |
+| `gigaam-v3-e2e-ctc` | 4.5 s | 40.1 / 41.8 | 43.4 / 53.1 | 76 / 129 | 289 / 314 |
+|  | 11 s | 85.5 / 92.7 | 88.8 / 95.6 | 75 / 126 | 295 / 315 |
+|  | 34 s | 270 / 296 | 276 / 308 | 75 / 126 | 315 / 323 |
+| `gigaam-v3-rnnt` | 4.5 s | 42.6 / 43.0 | 45.9 / 50.5 | 75 / 125 | 291 / 319 |
+|  | 11 s | 96.1 / 97.4 | 99.2 / 99.6 | 76 / 122 | 299 / 321 |
+|  | 34 s | 296 / 306 | 300 / 315 | 76 / 124 | 320 / 330 |
+| `gigaam-v3-ctc` | 4.5 s | 39.8 / 41.3 | 43.1 / 52.3 | 74 / 123 | 288 / 313 |
+|  | 11 s | 85.0 / 91.5 | 89.5 / 94.0 | 75 / 129 | 293 / 314 |
+|  | 34 s | 269 / 291 | 275 / 295 | 77 / 125 | 314 / 322 |
+| `parakeet-tdt-0.6b-v2` | 11 s | 149 / 189 | 153 / 252 | 169 / 271 | 765 / 821 |
+|  | 35 s | 503 / 681 | 504 / 695 | 172 / 269 | 790 / 834 |
+|  | 5 s, silent | 83.2 / 97.2 | 87.2 / 115 | 171 / 270 | 757 / 815 |
 
 Built by coding agents; the rules are in [agents.md](agents.md).

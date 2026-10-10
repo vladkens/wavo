@@ -6,7 +6,7 @@
 
 use crate::error::{Result, bail};
 use crate::gguf::Gguf;
-use crate::gpu::{Buffer, ConvNorm, Depthwise, Epilogue, Gpu, Linear, Norm, Pass};
+use crate::gpu::{Buffer, Channels, ConvNorm, Epilogue, Gpu, Linear, Pass, pos_rows};
 
 #[derive(Clone, Copy)]
 pub enum Attention {
@@ -79,13 +79,11 @@ pub struct Buffers {
   /// Attention scores: `Gpu::scores_len` floats.
   pub s: Buffer,
   /// Rotary: the normalized rows rotated `[t][d]`. Relative: the projected positions
-  /// `[2t − 1][d]`.
+  /// `[pos_rows(t) + 64][d]`.
   pub yr: Buffer,
   /// Rotary: per frame head_dim / 2 cosines, then as many sines. Relative: the sinusoidal position
-  /// table `[2t − 1][d]` (row r is position t − 1 − r).
+  /// table `[pos_rows(t)][d]` (row r is position t + 15 − r).
   pub pos: Buffer,
-  /// Relative: position scores `heads · t · (2t − 1)`.
-  pub ps: Buffer,
 }
 
 pub struct Conformer {
@@ -128,25 +126,26 @@ pub fn linear(gpu: &Gpu, g: &Gguf, names: &[String], dims: &[usize], bias: bool)
 }
 
 struct Block {
-  norm_ff1: Norm,
+  norm_ff1: Channels,
   ff1: [Linear; 2],
-  norm_attn: Norm,
+  norm_attn: Channels,
   mhsa: Mhsa,
   out: Linear,
-  norm_conv: Norm,
+  norm_conv: Channels,
   pw1: Linear,
-  dw: Depthwise,
-  conv_norm: Norm,
+  dw: Channels,
+  conv_norm: Channels,
   pw2: Linear,
-  norm_ff2: Norm,
+  norm_ff2: Channels,
   ff2: [Linear; 2],
-  norm_out: Norm,
+  norm_out: Channels,
 }
 
 enum Mhsa {
   /// `linear_q` stacked over `linear_k`: both take the rotated input.
   Rotary { qk: Linear, v: Linear },
-  /// `[q | k | v | q]` with biases `[pos_bias_u | 0 | 0 | pos_bias_v]`, and `linear_pos`.
+  /// `[q | k | v]` with biases `[pos_bias_u | 0 | 0]` and q again with `pos_bias_v`, and
+  /// `linear_pos`.
   Relative { qkv: Linear, pos: Linear },
 }
 
@@ -158,16 +157,16 @@ impl Block {
       linear(gpu, g, &names.iter().map(|n| p(n)).collect::<Vec<_>>(), dims, c.bias)
     };
     let f32s = |name: &str, dims: &[usize]| g.tensor(&p(name), dims)?.to_f32();
-    let norm =
-      |n: &str| gpu.norm(&f32s(&format!("{n}.weight"), &[d])?, &f32s(&format!("{n}.bias"), &[d])?);
+    let norm = |n: &str| {
+      gpu.channels(&f32s(&format!("{n}.weight"), &[d])?, &f32s(&format!("{n}.bias"), &[d])?)
+    };
     let mhsa = match c.attention {
       Attention::Rotary => Mhsa::Rotary {
         qk: linear(&["attn.linear_q", "attn.linear_k"], &[d, d])?,
         v: linear(&["attn.linear_v"], &[d, d])?,
       },
       Attention::Relative => {
-        let w =
-          ["q", "k", "v", "q"].map(|n| g.tensor(&p(&format!("attn.linear_{n}.weight")), &[d, d]));
+        let w = ["q", "k", "v"].map(|n| g.tensor(&p(&format!("attn.linear_{n}.weight")), &[d, d]));
         let uv = |n: &str| f32s(&format!("attn.pos_bias_{n}"), &[c.head_dim(), c.heads]);
         let bias = [uv("u")?, vec![0.0; 2 * d], uv("v")?].concat();
         Mhsa::Relative {
@@ -185,11 +184,11 @@ impl Block {
         let (mean, var) = (bn("running_mean")?, bn("running_var")?);
         let s: Vec<f32> = w.iter().zip(&var).map(|(w, v)| w / (v + 1e-5).sqrt()).collect();
         let b: Vec<f32> = b.iter().zip(&mean).zip(&s).map(|((b, m), s)| b - m * s).collect();
-        gpu.norm(&s, &b)?
+        gpu.channels(&s, &b)?
       }
     };
     let dw_b = if c.bias { f32s("conv.depthwise.bias", &[d])? } else { vec![0.0; d] };
-    let dw = gpu.depthwise(&f32s("conv.depthwise.weight", &[c.kernel, 1, d])?, &dw_b)?;
+    let dw = gpu.channels(&f32s("conv.depthwise.weight", &[c.kernel, 1, d])?, &dw_b)?;
     Ok(Self {
       norm_ff1: norm("norm_ff1")?,
       ff1: [linear(&["ff1.linear1"], &[d, f])?, linear(&["ff1.linear2"], &[f, d])?],
@@ -210,36 +209,36 @@ impl Block {
   /// Records the block from `x` into `y`; `x` is scratch.
   fn record(&self, p: &mut Pass, c: &Config, b: &Buffers, x: &Buffer, y: &Buffer, t: usize) {
     let (d, hd) = (c.d, c.head_dim());
-    p.layer_norm(x, &self.norm_ff1, y, t, d);
+    p.layer_norm(x, &self.norm_ff1, y, t, d, None);
     p.gemm(y, &self.ff1[0], &b.h, t, Epilogue::Silu);
     p.gemm(&b.h, &self.ff1[1], x, t, Epilogue::Residual(0.5));
 
     match &self.mhsa {
       Mhsa::Rotary { qk, v } => {
-        p.layer_norm_rope(x, &self.norm_attn, y, &b.pos, &b.yr, t, d, hd);
+        p.layer_norm(x, &self.norm_attn, y, t, d, Some((&b.pos, &b.yr, hd)));
         p.gemm(&b.yr, qk, &b.qk, t, Epilogue::Bias);
         p.gemm(y, v, &b.h, t, Epilogue::Bias);
-        p.attention(&b.qk, &b.h, &b.s, y, t, c.heads, hd);
+        p.attention(&b.qk, &b.h, None, &b.s, y, t, c.heads, hd);
       }
       Mhsa::Relative { qkv, pos } => {
-        p.layer_norm(x, &self.norm_attn, y, t, d);
+        p.layer_norm(x, &self.norm_attn, y, t, d, None);
         p.gemm(y, qkv, &b.qk, t, Epilogue::Bias);
-        p.gemm(&b.pos, pos, &b.yr, 2 * t - 1, Epilogue::Bias);
-        p.relative_attention(&b.qk, &b.yr, &b.ps, &b.s, y, t, c.heads, hd);
+        p.gemm(&b.pos, pos, &b.yr, pos_rows(t), Epilogue::Bias);
+        p.attention(&b.qk, &b.qk, Some(&b.yr), &b.s, y, t, c.heads, hd);
       }
     }
     p.gemm(y, &self.out, x, t, Epilogue::Residual(1.0));
 
-    p.layer_norm(x, &self.norm_conv, y, t, d);
+    p.layer_norm(x, &self.norm_conv, y, t, d, None);
     p.gemm(y, &self.pw1, &b.qk, t, Epilogue::Bias);
     p.conv_glu(&b.qk, &self.dw, c.kernel, &self.conv_norm, c.conv_norm, y, t, d);
     p.gemm(y, &self.pw2, x, t, Epilogue::Residual(1.0));
 
-    p.layer_norm(x, &self.norm_ff2, y, t, d);
+    p.layer_norm(x, &self.norm_ff2, y, t, d, None);
     p.gemm(y, &self.ff2[0], &b.h, t, Epilogue::Silu);
     p.gemm(&b.h, &self.ff2[1], x, t, Epilogue::Residual(0.5));
 
     // The block output is norm_out(x), not the residual stream.
-    p.layer_norm(x, &self.norm_out, y, t, d);
+    p.layer_norm(x, &self.norm_out, y, t, d, None);
   }
 }

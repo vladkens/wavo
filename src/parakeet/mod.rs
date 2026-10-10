@@ -82,7 +82,7 @@ impl Parakeet {
       .map(|i| matches!(types[i], 2 | 3) || i == unk || vocab[i] == "<unk>")
       .collect();
 
-    let gpu = Gpu::new()?;
+    let gpu = Gpu::new(true)?;
     let ch = g.get::<u32>("stt.parakeet.encoder.subsampling_channels")? as usize;
     let joint = g.get::<u32>("stt.parakeet.joint.hidden")? as usize;
     let encoder = Encoder::new(&gpu, g, cfg, ch, joint)?;
@@ -98,8 +98,8 @@ impl Parakeet {
     if mel.is_empty() {
       return Ok(Transcript::default());
     }
-    let enc = self.encoder.run(&self.gpu, &mel)?;
-    let tokens: Vec<Token> = (self.decoder.decode(&enc).into_iter())
+    let (enc, width) = self.encoder.run(&self.gpu, &mel)?;
+    let tokens: Vec<Token> = (self.decoder.decode(&enc, width).into_iter())
       .filter(|&(id, _)| !self.special[id as usize])
       .map(|(id, frame)| Token {
         id,
