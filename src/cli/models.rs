@@ -2,7 +2,8 @@
 //! The models `wavo` knows by name: the Q8_0 GGUFs transcribe.cpp publishes as
 //! `handy-computer/<variant>-gguf`, with sizes from its `catalog/<variant>.json`.
 
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
@@ -82,6 +83,21 @@ fn distance(a: &str, b: &str) -> usize {
   row[b.len()]
 }
 
+/// The model file's `general.architecture` (`whisper`, `gigaam`, …), read from its GGUF header:
+/// the key comes first in the metadata, as a string (type 8) with a u64 length.
+pub fn architecture(path: &Path) -> Option<String> {
+  let mut head = Vec::new();
+  std::fs::File::open(path).ok()?.take(4096).read_to_end(&mut head).ok()?;
+  let key = b"general.architecture";
+  let at = head.windows(key.len()).position(|w| w == key)? + key.len();
+  let rest = head.get(at..)?;
+  if u32::from_le_bytes(rest.get(..4)?.try_into().ok()?) != 8 {
+    return None;
+  }
+  let len = u64::from_le_bytes(rest.get(4..12)?.try_into().ok()?) as usize;
+  String::from_utf8(rest.get(12..12 + len)?.to_vec()).ok()
+}
+
 pub fn gb(bytes: u64) -> String {
   format!("{:.2} GB", bytes as f64 / 1e9)
 }
@@ -101,6 +117,23 @@ mod tests {
 
   fn error(arg: &str) -> String {
     resolve(arg).err().expect("an error").to_string()
+  }
+
+  #[test]
+  fn architecture_from_the_header() {
+    let mut gguf = b"GGUF\x03\0\0\0".to_vec();
+    gguf.extend([0; 16]); // tensor and key counts
+    gguf.extend(20u64.to_le_bytes());
+    gguf.extend(b"general.architecture");
+    gguf.extend(8u32.to_le_bytes());
+    gguf.extend(7u64.to_le_bytes());
+    gguf.extend(b"whisper");
+    let path = std::env::temp_dir().join(format!("wavo-arch-{}.gguf", std::process::id()));
+    std::fs::write(&path, &gguf).unwrap();
+    assert_eq!(architecture(&path).as_deref(), Some("whisper"));
+    std::fs::write(&path, b"GGUF").unwrap();
+    assert_eq!(architecture(&path), None);
+    std::fs::remove_file(path).unwrap();
   }
 
   #[test]
