@@ -55,4 +55,14 @@ impl Model {
       Family::Parakeet(m) => m.transcribe(pcm),
     }
   }
+
+  /// The longest audio, in milliseconds, the model was trained on. Longer audio still runs, but
+  /// accuracy degrades, so split it into segments up to this length. `None`: no such window.
+  pub fn max_audio_ms(&self) -> Option<u32> {
+    match &self.0 {
+      // No GGUF key holds GigaAM's window; transcribe.cpp hardcodes the same 25 s.
+      Family::Gigaam(_) => Some(25_000),
+      Family::Parakeet(_) => None,
+    }
+  }
 }

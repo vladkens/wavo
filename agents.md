@@ -31,17 +31,20 @@ the first call matter as much as warm speed.
 - Target Apple Silicon / Metal. The fast path may use subgroups and
   `EXPERIMENTAL_COOPERATIVE_MATRIX`. Keep one simple portable fallback per kernel and don't
   optimize it.
-- Keep the public API to `Model::load(path)` and `model.transcribe(&pcm)` → `Transcript { text,
-  tokens }`, where pcm is 16 kHz mono `f32` and tokens carry id, piece and start time in ms. The
-  CLI is `wavo pull MODEL`, `wavo list`, `wavo rm MODEL`, `wavo run [MODEL] AUDIO [--json |
-  --srt]` (default model `parakeet-v3`) and `wavo bench MODEL AUDIO [-n N]`, where MODEL is a
-  short name, a full published name or a path to a `.gguf`. Change either only with the user's
-  approval.
+- Keep the public API to `Model::load(path)`, `model.transcribe(&pcm)` → `Transcript { text,
+  tokens }` and `model.max_audio_ms()` (the window a model was trained for, `None` without one),
+  where pcm is 16 kHz mono `f32` and tokens carry id, piece and start time in ms. The CLI is
+  `wavo pull MODEL`, `wavo list`, `wavo rm MODEL`, `wavo run [MODEL] AUDIO [--json | --srt]
+  [--segment SECS]` (default model `parakeet-v3`) and `wavo bench MODEL AUDIO [-n N]`, where
+  MODEL is a short name, a full published name or a path to a `.gguf`. Change either only with
+  the user's approval.
 - Only `wavo pull` uses the network. `run` and `bench` never download; a missing model fails with
   the `wavo pull` command to run.
 - The library leaves resampling, VAD, chunking and streaming to the caller. The CLI decodes
   common formats (wav, mp3, m4a/aac, flac, ogg/vorbis), downmixes to mono and resamples to 16 kHz;
-  a 16 kHz mono WAV passes through unchanged. Neither does VAD, chunking or streaming.
+  a 16 kHz mono WAV passes through unchanged. `wavo run` splits audio longer than the model's
+  window (else a default for all models) at its quietest moments, by frame energy, and joins the
+  transcripts; `--segment` overrides the length, `0` is one pass. Neither does VAD or streaming.
 - Whisper only on explicit request.
 
 ## Code
@@ -121,8 +124,8 @@ the first call matter as much as warm speed.
   intermediates.
 - Unit-test only logic that can break silently: GGUF parsing, tokenizer, decoder loops, kernels
   against a CPU loop on small shapes; in the CLI, model names, the cache layout, audio decoding (a
-  16 kHz mono WAV gives exactly the samples the fixtures use) and SRT cues. Unit tests run in CI
-  (`make test-unit`) without models or `3rd/`: synthesize their inputs.
+  16 kHz mono WAV gives exactly the samples the fixtures use), the long-audio split and SRT cues.
+  Unit tests run in CI (`make test-unit`) without models or `3rd/`: synthesize their inputs.
 
 ## Performance
 
@@ -141,8 +144,8 @@ the first call matter as much as warm speed.
   1. Agree the plan with the person. For multi-step work keep a checklist in
      `docs/plans/yyyymmdd-<name>.md`; in it, only tick checkboxes: no evidence, progress or status
      prose.
-  2. Branch from `main`. Each agent works in its own git worktree, so parallel tasks don't touch
-     each other's files.
+  2. Branch from `main` as `feat/<name>`, whatever the change. Each agent works in its own git
+     worktree, so parallel tasks don't touch each other's files.
   3. Commit on the branch every step that passes `make check` and `make test`: one short lowercase
      line, no body, roadmap/docs updated in the same commit. Any agent on the task may commit;
      fix-ups are fine, the branch is squashed.

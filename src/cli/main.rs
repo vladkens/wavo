@@ -5,6 +5,7 @@ mod audio;
 mod hfs;
 mod models;
 mod output;
+mod split;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -15,9 +16,11 @@ use models::{MODELS, Source};
 
 const USAGE: &str = "\
 Usage:
-  wavo run [MODEL] AUDIO [--json | --srt]
+  wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS]
                                  transcribe AUDIO, with parakeet-v3 unless MODEL is given;
-                                 --json adds tokens with start times, --srt prints subtitles
+                                 --json adds tokens with start times, --srt prints subtitles;
+                                 longer audio is split at pauses into segments of up to SECS
+                                 (25 for GigaAM, else 60; 0 for one pass)
   wavo pull MODEL                download a model
   wavo list                      list downloaded models
   wavo rm MODEL                  delete a downloaded model
@@ -29,6 +32,9 @@ Models live in the Hugging Face cache (HF_HUB_CACHE or HF_HOME), shared with the
 only `wavo pull` uses the network.
 
 Models:";
+
+/// `wavo run` splits audio into segments of up to this for models without a window of their own.
+const SEGMENT_MS: u32 = 60_000;
 
 fn usage() -> String {
   let mut usage = USAGE.to_string();
@@ -83,28 +89,43 @@ fn load(path: &Path) -> Result<wavo::Model> {
 }
 
 fn run(args: &[&str]) -> Result<()> {
-  let (flags, args): (Vec<&str>, Vec<&str>) = args.iter().partition(|a| a.starts_with("--"));
-  let (json, srt) = (flags == ["--json"], flags == ["--srt"]);
-  if !(flags.is_empty() || json || srt) {
-    bail!("usage: wavo run [MODEL] AUDIO [--json | --srt]");
+  const USAGE: &str = "usage: wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS]";
+  let (mut format, mut segment, mut rest) = (None, None, Vec::new());
+  let mut args = args.iter();
+  while let Some(&arg) = args.next() {
+    match arg {
+      "--json" | "--srt" if format.is_none() => format = Some(arg),
+      "--segment" if segment.is_none() => {
+        let secs = args.next().and_then(|s| s.parse::<u32>().ok());
+        let secs = secs.filter(|&s| s == 0 || s >= 5).ok_or_else(|| {
+          anyhow!("--segment takes whole seconds: 0 for one pass, else at least 5")
+        })?;
+        segment = Some(secs.saturating_mul(1000));
+      }
+      _ if arg.starts_with("--") => bail!(USAGE),
+      _ => rest.push(arg),
+    }
   }
-  let (model, audio) = match *args {
+  let (model, audio) = match *rest {
     [arg] if models::find(arg).is_some() && !Path::new(arg).exists() => {
       bail!("no audio file given: wavo run {arg} AUDIO")
     }
     [audio] => (models::DEFAULT, audio),
     [model, audio] => (model, audio),
-    _ => bail!("usage: wavo run [MODEL] AUDIO [--json | --srt]"),
+    _ => bail!(USAGE),
   };
   let path = model_path(model)?;
   let pcm = audio::read(audio)?;
-  let transcript = load(&path)?.transcribe(&pcm)?;
-  if json {
-    println!("{}", output::json(&transcript));
-  } else if srt {
-    print!("{}", output::srt(&transcript.tokens, (pcm.len() / 16) as u32));
-  } else {
-    println!("{}", transcript.text);
+  let model = load(&path)?;
+  let max_ms = segment.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
+  let max = if max_ms == 0 { usize::MAX } else { max_ms as usize * 16 };
+  let ranges = split::segments(&pcm, max);
+  let parts = ranges.into_iter().map(|r| Ok((r.start, model.transcribe(&pcm[r])?)));
+  let (transcript, starts) = split::join(parts.collect::<Result<Vec<_>>>()?);
+  match format {
+    Some("--json") => println!("{}", output::json(&transcript)),
+    Some(_) => print!("{}", output::srt(&transcript.tokens, &starts, (pcm.len() / 16) as u32)),
+    None => println!("{}", transcript.text),
   }
   Ok(())
 }

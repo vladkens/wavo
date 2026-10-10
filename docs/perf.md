@@ -115,11 +115,55 @@ to length, 16 kHz mono PCM16. Load average 2.5–3.1.
 - GigaAM was trained on ≤ 25 s (the reference's `docs/input-limits.md`: soft window, it warns and
   proceeds; wavo says nothing). Past ~1 minute it drops words: about 92 / 185 / 277 / 462 / 923
   are spoken, 91 / 170 / 236 / 254 / 177 come out. Long Russian audio needs chunking.
-- Parakeet stays coherent at 10 minutes (7500 encoder frames, full attention).
+- Parakeet stays coherent at 10 minutes (7500 encoder frames, full attention), but it drops
+  sentences (see the split below).
 - Time grows faster than length (attention is quadratic): ×5 length is ×6.8 for GigaAM and
   Parakeet, ×10 is ×21 and ×20.
 - Peak footprint grows with length faster than the reference's: from 1 to 10 minutes +509 vs
   +185 MiB (GigaAM), +695 vs +376 MiB (Parakeet). Not investigated.
+
+## Long audio: split at pauses (2026-10-10, phase 9)
+
+`wavo run` with its default split: segments of up to 25 s for GigaAM (`max_audio_ms`) and 60 s
+for Parakeet, cut at the quietest 300 ms. The files and protocol are the same as for the one-pass
+table above, plus 60 minutes (both sources on repeat). Load average 2.6–3.5. Words are counted in
+lowercase without punctuation (a hyphenated word is one word). For Russian, the brackets hold the
+count of the fixture's words on repeat, cut at the same length. English is compared with
+`--segment 0` (one pass).
+
+| Model | Length | Time, s | Peak footprint | Words |
+|---|---|---|---|---|
+| `gigaam-v3` (e2e-rnnt) | 1 min | 0.75 | 313 | 91 (91) |
+|  | 2 min | 1.12 | 315 | 177 (178) |
+|  | 3 min | 1.64 | 323 | 263 (263) |
+|  | 5 min | 2.69 | 327 | 455 (455) |
+|  | 10 min | 5.23 | 349 | 905 (905) |
+|  | 60 min | 31.0 | 529 | 5417 (5418) |
+| `parakeet-v3` | 1 min | 1.34 | 822 | one segment |
+|  | 2 min | 1.87 | 825 | 305, 1 differs |
+|  | 3 min | 3.17 | 830 | 492; one pass 454 |
+|  | 5 min | 4.57 | 844 | 809, 3 differ |
+|  | 10 min | 8.91 | 865 | 1652; one pass 1622 |
+|  | 60 min | 52.9 | 1052 | 9820 |
+
+- GigaAM keeps every word: the only differences from the fixture text are in the last one or two
+  words, which the end of the file cuts. `gigaam-v3-rnnt` (characters) at 10 minutes: 976 (977),
+  the same. One pass gives 177 at 10 minutes.
+- Parakeet in one pass loses text: at 3 minutes it stops 38 words before the end, at 10 minutes it
+  skips a 29-word sentence. The split keeps both. The other differences are spelling ("17" /
+  "seventeen", hyphens) or one word next to a cut, and the split is right as often as the one
+  pass ("stewart", "lived", "drown"). V2 at 5 and 10 minutes: 2 and 5 words differ, the same kind.
+- At 10 minutes, against the one pass in the same session (A/B/A): GigaAM 5.22–5.23 vs
+  15.6–15.7 s and 349–351 vs 856–862 MiB (transcribe.cpp in one pass 20.0 s, 529 MiB); Parakeet
+  8.9 vs 22.9–24.9 s and 865 vs 1513 MiB (transcribe.cpp 43.9 s, 1293 MiB).
+- Time is linear in length: 10 → 60 minutes is ×5.9 for both, ~0.52 s (GigaAM) and ~0.88 s
+  (Parakeet) per minute of audio. Peak footprint is flat apart from the decoded audio (f32,
+  ~230 MB per hour): +180 MiB from 10 to 60 minutes.
+- Segment length for Parakeet, `--segment` 30 / 60 / 120 on the 10-minute file (two runs each):
+  8.57–8.75 / 8.85–9.03 / 9.81 s (the second 120 s run hit a load burst, 13.6 s), 830 / 861–865
+  / 954–955 MiB. All three keep the sentence the one pass skips; 120 s skips another one (22
+  words). Over 60 minutes, 30 s twice inserts a phrase nobody says ("that was a very good thing")
+  where 60 s doesn't. 60 s is the default.
 
 ## Targets: transcribe.cpp Metal (commit 5bb2deb, same Q8_0 GGUF)
 
@@ -389,6 +433,10 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 ## Log
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
+
+- 2026-10-10, GigaAM e2e-rnnt and Parakeet TDT V3, `wavo run` splitting long audio at pauses
+  (≤ 25 / 60 s segments), 1 to 60 minutes: 10 minutes 15.6 → 5.2 s and 22.9 → 8.9 s, peak 856 →
+  349 and 1513 → 865 MiB, GigaAM 177 → 905 words. Kept; see "Long audio: split at pauses" above.
 
 - 2026-10-10, GigaAM e2e-rnnt and Parakeet TDT V3, 1 to 10 minutes in one pass through `wavo
   run`: see "Long audio" above.

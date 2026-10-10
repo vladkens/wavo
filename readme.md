@@ -32,6 +32,7 @@ wavo run talk.m4a                     # transcribe with parakeet-v3
 wavo run gigaam-v3 talk.mp3           # or another model: name, full name or a .gguf path
 wavo run talk.wav --json              # text and every token with its start time
 wavo run talk.wav --srt > talk.srt    # subtitles
+wavo run talk.wav --segment 0         # one pass, no splitting at pauses
 wavo list                             # downloaded models
 wavo rm parakeet-v3                   # delete one
 wavo bench gigaam-v3 talk.wav -n 20   # load time, first call, warm median and minimum
@@ -41,6 +42,14 @@ Audio can be wav, mp3, m4a (AAC), flac or ogg (Vorbis); it is downmixed to mono 
 16 kHz. `--json` prints `{"text": ..., "tokens": [{"id", "piece", "start_ms"}, ...]}`. `--srt`
 cues break after sentences or at 80 characters.
 
+Recordings of any length work: longer audio is split at its quietest moments (by energy, no VAD
+model) into segments of up to 25 s for GigaAM, which was trained on utterances up to ~25 s, and
+60 s for Parakeet. The segments are transcribed one by one and joined: texts with a space, token
+times shifted to the whole file. In one pass, GigaAM loses most words after about a minute and
+Parakeet skips sentences; split, 10 minutes take 5.2 s with GigaAM and 8.9 s with Parakeet V3 on
+an M2, and memory stays flat. `--segment SECS` sets the length; `--segment 0` runs the whole file
+in one pass, as transcribe.cpp does.
+
 Models live in the Hugging Face cache, found as `hf` finds it: `HF_HUB_CACHE` (or the legacy
 `HUGGINGFACE_HUB_CACHE`), else `$HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else
 `~/.cache/huggingface/hub`. The layout is the one `hf` uses, so a model fetched with
@@ -48,9 +57,7 @@ Models live in the Hugging Face cache, found as `hf` finds it: `HF_HUB_CACHE` (o
 pulled by `wavo` is seen by `hf`. Only `wavo pull` uses the network; `wavo run` names the
 `wavo pull` command when a model is missing.
 
-Known limitations: GigaAM was trained on utterances up to ~25 s. Longer audio still runs in one
-pass, but past about a minute it drops words (as in transcribe.cpp), so split long Russian audio
-into short segments. Opus is not supported.
+Known limitations: Opus is not supported.
 
 ## Library
 
@@ -69,7 +76,9 @@ for token in &transcript.tokens {
 ```
 
 Without default features (the `cli` feature) you get only the engine: decoding audio,
-resampling and downloading models are up to you.
+resampling, splitting long audio and downloading models are up to you. `model.max_audio_ms()`
+gives the longest audio a model was trained on (`Some(25_000)` for GigaAM, `None` for Parakeet);
+past it accuracy drops (GigaAM loses words after about a minute), so split longer audio first.
 
 ## Speed
 
