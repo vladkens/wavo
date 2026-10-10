@@ -33,7 +33,7 @@ dist:
 	tar czhf $(T)/distrib/wavo-dev-aarch64-apple-darwin.tar.gz readme.md LICENSE \
 		-C $(T)/aarch64-apple-darwin/dist wavo wavo.dSYM
 	for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do \
-		tar czf $(T)/distrib/wavo-dev-$$t.tar.gz readme.md LICENSE -C $(T)/$$t/dist wavo; done
+		tar czf $(T)/distrib/wavo-dev-$$t.tar.gz readme.md LICENSE -C $(T)/$$t/dist wavo || exit 1; done
 	zip -jq $(T)/distrib/wavo-dev-x86_64-pc-windows-gnu.zip readme.md LICENSE \
 		$(T)/x86_64-pc-windows-gnu/dist/wavo.exe
 	ls -lh $(T)/distrib
