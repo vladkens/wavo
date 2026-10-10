@@ -6,10 +6,8 @@
 
 use std::f64::consts::PI;
 use std::ops::Range;
-use std::sync::Arc;
 
-use rustfft::num_complex::Complex;
-use rustfft::{Fft, FftPlanner};
+use crate::fft::Fft;
 
 pub const MELS: usize = 128;
 pub const N_FFT: usize = 512;
@@ -26,7 +24,7 @@ pub struct Frontend {
   filters: Vec<f32>,
   /// Per filter, its nonzero bins.
   spans: Vec<Range<usize>>,
-  fft: Arc<dyn Fft<f64>>,
+  fft: Fft<f64>,
 }
 
 impl Frontend {
@@ -45,7 +43,7 @@ impl Frontend {
         lo..f.iter().rposition(|&w| w != 0.0).map_or(lo, |i| i + 1)
       })
       .collect();
-    Self { window, filters, spans, fft: FftPlanner::new().plan_fft_forward(N_FFT) }
+    Self { window, filters, spans, fft: Fft::new(N_FFT) }
   }
 
   /// Features of 16 kHz PCM, time-major `[pcm.len() / 160 + 1][MELS]`; empty below 3 frames, too
@@ -61,16 +59,15 @@ impl Frontend {
       *y = x[1] as f64 - PRE_EMPHASIS as f64 * x[0] as f64;
     }
     let mut mel = Vec::with_capacity(frames * MELS);
-    let mut frame = vec![Complex::default(); N_FFT];
-    let mut scratch = vec![Complex::default(); self.fft.get_inplace_scratch_len()];
+    let (mut frame, mut buf) = ([0f64; N_FFT], [0f64; 4 * N_FFT]);
     let mut power = [0f32; BINS];
     for t in 0..frames {
       for ((x, s), w) in frame.iter_mut().zip(&padded[t * HOP..]).zip(&self.window) {
-        *x = Complex::new(s * w, 0.0);
+        *x = s * w;
       }
-      self.fft.process_with_scratch(&mut frame, &mut scratch);
-      for (p, x) in power.iter_mut().zip(&frame) {
-        *p = (x.re * x.re + x.im * x.im) as f32;
+      let (re, im) = self.fft.forward(&frame, &mut buf);
+      for ((p, re), im) in power.iter_mut().zip(re).zip(im) {
+        *p = (re * re + im * im) as f32;
       }
       // Each filter as a chain of f32 fused multiply-adds in bin order: bitwise equal to the
       // reference's sgemm on Apple Silicon. The zero weights outside a span would add exact zeros.

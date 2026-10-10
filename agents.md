@@ -18,8 +18,8 @@ the first call matter as much as warm speed.
 ## Scope
 
 - Keep the library pure Rust: no C/C++, ONNX, BLAS or Python in it or its build. Its
-  dependencies: `wgpu`, `bytemuck`, `half`, `thiserror`, `pollster`, `rustfft`; tests may also
-  use `hound` (dev-dependency).
+  dependencies: `wgpu`, `bytemuck`, `half`, `thiserror`, `pollster`; tests may also use `hound`
+  (dev-dependency).
 - Keep the build fast, also for crates that depend on wavo: prefer a small own routine to a
   generic dependency that compiles far more code than wavo uses. Measure with `cargo build
   --timings`.

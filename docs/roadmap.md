@@ -48,9 +48,9 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 After Whisper: **other engines.** Measure wavo against the other ways to run the same models on a
 Mac, not only transcribe.cpp. Plan: [docs/plans/20261010-other-engines.md](plans/20261010-other-engines.md).
 
-After the models: **fast build.** A clean release build takes 42 s, mostly the wgpu chain (naga →
-wgpu-core → wgpu); rebuilding the library after a change takes 14 s, and 58% of its code is
-`rustfft`'s generic planner. Plan: [docs/plans/20261010-fast-build.md](plans/20261010-fast-build.md).
+**Fast build.** The own FFT replaced `rustfft`: a clean release build takes ~29 s (from ~40),
+mostly the wgpu chain (naga → wgpu-core → wgpu), and the library rebuilds in ~2 s (from ~12).
+Left: wgpu features per target. Plan: [docs/plans/20261010-fast-build.md](plans/20261010-fast-build.md).
 
 Later, only on request: streaming, slowing fast speech down before recognition
 (pitch-keeping time-stretch such as WSOLA; first measure WER on samples sped up with ffmpeg

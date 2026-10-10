@@ -335,7 +335,7 @@ How it runs: the GGUF header is read at load and each tensor is streamed from th
 into weight buffers that are mapped on unified memory (no staging copy); weights stay Q8_0/F16
 on the GPU. With the fast kernels, load ends with an encoder run on 8 silent frames to pay the
 GPU's first use of pipelines and weights (the portable path skips it). Per call: CPU log-mel
-(rustfft, one frame at a time), then the encoder over an arena sized for the longest input so
+(own FFT, one frame at a time), then the encoder over an arena sized for the longest input so
 far, with bind groups cached per dispatch: one submission with the fast kernels, one per layer on
 the portable path (`Pass::layers`). Fast kernels (cooperative-matrix GEMM with Q8_0/F16 dequantized while
 staging and rounded to f16 like the reference's, barrier-free flash attention, one subgroup per
@@ -583,6 +583,20 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
 
+- 2026-10-10, build, own FFT (`src/fft.rs`, transcribe.cpp's radix-2 over odd DFT leaves in
+  Stockham order, FMA on x86_64 when present) for all three frontends instead of `rustfft`.
+  Windows, Ryzen 9 7945HX, `cargo build --release --timings`, two A/B rounds: clean 40.0 / 38.7 →
+  29.5 / 28.9 s (library unit 12.8 → 2.9 s), rebuild after touching `src/lib.rs` 18.5 → 8.7 s
+  (library 11.9 → 2.1 s, the rest is the CLI binary, whose `rubato` still pulls `rustfft`),
+  library alone (`--no-default-features --lib`) clean 29.8 → 19.8 s; library LLVM IR 353k → 93k
+  lines (`rustfft` 69% and `transpose` 2% → 0). Mel bitwise unchanged for Whisper and Parakeet,
+  GigaAM within 4e-4 (rustfft's order before, now the reference's radix-2); fixtures exact on M1
+  Metal and N100, RTX 4060 as before (e2e-ctc ru-short moves one token by 40 ms on main too). Mel
+  per call, M1 / 7945HX: Whisper jfk 7.3 → 3.4 / 66 → 3.3 ms, GigaAM ru-long 4.4 → 4.2 / 16.2 →
+  17.6, Parakeet jfk 2.7 → 3.2 / 3.4 → 4.2 ms (its f64 512 takes 1.8 / 1.2 µs). Kept.
+- 2026-10-10, build, the same FFT with two radix-2 stages per pass (same butterflies, half the
+  memory passes): 7945HX A/B/A/B Parakeet jfk mel 4.24 / 4.22 / 4.28 / 4.16 ms, FFT 320 slower
+  (0.41 → 0.54 µs). Rejected: no gain.
 - 2026-10-10, all models, `Pass::layers` submits each encoder layer on its own on the portable path
   (Whisper had one submission per window: i915 cancelled it on the N100, now fixtures exact). M2
   A/B/A/B warm unchanged: ru 41.3 / 41.4 / 41.2 / 41.5, jfk 137.8 / 137.9 / 137.8 / 137.9, Whisper
