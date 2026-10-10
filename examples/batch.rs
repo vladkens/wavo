@@ -38,8 +38,11 @@ fn run(model: &str, list: &str) -> Result<()> {
   let mut failed = 0;
   for file in std::fs::read_to_string(list)?.lines().map(str::trim).filter(|l| !l.is_empty()) {
     let mut wav = hound::WavReader::open(file).map_err(|e| format!("{file}: {e}"))?;
-    if (wav.spec().channels, wav.spec().sample_rate) != (1, 16000) {
-      return Err(format!("{file}: not 16 kHz mono").into());
+    let spec = wav.spec();
+    if (spec.channels, spec.sample_rate, spec.bits_per_sample, spec.sample_format)
+      != (1, 16000, 16, hound::SampleFormat::Int)
+    {
+      return Err(format!("{file}: not 16 kHz mono PCM16").into());
     }
     let pcm = wav.samples::<i16>().map(|s| Ok(s? as f32 / 32768.0)).collect::<Result<Vec<_>>>()?;
     let t = Instant::now();

@@ -211,95 +211,18 @@ count of the fixture's words on repeat, cut at the same length. English is compa
 
 ## Real recordings vs transcribe.cpp (2026-10-10, phase 10)
 
-The person's own dictation, as a voice-typing app (Handy) saved it on this M2: 78,791 WAVs, all
-16 kHz mono PCM16, 121.5 hours, mostly Russian (3% of the sample came out of Parakeet V3 in Latin
-letters only). Length: median 3.75 s, p10 1.26 s, p90 11.9 s, p99 27 s, longest 121 s; 24% under
-2 s, 37% 2–5 s, 24% 5–10 s, 13% 10–25 s, 1.3% over 25 s. The recordings are private: only
-aggregates are kept here.
+`make compare` on 2,923 of the person's dictation recordings (8.6 h, mostly Russian, median
+3.75 s), M2, A/B/A. Conclusions:
 
-Sample: 2,923 recordings (8.63 h) drawn at random per length (500 under 2 s, 700 of 2–5 s, 700 of
-5–10 s, 600 of 10–25 s, 400 of 25–60 s) plus all 23 of 60 s or more, in shuffled order. Protocol
-as `make compare`: one model load per process and one pass per file (`examples/batch.rs` calls
-`Model::transcribe`; `transcribe-cli --batch LIST --batch-jsonl` with default flags calls
-`transcribe_run`), wavo, reference, wavo (A/B/A) on the same list in the same order with the files
-in the page cache, all of it under one hold of the GPU lock. A file's time: wavo the wall time of
-`transcribe`, the reference its `mel_ms + encode_ms + decode_ms`. That sum leaves out 2.1–2.6 ms
-of the reference's call on GigaAM and ~6 ms on Parakeet (`transcribe-bench` `wall_ms − total_ms`
-on these recordings and `jfk`); the process wall time includes it. GigaAM ran twice: A/B/A while
-other agents built and benchmarked (load average 2–16), then B/A/B on a quiet machine (1.2–1.8).
-
-| Model | Files | Same text | WER between the two | Files that differ |
-|---|---|---|---|---|
-| `gigaam-v3` (e2e-rnnt) | 2,923 | 99.86% | 0.004% (3 of 77,561 words) | 4: 3 one-word, 1 punctuation only |
-| `parakeet-v3` | 2,923 | 98.9% | 0.03% (23 of 77,416) | 32: 20 one word or token, 12 punctuation or case only |
-| `parakeet-v2` | 87 in Latin letters | 97.7% | 0.10% (3 of 2,897) | 2: one word each |
-
-| Model | Run | Compute, s | Process wall, s | RTF median / p90 / max | Load, ms | Peak footprint, MiB |
-|---|---|---|---|---|---|---|
-| `gigaam-v3` | A/B/A, busy | 296.5, 302.4 / 309.4 | 302.9, 309.4 / 322.3 | 0.0097 / 0.0179 / 0.040, 0.0100 / 0.0182 / 0.154 vs 0.0099 / 0.0157 / 0.054 | 216, 194 / 206 | 452, 459 / 421 |
-| `gigaam-v3` | B/A/B, quiet | 289.1 / 293.5, 292.6 | 292.6 / 301.9, 301.0 | 0.0095 / 0.0176 / 0.022 vs 0.0094 / 0.0151 / 0.019 | 83 / 165, 128 | 443 / 401 |
-| `parakeet-v3` | A/B/A | 524.0, 511.5 / 814.6 | 530.9, 519.2 / 837.0 | 0.0184 / 0.0371 / 0.089, 0.0180 / 0.0357 / 0.129 vs 0.0261 / 0.0407 / 0.587 | 432, 412 / 344 | 975, 989 / 1067 |
-| `parakeet-v2` | A/B/A, 87 files | 18.8, 17.6 / 23.8 | 19.4, 17.9 / 24.7 | 0.0171 / 0.0394 / 0.055 vs 0.0238 / 0.0371 / 0.055 | 408, 152 / 269 | 886, 884 / 925 |
-
-Each cell is wavo / reference; a comma separates the two runs of the same engine. By length, mean
-ms per file and the median of the per-file ratio wavo / reference (GigaAM from the quiet B/A/B,
-Parakeet V3 from its A/B/A; stage sums as above), and the whole corpus estimated from the bucket
-means:
-
-| Length | Share of corpus | `gigaam-v3` ms | Ratio | `parakeet-v3` ms | Ratio |
-|---|---|---|---|---|---|
-| < 2 s | 24.3% | 25.5 / 22.0 | 1.16 | 53.1 / 61.0 | 0.93 |
-| 2–5 s | 37.4% | 37.3 / 35.1 | 1.07 | 77.3 / 104.7 | 0.80 |
-| 5–10 s | 24.1% | 65.2 / 64.1 | 1.01 | 126.0 / 186.5 | 0.72 |
-| 10–25 s | 12.9% | 126.0 / 129.4 | 0.98 | 227.2 / 355.2 | 0.67 |
-| 25–60 s | 1.3% | 278.9 / 293.6 | 0.95 | 477.8 / 780.8 | 0.65 |
-| ≥ 60 s | 23 files | 753.7 / 783.3 | 0.96 | 1207 / 2386 | 0.61 |
-| All 78,791, estimated | | 73.3 / 71.6 min | | 141.6 / 203.8 min | |
-
-With the model loaded per recording (40 recordings drawn from the whole corpus, median 3.3 s; a
-fresh `wavo run --segment 0` and a fresh `transcribe-cli` per file, alternating, two rounds;
-process wall time): GigaAM median 136 / 188 ms (mean 156 / 206), Parakeet V3 278 / 429 ms (mean
-300 / 470); wavo was faster in 80 of 80 runs for each.
-
-- Text: the two engines agree on 99.86% (GigaAM), 98.9% (Parakeet V3) and 97.7% (Parakeet V2) of
-  the recordings, and both return an empty text on the same 8 / 12 / 6. No errors or crashes in
-  either. Each engine gives the same text on every rerun. Every differing file starts differing at
-  one decision where wavo's top two logits (a token against another token or blank, or two TDT
-  durations) are within 0.0001–0.032 of each other, 28 of 38 under 0.005, while the median margin
-  per file is 2–11 (measured with a temporary print in the decoders, not kept): near-ties that
-  float rounding tips one way or the other. The texts then differ in one or two places per file
-  at most. Of 300 random recordings with token times (`wavo run --json` against `transcribe-cli
-  --timestamps token`): GigaAM 300 same text and 296 also the same tokens and start times,
-  Parakeet V3 298 and 289; the rest of the same-text ones differ only in some start times. No
-  sign of a bug.
-- GigaAM past its 25 s window (423 of the sample, 1.3% of the corpus; both engines run it in one
-  pass and only the reference warns): 2 of its 4 differences, 99.5% the same text.
-- GigaAM speed: on par over the whole sample (compute 1.2–1.5% below the reference on the quiet
-  machine, 2–4% on the busy one, where the reference's CPU decoder lost more; process wall time
-  3–6% below). Per file it is slower on short recordings and faster on long ones: by stage sums
-  16% slower under 2 s and 7% at 2–5 s, 2–5% faster from 10 s. With the reference's 2.3 ms of
-  call overhead added, 5% slower under 2 s, on par at 2–5 s, 3–6% faster from 5 s. For the
-  corpus's mix of lengths that is a tie (73.3 against 71.6 min by stage sums, 74.6 with the
-  overhead added). A linear fit over the recordings under 10 s: wavo 13.6 ms + 7.4 ms per second
-  of audio, the reference 10.3 ms + 7.7 ms (+ ~2.3 ms outside its stages). So wavo's fixed cost
-  per call is ~1 ms higher; see "Not tried yet".
-- Parakeet V3: 36–37% less compute (524 / 512 against 815 s) and 37–38% less process wall time,
-  faster in every length bucket and on 72% (under 2 s) to 100% (over 60 s) of the files; 142
-  against 204 minutes for the corpus. V2 on the 87 English-looking recordings: 21–26% less
-  compute, but slower under 2 s (2.0 against 1.8 s for 40 files): its reference decoder has no
-  8193-way softmax.
-- Peak footprint over the batch: Parakeet 975–989 against 1067 MiB, GigaAM 443–459 against
-  401–421 MiB. wavo keeps the arena of the longest input so far (here 121 s; see "Long audio" for
-  how it grows), while the reference allocates per call.
-- Load in the A/B/A runs came first after other GPU work and the model file had left the page
-  cache; with warm caches a fresh wavo process loads in 78–84 (GigaAM) and 162–170 ms (Parakeet
-  V3), as in the benchmark above.
-- Handy's own stored transcripts (no ground truth, and the database names no engine): since
-  2026-09-28, when the GigaAM e2e-rnnt GGUF entered the Hugging Face cache (Handy's settings now
-  name it), 299 of the 309 sampled recordings have Handy text equal to wavo's and the reference's,
-  and the other 10 differ from both. Before that, 6–36% per month equal GigaAM's and 6–13%
-  Parakeet V3's text (WER against Handy 7.5–17% and 11–15%): other engines (Handy's model folder
-  holds int8 ONNX GigaAM v3 and Parakeet V2/V3, Whisper large-v3-turbo and Moonshine).
+- Text: the same as the reference in 99.86% (GigaAM e2e-rnnt) and 98.9% (Parakeet V3) of the
+  recordings. Every difference starts at a near-tie (top two logits within 0.03): float
+  rounding, not a bug.
+- Parakeet V3: 36% less compute, faster at every length.
+- GigaAM: on par overall; ~5% slower per file under 2 s, faster from 5 s. Its fixed cost per call
+  is ~1 ms higher ("Not tried yet", item 5).
+- Model loaded per recording (fresh process): GigaAM 136 vs 188 ms, Parakeet V3 278 vs 429 ms.
+- Peak memory over a batch: Parakeet 975 vs 1067 MiB; GigaAM 452 vs 421 MiB, since wavo keeps the
+  arena of the longest input so far.
 
 ## Targets: transcribe.cpp Metal (commit 5bb2deb, same Q8_0 GGUF)
 
