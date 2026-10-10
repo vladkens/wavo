@@ -95,7 +95,7 @@ the fixture text on repeat; Parakeet against its own one-pass text, which matche
 
 ### Task 2: library
 
-- [ ] `Model::max_audio_ms()` with a doc comment.
+- [x] `Model::max_audio_ms()` with a doc comment.
 
 ### Task 3: `wavo run` on long audio
 
