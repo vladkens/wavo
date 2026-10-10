@@ -50,17 +50,11 @@ jobs:
       CARGO_PROFILE_RELEASE_STRIP: true
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/cache@v6
-        with:
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-
       - run: rustup update --no-self-update stable && rustup default stable
       - run: rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-gnu
       - run: brew install cargo-zigbuild
+      # One cache for the registry and all four targets' dependencies in target/.
+      - uses: Swatinem/rust-cache@v2
 
       - name: Build
         run: |
