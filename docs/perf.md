@@ -483,7 +483,7 @@ Numbers are in the plans' "## Result" sections.
 
 - 2026-10-11, Parakeet V3 and Whisper turbo against Neural Engine engines: FluidAudio (ANE) is
   2.2–2.3× faster than wavo on 11–35 s at a third of the energy; WhisperKit (ANE) is 1.4–1.8×
-  slower at ~15% more energy; parakeet-mlx 1.8× slower. [Other
+  slower at ~15% more energy; parakeet-mlx 1.7–1.8× slower on 11–35 s. [Other
   engines](plans/20261010-other-engines.md).
 - 2026-10-11, Windows RTX 4060, GPU timestamps around the 16×16 GEMM: the portable GEMMs were 50%
   of the kernels on turbo `jfk` and 75% on Parakeet V3 `dots`; after it attention is 74% on turbo

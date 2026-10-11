@@ -37,8 +37,8 @@ wavo always does.
   Setup: cmake configure 11 s and build 28 s, 8.2 MB in 7 files, its Metal library compiled on
   the first run in 5.8 s. wavo: a clean `cargo build --release` in 41 s, one 13.2 MB binary.
 
-Neural Engine engines, M2, 2026-10-11: WhisperKit and FluidAudio at their `main` (built from
-source, release), driven by a small Swift harness over their libraries with the same 16 kHz
+Neural Engine engines, M2, 2026-10-11: WhisperKit 9f99b5c and FluidAudio e560c64 (built
+from source, release), driven by a small Swift harness over their libraries with the same 16 kHz
 samples wavo reads; parakeet-mlx 0.5.3 (bf16, its CLI's 120 s chunks). Two or three rounds
 alternating, 10 warm calls each, ms; peak is the process's peak footprint in MiB. WhisperKit runs
 its M2 default `openai_whisper-large-v3-v20240930` (F16 weights, 1.6 GB), greedy, language
@@ -94,7 +94,7 @@ decoder 2.1 s.
 
 - Parakeet on the ANE is the one clear win: FluidAudio is 2.2–2.3× faster than wavo on 11–35 s
   (1.5× on the 4.5 s `ru`, 46 against 71 ms, though padded to 15 s), takes a third of the energy
-  per transcription, and its first transcript after a cached load comes in ~190 ms against
+  per transcription, and its first transcript after a cached load comes in 190–250 ms against
   wavo's 250–480. The ANE runs Parakeet's encoder at ~7 TFLOP/s against ~1.7 for wavo's GPU
   kernels. On 306 s wavo's one pass is quadratic; `wavo run` in 60 s segments takes 4.1 s with
   load, still 2.7× FluidAudio's 15 s windows.
@@ -108,11 +108,13 @@ decoder 2.1 s.
   caches the result by model path and configuration, so a moved or updated model compiles again.
   Cached loads are 0.1–0.8 s, but WhisperKit's first ANE call still costs up to 2 s more than a
   warm one. WhisperKit's GPU load stays at 0.8–5 s in every process.
-- Text: the same words on every clip where wavo and the others ran (normalized, punctuation
-  aside); ru-long matches the FLEURS reference exactly for all. On dots-full WhisperKit differs in
-  2–4 words from wavo, FluidAudio in 3 (`wanna`, a doubled `roadad` at a window join), wavo's own
-  60 s split in 3; parakeet-mlx drops two whole sentences at its chunk joins (102 edits).
-- parakeet-mlx is 1.8× slower than wavo, loads in 1.2–1.8 s and peaks at 2.2–5.8 GB.
+- Text: the same words on jfk, german, dots and ru-long for every engine (normalized,
+  punctuation aside); ru-long matches the FLEURS reference exactly for all. On dots-full
+  WhisperKit differs in 2–4 words from wavo, FluidAudio in 3 (`wanna`, a doubled `roadad` at a
+  window join), wavo's own 60 s split in 3; parakeet-mlx drops two whole sentences at its chunk
+  joins (102 edits).
+- parakeet-mlx is 1.7–1.8× slower than wavo on 11–35 s and 1.1–1.2× on dots-full (its 120 s
+  chunks against wavo's one pass), loads in 1.2–1.8 s and peaks at 2.2–5.8 GB.
 - Setup: WhisperKit and FluidAudio build with `swift build` in 1–2.5 min (FluidAudio also fetches
   an 87 MB prebuilt text-normalization framework); models 1.6 GB (Whisper) and 0.47 GB (Parakeet)
   of `.mlmodelc` directories from Hugging Face.
@@ -140,4 +142,4 @@ GigaAM), as an opt-in macOS backend whose output is approximate; not for Whisper
 - Cost: ~400–600 lines of Rust (Core ML wrapper, windowing, a directory model in `hub`, a CLI
   switch) plus a ~300–500-line conversion script, about one to two weeks of agent work with
   validation; a one-time 16 s compile per model, best done by `pull`. Gain for Parakeet: 2.2–2.3×
-  warm, ~3× less energy per transcription, a first transcript in ~190 instead of 250–480 ms.
+  warm, ~3× less energy per transcription, a first transcript in 190–250 instead of 250–480 ms.
