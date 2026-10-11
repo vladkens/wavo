@@ -16,7 +16,8 @@ const F: u32 = 8u;
 // 4F or 8F, and the K step.
 override ROWS: u32;
 override KS: u32 = 8u * F * F / ROWS;
-// W has rows up to n rounded up to 64, so a tile 128 wide may pass them; checking costs ~8% at 8.
+// W has rows up to n rounded up to 64, so a tile 128 wide may pass them. Checking at F = 8 too cost
+// GigaAM on 34 s 8% on an M2.
 const WIDE: bool = F > 8u;
 // Halves of the a tile, where the Wᵀ tile starts.
 const AT: u32 = 8u * F * F;
@@ -161,11 +162,14 @@ fn gemm(
   var c32: CM;
   var c33: CM;
   for (var k0 = 0u; k0 < p.k; k0 += KS) {
-    // Each thread stages a vec4 per 128 of a and of W.
-    for (var j = 0u; j < AT / 512u; j++) {
+    // Each thread stages a vec4 per 128 of a and of W. The first ones stay out of the loops: with
+    // them inside, GigaAM on 4.5 s took 3% longer on an M2.
+    stage_a(m0, k0, lane);
+    stage_w(n0, k0, lane);
+    for (var j = 1u; j < AT / 512u; j++) {
       stage_a(m0, k0, lane + j * 128u);
     }
-    for (var j = 0u; j < F * KS / 64u; j++) {
+    for (var j = 1u; j < F * KS / 64u; j++) {
       stage_w(n0, k0, lane + j * 128u);
     }
     workgroupBarrier();

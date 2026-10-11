@@ -488,6 +488,20 @@ impl Gpu {
     })
   }
 
+  /// The rows of the fast GEMM's tile for `m` rows of `n` outputs, or `None` for the portable GEMM.
+  fn tile_rows(&self, n: usize, m: usize) -> Option<usize> {
+    self.fast.gemm.as_ref()?;
+    let short = 4 * self.fast.size;
+    let (cols, m8, m4) = (n.div_ceil(2 * short), m.div_ceil(2 * short), m.div_ceil(short));
+    // Tiles 128 wide (F = 16) in fewer than 16 workgroups ran slower than the portable 64×64 ones
+    // on an RTX 4060: GigaAM's 768-wide layers at 113 rows, 12 workgroups, by 1.5×.
+    if short == 64 && cols * m4 < 16 {
+      return None;
+    }
+    // 8F-row tiles unless they leave few workgroups or pad more rows than 4F-row ones.
+    Some(if m8 * cols >= 64 && m8 * 20 <= m4 * 11 { 2 * short } else { short })
+  }
+
   fn flash(&self, head_dim: usize, relative: bool) -> Option<&Pipeline> {
     let (k, min, max) =
       if relative { (&self.fast.relative, 8, 128) } else { (&self.fast.attention, 32, 64) };
@@ -739,16 +753,18 @@ impl<'a> Pass<'a> {
     let params = [m as u32, l.n as u32, l.k as u32, mode, alpha, l.dual as u32];
     // Only Q8_0 reads scales; other types bind the bias in their place.
     let buffers = [a, &l.bias, c, &l.weight, l.scales.as_ref().unwrap_or(&l.bias)];
-    match &gpu.fast.gemm {
-      Some(k) => {
-        // 8F-row tiles unless they leave few workgroups or pad more rows than 4F-row ones.
-        let short = 4 * gpu.fast.size;
-        let (cols, m8, m4) = (l.n.div_ceil(2 * short), m.div_ceil(2 * short), m.div_ceil(short));
-        let tall = m8 * cols >= 64 && m8 * 20 <= m4 * 11;
-        let rows = if tall { 2 * short } else { short };
-        self.run(&k[2 * l.ty + tall as usize], &buffers, &params, [cols, m.div_ceil(rows), 1])
+    let f = gpu.fast.size;
+    match (&gpu.fast.gemm, gpu.tile_rows(l.n, m)) {
+      (Some(k), Some(rows)) => {
+        let tall = rows > 4 * f;
+        self.run(
+          &k[2 * l.ty + tall as usize],
+          &buffers,
+          &params,
+          [l.n.div_ceil(8 * f), m.div_ceil(rows), 1],
+        )
       }
-      None => self.run(&gpu.kernels.gemm[l.ty], &buffers, &params, [l.n / 64, m.div_ceil(64), 1]),
+      _ => self.run(&gpu.kernels.gemm[l.ty], &buffers, &params, [l.n / 64, m.div_ceil(64), 1]),
     }
   }
 
@@ -1036,11 +1052,12 @@ mod tests {
 
   #[test]
   fn gemm() {
-    // 100 rows: the GEMM pads them to 128 output columns, which come out as epilogue(0).
-    let (n, k) = (100, 96);
+    // 164 rows: the GEMM pads them to 192 output columns, which come out as epilogue(0); a
+    // 128-wide tile of the fast GEMM passes them.
+    let (n, k, padded) = (164, 96, 192);
     let w = random(n * k, 1);
     let bias = random(n, 2);
-    // 64 more biases: the first 64 outputs again at columns 128.., with no epilogue.
+    // 64 more biases: the first 64 outputs again at columns 192.., with no epilogue.
     let dual: Vec<f32> = bias.iter().copied().chain(random(64, 5)).collect();
     let f32s: &[u8] = bytemuck::cast_slice(&w);
     let f16s: Vec<u8> = w.iter().flat_map(|x| f16::from_f32(*x).to_le_bytes()).collect();
@@ -1064,16 +1081,16 @@ mod tests {
       let wf: Vec<f32> = wf.iter().map(half).collect();
       // With the bias, without (zeros), and with dual outputs.
       for b in [&bias[..], &[], &dual] {
-        let width = if b.len() > n { 192 } else { 128 };
+        let width = if b.len() > n { padded + 64 } else { padded };
         for gpu in gpus() {
           let l = gpu.linear(&[t("w1"), t("w2")], b).unwrap();
           assert_eq!(l.width(), width);
-          // 2100 rows take the fast path's 64-row tiles.
+          // 2100 rows take the fast path's 8F-row tiles.
           for m in [1, 37, 70, 2100] {
             let a = random(m * k, 3);
             // The fast GEMM rounds a to f16 as well.
-            let ar: Vec<f32> =
-              if gpu.fast.gemm.is_some() { a.iter().map(half).collect() } else { a.clone() };
+            let fast = gpu.tile_rows(padded, m).is_some();
+            let ar: Vec<f32> = if fast { a.iter().map(half).collect() } else { a.clone() };
             let c = random(m * width, 4);
             let ab = up(gpu, &a);
             for e in epilogues {
@@ -1081,8 +1098,8 @@ mod tests {
                 .map(|i| {
                   let (r, j) = (i / width, i % width);
                   let dot = |j: usize| (0..k).map(|x| ar[r * k + x] * wf[j * k + x]).sum::<f32>();
-                  if j >= 128 {
-                    return b[n + j - 128] + dot(j - 128);
+                  if j >= padded {
+                    return b[n + j - padded] + dot(j - padded);
                   }
                   let v = if j < n { b.get(j).unwrap_or(&0.0) + dot(j) } else { 0.0 };
                   epilogue(e, v, c[i])
@@ -1161,8 +1178,8 @@ mod tests {
       for gpu in gpus() {
         assert!(gpu.linear(std::slice::from_ref(&t), &[]).is_err());
         let l = gpu.conv(file.tensor("w", &[k, n]).unwrap(), &[]).unwrap();
-        let ar: Vec<f32> =
-          if gpu.fast.gemm.is_some() { a.iter().map(half).collect() } else { a.clone() };
+        let fast = gpu.tile_rows(n, m).is_some();
+        let ar: Vec<f32> = if fast { a.iter().map(half).collect() } else { a.clone() };
         let want: Vec<f32> = (0..m * n)
           .map(|i| (0..k).map(|x| ar[i / n * 64 + x] * wf[i % n * k + x]).sum())
           .collect();
