@@ -137,8 +137,9 @@ the `Makefile` and `.github/workflows/main.yml`.
      diff before handing the PR over.
   6. The person does the final review and squash-merges. Never commit or push to `main` directly.
   7. On conflicts, rebase onto `main`, rerun the checks and push with `--force-with-lease`.
-- A release is the one exception: a single `release: vX.Y.Z` commit on `main` with only
-  `changelog.md` and the version bump, without a branch or pull request.
+- A release goes through a PR too: a branch with one `release: vX.Y.Z` commit (changelog
+  written by the person's skill, version bumped), squash-merged; CI then tags it, publishes to
+  crates.io and creates the GitHub release.
 - An orchestrating agent writes each task, verifies every report itself (`make check`, `make test`,
   the diff, benchmarks) instead of trusting it, and keeps the person informed.
 - Report a blocker as soon as you hit it: an unreachable machine, a missing permission or tool, a

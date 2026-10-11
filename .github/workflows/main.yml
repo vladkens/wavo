@@ -10,9 +10,10 @@ on:
 permissions:
   contents: read
 
-# Main runs queue instead, so a dev release is never cut off halfway.
+# Main runs queue instead, so a dev release is never cut off halfway. A newer run replaces a
+# queued one, so a release commit runs in a group of its own and is never dropped.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ startsWith(github.event.head_commit.message, 'release:') && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -66,9 +67,10 @@ jobs:
 
   # Main only: `dev` builds the archives next to `test`, `dev-release` publishes them as the `dev`
   # pre-release once both pass. Two jobs, so the token that can write to the repo never sits on
-  # the machine that runs the build scripts of every dependency.
+  # the machine that runs the build scripts of every dependency. A manual run on a branch builds
+  # the archives and publishes nothing.
   dev:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest # the macOS binary needs a Mac; Linux and Windows cross-compile
     steps:
       - uses: actions/checkout@v7
@@ -85,6 +87,7 @@ jobs:
           path: target/distrib/*
 
   dev-release:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest # no GPU or build here, and Linux runners start faster
     needs: [test, dev]
     permissions:
@@ -121,4 +124,101 @@ jobs:
             gh release edit dev --title "Dev build" --notes "$NOTES"
           else
             gh release create dev target/distrib/* --prerelease --title "Dev build" --notes "$NOTES"
+          fi
+
+  # A `release: vX.Y.Z` commit on main (a release PR's squash, so with ` (#N)`) is released by
+  # two jobs, split like `dev` and `dev-release`. `release-check` builds the crate as
+  # `cargo publish` would, with the read-only token. `release` holds the write rights and builds
+  # nothing: it publishes with `--no-verify` (that build is `release-check`'s) and ships `dev`'s
+  # archives. A rerun skips what an earlier attempt already did.
+  release-check:
+    if: github.event_name == 'push' && startsWith(github.event.head_commit.message, 'release:')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      notes: ${{ steps.notes.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: version
+        name: Check the title against Cargo.toml
+        env:
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          title=$(printf '%s\n' "$MESSAGE" | head -n1 | sed -E 's/ \(#[0-9]+\)$//')
+          tag="v$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          if [ "$title" != "release: $tag" ]; then
+            echo "::error::expected the title 'release: $tag' (from Cargo.toml), got '$title'"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - id: notes
+        name: Take the notes from changelog.md
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          awk -v tag="$TAG" '/^## / { found = ($2 == tag); next } found' changelog.md > notes.md
+          if ! grep -q '^- [^[:space:]]' notes.md; then
+            echo "::error::changelog.md has no '## $TAG' section with changes"
+            exit 1
+          fi
+          { echo 'notes<<END_OF_NOTES'; cat notes.md; echo END_OF_NOTES; } >> "$GITHUB_OUTPUT"
+      - run: cargo publish --dry-run --locked
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [test, dev, release-check]
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write # crates.io Trusted Publishing and attestations
+    env:
+      TAG: ${{ needs.release-check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: tag
+        name: Check the tag
+        run: |
+          sha=$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}" | tail -n1 | cut -f1)
+          if [ -n "$sha" ] && [ "$sha" != "$GITHUB_SHA" ]; then
+            echo "::error::tag $TAG already points to $sha, not $GITHUB_SHA"
+            exit 1
+          fi
+          echo "exists=$([ -n "$sha" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v8
+        with:
+          name: wavo-dev
+          path: target/distrib
+      - name: Name the archives after the version
+        run: |
+          for f in target/distrib/wavo-dev-*; do mv "$f" "${f/wavo-dev-/wavo-$TAG-}"; done
+          ls -l target/distrib
+      - uses: actions/attest@v4
+        with:
+          subject-path: target/distrib/*
+
+      - if: steps.tag.outputs.exists == 'false'
+        run: git push origin "$GITHUB_SHA:refs/tags/$TAG"
+
+      # https://crates.io/docs/trusted-publishing
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          if curl -fsS -o /dev/null -A "wavo-ci (github.com/$GITHUB_REPOSITORY)" "https://crates.io/api/v1/crates/wavo/${TAG#v}"; then
+            echo "wavo ${TAG#v} is already on crates.io"
+          else
+            cargo publish --locked --no-verify
+          fi
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES: ${{ needs.release-check.outputs.notes }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" target/distrib/* --clobber
+          else
+            gh release create "$TAG" target/distrib/* --verify-tag --title "$TAG" --notes "$NOTES"
           fi
