@@ -1,6 +1,6 @@
 [package]
 name = "wavo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Speech-to-text in pure Rust on the GPU (Metal, Vulkan): Parakeet, GigaAM and Whisper, as a library and an ollama-like CLI."
 authors = ["vladkens"]
