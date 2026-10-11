@@ -42,8 +42,9 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **12. Whisper large-v3-turbo, fast.** Warm, first call, load and peak memory at least on par
       with transcribe.cpp on `jfk`, `ru-long` and a ~30 s clip; accuracy and memory over every
       sample the model's languages cover.
-- [ ] **13. Other Whisper variants.** `whisper-medium`, `whisper-large-v3`, `whisper-small`,
-      `Breeze-ASR-25`: config only.
+- [x] **13. Other Whisper variants.** `whisper-tiny`, `-base`, `-small`, `-medium`,
+      `-large-v3`, the `.en` ones, `whisper-large`, `-large-v2` and `Breeze-ASR-25`: config only
+      (80-mel conv padded to K = 256, `.en` prompts with SOT alone). CI tests `whisper-tiny`.
 
 After Whisper: **other engines.** Measure wavo against the other ways to run the same models on a
 Mac, not only transcribe.cpp. Plan: [docs/plans/20261010-other-engines.md](plans/20261010-other-engines.md).
