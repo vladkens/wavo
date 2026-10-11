@@ -49,6 +49,7 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
 | `whisper-small.en` | 0.27 GB | English | cased, punctuated |
 | `whisper-medium.en` | 0.83 GB | English | cased, punctuated |
 | `whisper-large` | 1.67 GB | 99 languages | cased, punctuated |
+| `whisper-large-v2` | 1.67 GB | 99 languages | cased, punctuated |
 
 Parakeet is NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
 GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM), Whisper is OpenAI's

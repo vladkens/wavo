@@ -169,3 +169,8 @@ fn whisper_medium_en() {
 fn whisper_large() {
   check("whisper-large", &["jfk", "zh-short", "ru-long", "uk-short"]);
 }
+
+#[test]
+fn whisper_large_v2() {
+  check("whisper-large-v2", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
+}
