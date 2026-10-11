@@ -67,7 +67,7 @@ the first call matter as much as warm speed.
   guard against crafted or corrupted files.
 - Keep core plus one family (GGUF, GPU, kernels, frontend, encoder, decoder) within ~3k lines of
   Rust and WGSL, tests excluded. The CLI (`src/cli/`) is counted separately and stays lean,
-  roughly ≤ 700 lines: hand-rolled argument parsing, JSON and SRT, no clap or serde. Simplify
+  roughly ≤ 850 lines: hand-rolled argument parsing, JSON and SRT, no clap or serde. Simplify
   before growing past either budget.
 - The library returns its own `Error` enum built with `thiserror`; only the CLI uses `anyhow`.
   Comment only non-obvious data layouts, numeric tricks and model quirks that differ from what the
