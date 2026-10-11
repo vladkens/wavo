@@ -128,7 +128,7 @@ struct Decoder {
 
 #[derive(Default)]
 struct Fast {
-  /// F of the GEMM's F×F cooperative matrices: 8 (Apple) or 16.
+  /// F of the GEMM's F×F cooperative matrices: 8 (Apple) or 16; 0 without the fast GEMM.
   size: usize,
   gemm: Option<Vec<Pipeline>>,
   layer_norm: Option<Pipeline>,
@@ -276,7 +276,7 @@ impl Gpu {
       failure,
     };
     if let (Some(size), Some(compiled)) = (size, compiled) {
-      gpu.fast = Fast { size, ..gpu.probe(compiled) };
+      gpu.fast = gpu.probe(size, compiled);
     }
     Ok(gpu)
   }
@@ -284,7 +284,7 @@ impl Gpu {
   /// Keeps each fast kernel whose probe reports its subgroup layout. With all params zero a
   /// kernel sees an empty problem and writes its layout, `subgroups` of 32 lanes, to its output.
   /// The probes run in one submission; a device error turns them all off.
-  fn probe(&self, compiled: FastPipelines) -> Fast {
+  fn probe(&self, size: usize, compiled: FastPipelines) -> Fast {
     let (gemm, [layer_norm, conv_glu, attention, relative]) = compiled;
     // Per kernel: bindings, the output's, params and subgroups.
     let mut probes: Vec<_> = gemm.into_iter().map(|k| (Some(k), 5, 2, 6, 4.0)).collect();
@@ -324,10 +324,10 @@ impl Gpu {
     });
     let mut next = || kept.next().flatten();
     // All six GEMMs are taken before any is checked, so the kernels after them stay in place.
-    let gemm: Vec<_> = (0..6).map(|_| next()).collect();
+    let gemm: Option<Vec<_>> = (0..6).map(|_| next()).collect();
     Fast {
-      size: 0,
-      gemm: gemm.into_iter().collect(),
+      size: if gemm.is_some() { size } else { 0 },
+      gemm,
       layer_norm: next(),
       conv_glu: next(),
       attention: next(),
