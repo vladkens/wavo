@@ -220,7 +220,7 @@ default SSH rule, so allow both rules on every profile:
 
 ```powershell
 Set-NetFirewallRule -DisplayGroup 'Remote Desktop' -Profile Any -RemoteAddress 192.168.8.0/23
-Set-NetFirewallRule -Name *ssh* -Profile Any -RemoteAddress 192.168.8.0/23
+Set-NetFirewallRule -Name OpenSSH-Server-In-TCP -Profile Any -RemoteAddress 192.168.8.0/23
 Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
 Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
 Set-NetConnectionProfile -InterfaceAlias '<adapter>' -NetworkCategory Private
@@ -228,7 +228,8 @@ Set-NetConnectionProfile -InterfaceAlias '<adapter>' -NetworkCategory Private
 
 On a Mac, connect with Windows App (App Store), signing in with the account's password, not its
 PIN. It needs Local Network access in System Settings, and an outbound firewall such as LuLu must
-allow it to reach the machine on TCP 3389: error 0x4 means the connection never left the Mac.
+allow it to reach the machine on TCP 3389. Error 0x4 is a generic connection failure: when
+`nc -z <host> 3389` works from the Terminal, the block is on the Mac.
 
 </details>
 
