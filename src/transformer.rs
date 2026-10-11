@@ -117,7 +117,7 @@ impl Encoder {
       p.layer_norm(&b.x, &k.norm_attn, &b.y, t, d, None);
       p.gemm(&b.y, &k.qkv, &b.qkv, t, Epilogue::Bias);
       if let Some(table) = rope {
-        p.rope(table, &b.qkv, t, 3 * d, 2 * heads, hd, self.cfg.rot, 0);
+        p.rope(table, &b.qkv, t, 0, [heads, hd, self.cfg.rot]);
       }
       p.attention(&b.qkv, None, None, &b.s, &b.y, t, heads, hd);
       p.gemm(&b.y, &k.out, &b.x, t, Epilogue::Residual(1.0));
@@ -256,7 +256,7 @@ impl Decoder {
       p.layer_norm(&b.x, &l.norm_self, &b.y, 1, d, None);
       p.gemv(&b.y, &l.qkv, &b.qkv, Epilogue::Bias, 0);
       if let Some(table) = rope {
-        p.rope(table, &b.qkv, 1, 3 * d, 2 * heads, hd, self.cfg.rot, pos);
+        p.rope(table, &b.qkv, 1, pos, [heads, hd, self.cfg.rot]);
       }
       // k and v (2·d floats from d) into the cache row `pos`, d words.
       p.pack(&b.qkv, own, d, d, pos * d);

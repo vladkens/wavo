@@ -949,24 +949,14 @@ impl<'a> Pass<'a> {
     }
   }
 
-  /// Rotary embedding in place over `rows` rows of `x`, `stride` floats each, at positions
-  /// `pos..pos + rows`: in each of the first `heads` heads of `head_dim`, the pairs (2i, 2i + 1)
-  /// for 2i < `rot` rotate. The table holds per position `rot` / 2 cosines, then as many sines.
-  #[allow(clippy::too_many_arguments)]
-  pub fn rope(
-    &mut self,
-    table: &Buffer,
-    x: &Buffer,
-    rows: usize,
-    stride: usize,
-    heads: usize,
-    head_dim: usize,
-    rot: usize,
-    pos: usize,
-  ) {
-    let params = [rows, stride, head_dim, 0, rot, 0, heads, pos].map(|v| v as u32);
-    let size = [(heads * rot / 2).div_ceil(256), rows, 1];
-    self.run(&self.gpu.kernels.rope, &[table, x], &params, size);
+  /// Rotary embedding in place over `rows` rows `[q | k | v]` of `heads` heads of `hd`, at
+  /// positions `pos..`: in q's and k's heads the pairs (2i, 2i + 1) for 2i < `rot` rotate. The
+  /// table holds per position `rot` / 2 cosines, then as many sines.
+  pub fn rope(&mut self, table: &Buffer, qkv: &Buffer, rows: usize, pos: usize, shape: [usize; 3]) {
+    let [heads, hd, rot] = shape;
+    let params = [rows, 3 * heads * hd, hd, 0, rot, 0, 2 * heads, pos].map(|v| v as u32);
+    let size = [(heads * rot).div_ceil(256), rows, 1];
+    self.run(&self.gpu.kernels.rope, &[table, qkv], &params, size);
   }
 
   /// GroupNorm with one group, in place over `x` `[t][ch]`: normalized over all its values, then
@@ -1547,7 +1537,7 @@ mod tests {
       .collect();
     for gpu in gpus() {
       let tb = up(gpu, &table);
-      let got = run(gpu, &x, |p, xb| p.rope(&tb, xb, rows, stride, 2 * heads, hd, rot, pos));
+      let got = run(gpu, &x, |p, xb| p.rope(&tb, xb, rows, pos, [heads, hd, rot]));
       assert_close(&got, &want);
     }
   }
