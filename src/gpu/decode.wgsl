@@ -21,7 +21,7 @@ var<immediate> p: Params;
 @group(0) @binding(1) var<storage, read> at_kv: array<u32>;
 @group(0) @binding(2) var<storage, read_write> at_o: array<f32>;
 
-// Up to 2048 keys and head_dim 128.
+// Blocks of 2048 keys, head_dim up to 128.
 var<workgroup> q: array<f32, 128>;
 var<workgroup> s: array<f32, 2048>;
 var<workgroup> rs: array<f32, 256>;
@@ -47,7 +47,8 @@ fn reduce(v: f32, lid: u32, is_max: bool) -> f32 {
 }
 
 // One workgroup per head: scores of the head's query against keys 0..n, softmax, the weighted sum
-// of V. The query is rounded to f16, as the reference's flash attention stores it.
+// of V, in blocks of 2048 keys with an online softmax (over one block it is the plain one). The
+// query is rounded to f16, as the reference's flash attention stores it.
 @compute @workgroup_size(256)
 fn attend(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
   let hd = p.head_dim;
@@ -57,34 +58,44 @@ fn attend(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index)
     q[i] = unpack2x16float(pack2x16float(vec2(at_q[h * hd + i], 0.0))).x;
   }
   workgroupBarrier();
-  var mx = -3.0e38;
-  for (var j = lid; j < p.n; j += 256u) {
-    let base = j * p.stride + h * pairs;
-    var acc = 0.0;
-    for (var c = 0u; c < pairs; c++) {
-      let k = unpack2x16float(at_kv[base + c]);
-      acc += q[2u * c] * k.x + q[2u * c + 1u] * k.y;
-    }
-    s[j] = acc * p.scale;
-    mx = max(mx, s[j]);
-  }
-  mx = reduce(mx, lid, true);
-  var sum = 0.0;
-  for (var j = lid; j < p.n; j += 256u) {
-    let e = exp(s[j] - mx);
-    s[j] = e;
-    sum += e;
-  }
-  sum = reduce(sum, lid, false);
   // Thread (g, c) sums V pair c over keys g, g + groups, ...
   let groups = 256u / pairs;
   let c = lid % pairs;
   let g = lid / pairs;
   var o = vec2(0.0);
-  if (g < groups) {
-    for (var j = g; j < p.n; j += groups) {
-      o += s[j] * unpack2x16float(at_kv[j * p.stride + p.v_offset + h * pairs + c]);
+  var mx = -3.0e38;
+  var sum = 0.0;
+  for (var j0 = 0u; j0 < p.n; j0 += 2048u) {
+    let n = min(p.n - j0, 2048u);
+    var bm = -3.0e38;
+    for (var j = lid; j < n; j += 256u) {
+      let base = (j0 + j) * p.stride + h * pairs;
+      var acc = 0.0;
+      for (var x = 0u; x < pairs; x++) {
+        let k = unpack2x16float(at_kv[base + x]);
+        acc += q[2u * x] * k.x + q[2u * x + 1u] * k.y;
+      }
+      s[j] = acc * p.scale;
+      bm = max(bm, s[j]);
     }
+    let m = max(mx, reduce(bm, lid, true));
+    // The sum and output so far, rescaled to the new maximum (to 0 before the first block).
+    let f = exp(mx - m);
+    mx = m;
+    var bs = 0.0;
+    for (var j = lid; j < n; j += 256u) {
+      let e = exp(s[j] - m);
+      s[j] = e;
+      bs += e;
+    }
+    sum = sum * f + reduce(bs, lid, false);
+    o *= f;
+    if (g < groups) {
+      for (var j = g; j < n; j += groups) {
+        o += s[j] * unpack2x16float(at_kv[(j0 + j) * p.stride + p.v_offset + h * pairs + c]);
+      }
+    }
+    workgroupBarrier();
   }
   rv[lid] = o;
   workgroupBarrier();

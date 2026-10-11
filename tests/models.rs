@@ -36,7 +36,7 @@ fn read_wav(path: &Path) -> Vec<f32> {
 /// `  [   0.96 ->    1.00] p=0.000 ▁В`, or only `text: (empty)`. Pieces come with `▁` as a space,
 /// as the reference prints some of them. Whisper fixtures have `segments: N` and lines
 /// `  [   0.00 ->   10.40] text` instead: then the pairs are segment texts and starts. A block with
-/// only a non-empty `text: ...` checks the text alone: no tokens.
+/// only a non-empty `text: ...` checks the text alone and that the pieces make it.
 fn read_fixture(name: &str, sample: &str) -> (String, Option<Vec<(String, u32)>>, bool) {
   let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}.txt"));
   let fixture = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
@@ -76,7 +76,12 @@ fn check(name: &str, samples: &[&str]) {
     let (text, tokens, segments) = read_fixture(name, sample);
     let got = model.transcribe(&pcm).unwrap();
     assert_eq!(got.text, text, "{name} {sample}: text");
-    let Some(tokens) = tokens else { continue };
+    let Some(tokens) = tokens else {
+      // Text only (Moonshine): the pieces make the text, but for one leading space.
+      let joined: String = got.tokens.iter().map(|t| t.piece.replace('▁', " ")).collect();
+      assert_eq!(joined.strip_prefix(' ').unwrap_or(&joined), text, "{name} {sample}: pieces");
+      continue;
+    };
     let mut got: Vec<(String, u32)> =
       got.tokens.into_iter().map(|t| (t.piece.replace('▁', " "), t.start_ms)).collect();
     if segments {
@@ -190,4 +195,14 @@ fn whisper_large_v2() {
 #[test]
 fn breeze_asr_25() {
   check("Breeze-ASR-25", &["jfk", "zh-short", "zh-long", "jobs-silence"]);
+}
+
+#[test]
+fn moonshine_tiny() {
+  check("moonshine-tiny", &["jfk", "dots", "jobs-silence"]);
+}
+
+#[test]
+fn moonshine_base() {
+  check("moonshine-base", &["jfk", "dots", "jobs-silence"]);
 }

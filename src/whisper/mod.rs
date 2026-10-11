@@ -3,15 +3,13 @@
 //! search with segment timestamps on the CPU. Audio runs in 30 s windows, the next one starting
 //! where the last segment closed, as transcribe.cpp does for every input length.
 
-mod decoder;
 mod encoder;
 mod frontend;
 mod search;
-mod tokenizer;
+pub(crate) mod tokenizer;
 
 use std::sync::{Mutex, PoisonError};
 
-use decoder::Decoder;
 use encoder::Encoder;
 use frontend::{Frontend, HOP, N_FFT, SAMPLES};
 use search::Ids;
@@ -20,6 +18,7 @@ use tokenizer::Tokenizer;
 use crate::error::{Result, bail};
 use crate::gguf::Gguf;
 use crate::gpu::{Buffer, Gpu, Groups};
+use crate::transformer::{self, Decoder, Steps};
 use crate::{Token, Transcript};
 
 /// The no-speech skip: a window is dropped when the no-speech probability is above this and the
@@ -44,7 +43,7 @@ pub struct Whisper {
 /// Activations, caches and the bind groups recorded over them, one list per kind of pass.
 struct Arena {
   enc: encoder::Buffers,
-  dec: decoder::Buffers,
+  dec: Steps,
   read: Buffer,
   window: Groups,
   steps: Groups,
@@ -77,32 +76,30 @@ impl Whisper {
     g.check("stt.whisper.decoder.tie_word_embeddings", &[true])?;
     g.check("stt.whisper.decoder.scale_embedding", &[false])?;
     let d = u("encoder.d_model")?;
-    let enc = encoder::Config {
-      mels: u("encoder.num_mel_bins")?,
-      d,
-      heads: u("encoder.n_heads")?,
-      layers: u("encoder.n_layers")?,
-      d_ff: u("encoder.ffn_dim")?,
-      frames: SAMPLES / HOP / 2,
+    let config = |part: &str| {
+      let key = |name: &str| u(&format!("{part}.{name}"));
+      Ok::<_, crate::Error>(transformer::Config {
+        d: key("d_model")?,
+        heads: key("n_heads")?,
+        layers: key("n_layers")?,
+        d_ff: key("ffn_dim")?,
+        bias: true,
+        rot: 0,
+        gated: false,
+      })
     };
-    let dec = decoder::Config {
-      d: u("decoder.d_model")?,
-      heads: u("decoder.n_heads")?,
-      layers: u("decoder.n_layers")?,
-      d_ff: u("decoder.ffn_dim")?,
-      vocab: u("decoder.vocab_size")?,
-      context: u("decoder.max_target_positions")?,
-    };
-    // The kernels keep a head of up to 64 (flash attention) and 2048 keys.
+    let (enc, dec) = (config("encoder")?, config("decoder")?);
+    let (vocab, context) = (u("decoder.vocab_size")?, u("decoder.max_target_positions")?);
+    // The flash kernel takes a head of up to 64.
     for heads in [enc.heads, dec.heads] {
       let hd = d / heads.max(1);
-      if dec.d != d || hd * heads != d || hd > 64 || !hd.is_multiple_of(8) || dec.context > 2048 {
-        bail!("unsupported shape: d_model {d}, {heads} heads, {} positions", dec.context);
+      if dec.d != d || hd * heads != d || hd > 64 || !hd.is_multiple_of(8) {
+        bail!("unsupported shape: d_model {d}, {heads} heads");
       }
     }
     let tok = Tokenizer::new(g)?;
-    if tok.len() != dec.vocab {
-      bail!("vocabulary of {} tokens, decoder.vocab_size {}", tok.len(), dec.vocab);
+    if tok.len() != vocab {
+      bail!("vocabulary of {} tokens, decoder.vocab_size {vocab}", tok.len());
     }
     let list = |key: &str| g.array::<i32>(key).map(|v| v.iter().map(|&i| i as usize).collect());
     let no_timestamps = u("no_timestamps_token_id")?;
@@ -122,19 +119,20 @@ impl Whisper {
     };
     let Some(languages) = languages else { bail!("a language of general.languages has no token") };
     let all = [&ids.suppress[..], &ids.begin_suppress, &languages, &[ids.eot, no_timestamps]];
-    if all.iter().flat_map(|v| v.iter()).any(|&i| i >= dec.vocab) {
+    if all.iter().flat_map(|v| v.iter()).any(|&i| i >= vocab) {
       bail!("special token ids out of the vocabulary");
     }
 
     let gpu = Gpu::new(true)?;
-    let frontend = Frontend::new(g, enc.mels)?;
-    let encoder = Encoder::load(&gpu, g, enc)?;
-    let decoder = Decoder::load(&gpu, g, dec)?;
+    let mels = u("encoder.num_mel_bins")?;
+    let frontend = Frontend::new(g, mels)?;
+    let encoder = Encoder::load(&gpu, g, encoder::Config { mels, frames: SAMPLES / HOP / 2 }, enc)?;
+    let decoder = Decoder::load(&gpu, g, dec, vocab, context)?;
     let frames = encoder.cfg.frames;
     let arena = Arena {
       enc: encoder.buffers(&gpu),
-      dec: decoder.buffers(&gpu, frames),
-      read: gpu.readback(decoder.cfg.vocab),
+      dec: decoder.steps(&gpu, frames),
+      read: gpu.readback(vocab),
       window: Vec::new(),
       steps: Vec::new(),
     };
@@ -191,7 +189,7 @@ impl Whisper {
       }
       let (segments, advance) = search::retrieve(&self.ids, &generated, frames);
       for s in segments {
-        let pieces = tokenizer::pieces(&self.tok, &s.text);
+        let pieces = tokenizer::pieces(|id| self.tok.bytes(id), &s.text);
         if tokenizer::trim(&pieces.concat()).is_empty() {
           continue;
         }
@@ -215,11 +213,11 @@ impl Whisper {
     let Arena { enc, dec, read, window, .. } = a;
     let t = self.encoder.cfg.frames;
     self.gpu.write(&enc.mel, mel);
-    self.gpu.write(&enc.x, &self.encoder.positions);
-    self.gpu.run(window, &dec.logits, read, self.decoder.cfg.vocab, |p| {
+    self.gpu.write(&enc.t.x, &self.encoder.positions);
+    self.gpu.run(window, &dec.logits, read, self.decoder.vocab, |p| {
       self.encoder.record(p, enc, t);
-      self.decoder.record_cross(p, dec, &enc.y, &enc.h, t);
-      self.decoder.record_step(p, dec, self.sot, 0, t);
+      self.decoder.record_cross(p, dec, &enc.t.y, &enc.t.h, t);
+      self.decoder.record_step(p, dec, self.sot, 0, t, None);
     })
   }
 
@@ -228,9 +226,9 @@ impl Whisper {
   fn steps(&self, a: &mut Arena, tokens: &[usize], pos: usize) -> Result<Vec<f32>> {
     let frames = self.encoder.cfg.frames;
     let Arena { dec, read, steps, .. } = a;
-    self.gpu.run(steps, &dec.logits, read, self.decoder.cfg.vocab, |p| {
+    self.gpu.run(steps, &dec.logits, read, self.decoder.vocab, |p| {
       for (i, &token) in tokens.iter().enumerate() {
-        self.decoder.record_step(p, dec, token, pos + i, frames);
+        self.decoder.record_step(p, dec, token, pos + i, frames, None);
       }
     })
   }

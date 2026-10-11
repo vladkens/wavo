@@ -13,11 +13,11 @@
 //! Speech-to-text on the GPU, in pure Rust.
 //!
 //! wavo runs the open ASR models that [transcribe.cpp] publishes as GGUF files on Hugging Face:
-//! NVIDIA's Parakeet, Sber's GigaAM and OpenAI's Whisper, with the same text and timestamps as
-//! transcribe.cpp. The encoder runs on the GPU through wgpu (Metal on Apple Silicon, Vulkan on
-//! Linux and Windows) with wavo's own kernels; the audio frontend runs on the CPU, and so does the
-//! decoder except Whisper's. It builds with a plain `cargo build`: no C++ toolchain, Python or
-//! ONNX Runtime.
+//! NVIDIA's Parakeet, Sber's GigaAM, OpenAI's Whisper and Useful Sensors' Moonshine, with the same
+//! text and timestamps as transcribe.cpp. The encoder runs on the GPU through wgpu (Metal on Apple
+//! Silicon, Vulkan on Linux and Windows) with wavo's own kernels; the audio frontend runs on the
+//! CPU, and so does the decoder except Whisper's and Moonshine's. It builds with a plain `cargo
+//! build`: no C++ toolchain, Python or ONNX Runtime.
 //!
 //! [transcribe.cpp]: https://github.com/handy-computer/transcribe.cpp
 //!
@@ -56,6 +56,8 @@
 //! | `whisper-large` | `whisper-large` | 1.67 GB | 99 languages | cased, punctuated |
 //! | `whisper-large-v2` | `whisper-large-v2` | 1.67 GB | 99 languages | cased, punctuated |
 //! | `breeze-asr-25` | `Breeze-ASR-25` | 1.67 GB | Taiwanese Mandarin and English | cased, punctuated |
+//! | `moonshine-tiny` | `moonshine-tiny` | 0.04 GB | English | cased, punctuated |
+//! | `moonshine-base` | `moonshine-base` | 0.08 GB | English | cased, punctuated |
 //!
 //! A model `<full name>` lives in the Hugging Face repository `handy-computer/<full name>-gguf`
 //! as `<full name>-Q8_0.gguf`.
@@ -164,7 +166,9 @@ mod gpu;
 #[cfg(feature = "hub")]
 #[cfg_attr(docsrs, doc(cfg(feature = "hub")))]
 pub mod hub;
+mod moonshine;
 mod parakeet;
+mod transformer;
 mod whisper;
 
 use std::path::Path;
@@ -183,6 +187,7 @@ enum Family {
   Gigaam(Box<gigaam::Gigaam>),
   Parakeet(Box<parakeet::Parakeet>),
   Whisper(Box<whisper::Whisper>),
+  Moonshine(Box<moonshine::Moonshine>),
 }
 
 /// The text of a recording and the tokens it is made of.
@@ -202,11 +207,12 @@ pub struct Token {
   /// Id in the model's vocabulary.
   pub id: u32,
   /// Vocabulary piece: a SentencePiece piece (`▁` marks a word start), a character, or for
-  /// Whisper the text the token completes (its bytes may end inside a character).
+  /// Whisper and Moonshine's byte tokens the text the token completes (its bytes may end inside a
+  /// character).
   pub piece: String,
   /// Start time in milliseconds from the start of the audio: the encoder frame where the token
   /// was emitted times the frame length (40 ms for GigaAM, 80 ms for Parakeet); for Whisper the
-  /// start of its segment.
+  /// start of its segment; 0 for Moonshine, which has no timestamps.
   pub start_ms: u32,
 }
 
@@ -219,8 +225,8 @@ impl Model {
   /// # Errors
   ///
   /// - [`Error::Io`]: the file can't be read.
-  /// - [`Error::Model`]: not a GGUF, an architecture other than `gigaam`, `parakeet` and `whisper`,
-  ///   or a missing or mismatched tensor or metadata key.
+  /// - [`Error::Model`]: not a GGUF, an architecture other than `gigaam`, `parakeet`, `whisper` and
+  ///   `moonshine`, or a missing or mismatched tensor or metadata key.
   /// - [`Error::Adapter`], [`Error::Device`]: no GPU, or not one the model can run on.
   ///
   /// # Examples
@@ -235,9 +241,10 @@ impl Model {
       "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g)?)),
       "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g)?)),
       "whisper" => Family::Whisper(Box::new(whisper::Whisper::load(&g)?)),
-      arch => {
-        bail!("general.architecture is {arch:?}, only gigaam, parakeet and whisper are supported")
-      }
+      "moonshine" => Family::Moonshine(Box::new(moonshine::Moonshine::load(&g)?)),
+      arch => bail!(
+        "general.architecture is {arch:?}, only gigaam, parakeet, whisper and moonshine are supported"
+      ),
     }))
   }
 
@@ -265,18 +272,22 @@ impl Model {
       Family::Gigaam(m) => m.transcribe(pcm),
       Family::Parakeet(m) => m.transcribe(pcm),
       Family::Whisper(m) => m.transcribe(pcm),
+      Family::Moonshine(m) => m.transcribe(pcm),
     }
   }
 
   /// The longest audio, in milliseconds, the model was trained on: 25 000 for GigaAM, 30 000 for
-  /// Whisper. Longer audio still runs, but accuracy degrades, so split it into segments up to this
-  /// length. `None` for Parakeet, which has no such window.
+  /// Whisper and Moonshine. Longer audio still runs, but accuracy degrades, so split it into
+  /// segments up to this length. `None` for Parakeet, which has no such window.
   pub fn max_audio_ms(&self) -> Option<u32> {
     match &self.0 {
       // No GGUF key holds GigaAM's window; transcribe.cpp hardcodes the same 25 s.
       Family::Gigaam(_) => Some(25_000),
       // Its window; `transcribe` still takes any length in 30 s windows, as transcribe.cpp does.
       Family::Whisper(_) => Some(30_000),
+      // transcribe.cpp advises 48.5 s (194 tokens at 4 per second); 30 s keeps a piece well under
+      // the 194-token cap at faster speech.
+      Family::Moonshine(_) => Some(30_000),
       Family::Parakeet(_) => None,
     }
   }

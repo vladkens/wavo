@@ -34,7 +34,8 @@ Run options:
   --json                       print the text and its tokens with start times as JSON
   --srt                        print subtitles
   --segment SECS               split longer audio at pauses into parts of up to SECS
-                               (25 for GigaAM, 30 for Whisper, else 60; 0 for one pass)
+                               (25 for GigaAM, 30 for Whisper and Moonshine, else 60;
+                               0 for one pass)
   -y, --yes                    download a missing model without asking
 
 MODEL is a name below, its full name or a path to a .gguf file. AUDIO is wav, mp3, m4a, flac
@@ -187,8 +188,8 @@ fn run(args: &[&str]) -> Result<()> {
   let (tokens, ms) = (&transcript.tokens, (pcm.len() / 16) as u32);
   match format {
     Some("--json") => println!("{}", output::json(&transcript)),
-    // Whisper times segments, not tokens.
-    Some(_) if models::architecture(&path).as_deref() == Some("whisper") => {
+    // Whisper times segments, not tokens, and Moonshine neither.
+    Some(_) if matches!(models::architecture(&path).as_deref(), Some("whisper" | "moonshine")) => {
       print!("{}", output::srt_segments(tokens, ms))
     }
     Some(_) => print!("{}", output::srt(tokens, &starts, ms)),

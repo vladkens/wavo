@@ -53,14 +53,15 @@ clean:
 
 MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
 	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 \
-	whisper-large-v3-turbo whisper-tiny whisper-base whisper-small whisper-medium whisper-large-v3 whisper-tiny.en whisper-base.en whisper-small.en whisper-medium.en whisper-large whisper-large-v2 Breeze-ASR-25
+	whisper-large-v3-turbo whisper-tiny whisper-base whisper-small whisper-medium whisper-large-v3 whisper-tiny.en whisper-base.en whisper-small.en whisper-medium.en whisper-large whisper-large-v2 Breeze-ASR-25 \
+	moonshine-tiny moonshine-base
 # CI downloads and tests (by these names in tests/models.rs) only the smallest model of each
 # family; switch when a smaller one is added. `make test` covers them all.
 # CI caches the downloads under a key made from this line, so keep it on one line.
-CI_MODELS := gigaam-v3-e2e-rnnt parakeet-tdt-0.6b-v3 whisper-tiny
-CI_TESTS := gigaam_v3_e2e_rnnt parakeet_tdt_v3 whisper_tiny
+CI_MODELS := gigaam-v3-e2e-rnnt parakeet-tdt-0.6b-v3 whisper-tiny moonshine-tiny
+CI_TESTS := gigaam_v3_e2e_rnnt parakeet_tdt_v3 whisper_tiny moonshine_tiny
 REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
-# Whisper has segment timestamps only: TIMESTAMPS=segment.
+# Whisper has segment timestamps only: TIMESTAMPS=segment; Moonshine none: TIMESTAMPS=none.
 TIMESTAMPS := token
 
 # Unit tests and doc examples only: no models or 3rd/ needed.

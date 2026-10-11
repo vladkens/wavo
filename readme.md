@@ -53,11 +53,16 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
 | `whisper-large` | 1.67 GB | 99 languages | cased, punctuated |
 | `whisper-large-v2` | 1.67 GB | 99 languages | cased, punctuated |
 | `breeze-asr-25` | 1.67 GB | Taiwanese Mandarin and English | cased, punctuated |
+| `moonshine-tiny` | 0.04 GB | English | cased, punctuated |
+| `moonshine-base` | 0.08 GB | English | cased, punctuated |
 
 Parakeet is NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
 GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM), Whisper is OpenAI's
-[Whisper](https://huggingface.co/openai/whisper-large-v3-turbo) and Breeze-ASR-25 is MediaTek
-Research's [Whisper large-v2 fine-tune](https://huggingface.co/MediaTek-Research/Breeze-ASR-25).
+[Whisper](https://huggingface.co/openai/whisper-large-v3-turbo), Breeze-ASR-25 is MediaTek
+Research's [Whisper large-v2 fine-tune](https://huggingface.co/MediaTek-Research/Breeze-ASR-25)
+and Moonshine is Useful Sensors' [Moonshine](https://huggingface.co/UsefulSensors/moonshine-tiny),
+small and fast. Moonshine has no timestamps: its tokens all start at 0, and `--srt` gives one cue
+per piece of the split audio.
 Short names stand for the published ones: `parakeet-v3` is `parakeet-tdt-0.6b-v3`, `parakeet-v2`
 is `parakeet-tdt-0.6b-v2`, `gigaam-v3` is `gigaam-v3-e2e-rnnt`, `whisper-turbo` is
 `whisper-large-v3-turbo` and `breeze-asr-25` is `Breeze-ASR-25`; full names and a path to a
@@ -171,7 +176,7 @@ for token in &transcript.tokens {
 The `hub` feature downloads models by name (it adds an HTTP client); leave it out to load `.gguf`
 files you fetch yourself, with a pure Rust build. Decoding and resampling audio and splitting long
 recordings are up to you: `model.max_audio_ms()` tells how long a piece the model was trained on
-(25 s for GigaAM, 30 s for Whisper). The [API docs](https://docs.rs/wavo) have the details,
+(25 s for GigaAM, 30 s for Whisper and Moonshine). The [API docs](https://docs.rs/wavo) have the details,
 including downloading on a thread with progress and cancel, as
 [examples/hub.rs](examples/hub.rs) does.
 

@@ -186,6 +186,109 @@ fn softmax(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index
   }
 }
 
+// Rotary embedding in place over rows x [t][ch], GPT-J style (`GGML_ROPE_TYPE_NORMAL`): in each of
+// the first p.stride heads of head_dim, the pairs (2i, 2i + 1) for 2i < p.kernel rotate by the
+// angle of row r's position p.pad + r. The table holds per position p.kernel / 2 cosines, then as
+// many sines.
+
+@group(0) @binding(0) var<storage, read> rp_table: array<f32>;
+@group(0) @binding(1) var<storage, read_write> rp_x: array<f32>;
+
+@compute @workgroup_size(256)
+fn rotary(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+  let half = p.kernel / 2u;
+  let e = wg.x * 256u + lid;
+  if (e >= p.stride * half) {
+    return;
+  }
+  let i = e % half;
+  let o = wg.y * p.ch + e / half * p.head_dim + 2u * i;
+  let row = (p.pad + wg.y) * p.kernel;
+  let c = rp_table[row + i];
+  let s = rp_table[row + half + i];
+  let x0 = rp_x[o];
+  let x1 = rp_x[o + 1u];
+  rp_x[o] = x0 * c - x1 * s;
+  rp_x[o + 1u] = x0 * s + x1 * c;
+}
+
+// GroupNorm with one group, in place over x [t][ch] as one workgroup: the mean and variance of all
+// t·ch values, then (x − mean)/√(var + eps) · w[c] + b[c], eps in p.scale.
+
+@group(0) @binding(0) var<storage, read_write> gn_x: array<f32>;
+@group(0) @binding(1) var<storage, read> gn_w: array<f32>;
+@group(0) @binding(2) var<storage, read> gn_b: array<f32>;
+
+@compute @workgroup_size(256)
+fn group_norm(@builtin(local_invocation_index) lid: u32) {
+  let n = p.t * p.ch;
+  var s = 0.0;
+  for (var i = lid; i < n; i += 256u) {
+    s += gn_x[i];
+  }
+  let mean = reduce(s, lid, false) / f32(n);
+  var q = 0.0;
+  for (var i = lid; i < n; i += 256u) {
+    let d = gn_x[i] - mean;
+    q += d * d;
+  }
+  let rstd = 1.0 / sqrt(reduce(q, lid, false) / f32(n) + p.scale);
+  for (var i = lid; i < n; i += 256u) {
+    gn_x[i] = (gn_x[i] - mean) * rstd * gn_w[i % p.ch] + gn_b[i % p.ch];
+  }
+}
+
+// SwiGLU over rows h [t][2·ch]: y [t][ch] = SiLU(gate) · x, x the first half, gate the second.
+
+@group(0) @binding(0) var<storage, read> sw_h: array<f32>;
+@group(0) @binding(1) var<storage, read_write> sw_y: array<f32>;
+
+@compute @workgroup_size(256)
+fn swiglu(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+  let c = wg.x * 256u + lid;
+  if (c >= p.ch) {
+    return;
+  }
+  let base = wg.y * 2u * p.ch;
+  let g = sw_h[base + p.ch + c];
+  sw_y[wg.y * p.ch + c] = g / (1.0 + exp(-g)) * sw_h[base + c];
+}
+
+// The index of the largest of x[0..p.t], the lowest one on a tie, as the bits of am_out[0].
+
+@group(0) @binding(0) var<storage, read> am_x: array<f32>;
+@group(0) @binding(1) var<storage, read_write> am_out: array<u32>;
+
+var<workgroup> at: array<u32, 256>;
+
+@compute @workgroup_size(256)
+fn argmax(@builtin(local_invocation_index) lid: u32) {
+  var best = -3.0e38;
+  var id = 0xffffffffu;
+  for (var i = lid; i < p.t; i += 256u) {
+    if (am_x[i] > best) {
+      best = am_x[i];
+      id = i;
+    }
+  }
+  red[lid] = best;
+  at[lid] = id;
+  workgroupBarrier();
+  for (var s = 128u; s > 0u; s >>= 1u) {
+    if (lid < s) {
+      let v = red[lid + s];
+      if (v > red[lid] || v == red[lid] && at[lid + s] < at[lid]) {
+        red[lid] = v;
+        at[lid] = at[lid + s];
+      }
+    }
+    workgroupBarrier();
+  }
+  if (lid == 0u) {
+    am_out[0] = at[0];
+  }
+}
+
 // Writes the call's number p.ch to slot p.t of mk_marks once mk_after (bound only to order this
 // after its last writer) is written: proof that a submission ran to its end.
 

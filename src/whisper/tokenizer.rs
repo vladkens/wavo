@@ -54,14 +54,14 @@ impl Tokenizer {
   }
 }
 
-/// Splits the bytes of `ids` into one piece per token: a character goes to the token that completes
-/// it, so the pieces are valid UTF-8 (some empty) and concatenate to the decoded text. Bytes that
-/// are not UTF-8 become U+FFFD.
-pub fn pieces(tok: &Tokenizer, ids: &[usize]) -> Vec<String> {
+/// Splits the bytes of `ids` (`bytes(id)` each) into one piece per token: a character goes to the
+/// token that completes it, so the pieces are valid UTF-8 (some empty) and concatenate to the
+/// decoded text. Bytes that are not UTF-8 become U+FFFD.
+pub fn pieces<'a>(bytes: impl Fn(usize) -> &'a [u8], ids: &[usize]) -> Vec<String> {
   let mut pending = Vec::new();
   let mut out: Vec<String> = Vec::with_capacity(ids.len());
   for &id in ids {
-    pending.extend_from_slice(tok.bytes(id));
+    pending.extend_from_slice(bytes(id));
     let done = match std::str::from_utf8(&pending) {
       Ok(_) => pending.len(),
       // An incomplete character at the end waits for the next token; anything else is invalid.
@@ -95,9 +95,10 @@ mod tests {
       t.bytes.extend_from_slice(r);
       t.ends.push(t.bytes.len());
     }
-    assert_eq!(pieces(&t, &[0, 1, 2]), ["", "日", " a"]);
-    assert_eq!(pieces(&t, &[2, 0]), [" a", "\u{fffd}"]);
-    assert_eq!(pieces(&t, &[3, 2]), ["\u{fffd}", " a"]);
+    let bytes = |id| t.bytes(id);
+    assert_eq!(pieces(bytes, &[0, 1, 2]), ["", "日", " a"]);
+    assert_eq!(pieces(bytes, &[2, 0]), [" a", "\u{fffd}"]);
+    assert_eq!(pieces(bytes, &[3, 2]), ["\u{fffd}", " a"]);
     assert_eq!(t.find(" a"), Some(2));
     assert_eq!(trim("\t x \n"), "x");
   }

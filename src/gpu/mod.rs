@@ -52,6 +52,10 @@ struct Kernels {
   depthwise: Pipeline,
   first_depthwise: Pipeline,
   flatten: Pipeline,
+  rope: Pipeline,
+  group_norm: Pipeline,
+  swiglu: Pipeline,
+  argmax: Pipeline,
   mark: Pipeline,
   gemm_module: wgpu::ShaderModule,
   /// Compiled on first use: only encoder–decoder models need them.
@@ -75,6 +79,10 @@ impl Kernels {
       depthwise: pipeline(device, &spatial, "depthwise", &[]),
       first_depthwise: pipeline(device, &spatial, "first_depthwise", &[]),
       flatten: pipeline(device, &spatial, "flatten", &[]),
+      rope: pipeline(device, &ops, "rotary", &[]),
+      group_norm: pipeline(device, &ops, "group_norm", &[]),
+      swiglu: pipeline(device, &ops, "swiglu", &[]),
+      argmax: pipeline(device, &ops, "argmax", &[]),
       mark: pipeline(device, &ops, "mark", &[]),
       gemm_module: gemm,
       decoder: OnceLock::new(),
@@ -142,7 +150,10 @@ struct Fast {
 /// A linear layer `y = x·Wᵀ + b` with `W` row-major `[n][k]`, kept in its GGUF type. Q8_0 is
 /// stored as int8 data (4 per u32, row-major) plus one f16 scale per 32-weight block.
 pub struct Linear {
+  /// Rows of `W`, padded to a multiple of 64 for the tile reads.
   n: usize,
+  /// Output columns: the rows of `W` when a multiple of 32, else `n`.
+  cols: usize,
   k: usize,
   /// Outputs written a second time after the n others, with their own bias.
   dual: usize,
@@ -154,9 +165,10 @@ pub struct Linear {
 }
 
 impl Linear {
-  /// Output columns: the rows of `W` padded to a multiple of 64, and the dual outputs.
+  /// Output columns: the rows of `W` (padded to a multiple of 64 unless a multiple of 32), and
+  /// the dual outputs.
   pub fn width(&self) -> usize {
-    self.n + self.dual
+    self.cols + self.dual
   }
 }
 
@@ -185,6 +197,7 @@ pub enum Epilogue {
   Gelu,
   /// `c += GELU(a·Wᵀ + b)`
   GeluResidual,
+  Tanh,
 }
 
 impl Epilogue {
@@ -197,6 +210,7 @@ impl Epilogue {
       Epilogue::Residual(alpha) => [3, alpha.to_bits()],
       Epilogue::Gelu => [4, 0],
       Epilogue::GeluResidual => [5, 0],
+      Epilogue::Tanh => [6, 0],
     }
   }
 }
@@ -382,7 +396,8 @@ impl Gpu {
 
   /// Uploads weights `[.., n_i]` of one type and inner size, stacked along n, with the bias of
   /// the stacked rows, or zeros when `bias` is empty. The GEMM computes 64 outputs at a time, so
-  /// the rows are padded with zeros to a multiple of 64; the extra outputs are `epilogue(0)`. A
+  /// the rows are padded with zeros to a multiple of 64. Outputs past the rows are not written
+  /// when the rows are a multiple of 32 (d 288), else they are `epilogue(0)` up to the padding. A
   /// bias with `dual` more values has the first `dual` outputs written again after the others
   /// with those biases (one q with two position biases).
   pub fn linear(&self, weights: &[Tensor], bias: &[f32]) -> Result<Linear> {
@@ -409,6 +424,7 @@ impl Gpu {
     }
     // Buffers start zeroed, so the padding rows only need the space.
     let n = rows.next_multiple_of(64);
+    let cols = if rows.is_multiple_of(32) { rows } else { n };
     let kp = k.next_multiple_of(32);
     // The file is streamed in pieces of 8192 Q8_0 blocks straight into the mapped buffers.
     const PIECE: usize = 34 << 13;
@@ -466,10 +482,10 @@ impl Gpu {
       bail!("linear layer {k}→{rows}: bias has {} values", bias.len());
     }
     let (own, second) = bias.split_at(bias.len() - dual);
-    let mut padded = vec![0.0; n + dual];
+    let mut padded = vec![0.0; n.max(cols + dual)];
     padded[..own.len()].copy_from_slice(own);
-    padded[n..].copy_from_slice(second);
-    Ok(Linear { n, k: kp, dual, ty, weight, scales, bias: self.upload(&padded)? })
+    padded[cols..cols + dual].copy_from_slice(second);
+    Ok(Linear { n, cols, k: kp, dual, ty, weight, scales, bias: self.upload(&padded)? })
   }
 
   pub fn channels(&self, w: &[f32], b: &[f32]) -> Result<Channels> {
@@ -758,7 +774,7 @@ impl<'a> Pass<'a> {
   pub fn gemm(&mut self, a: &Buffer, l: &Linear, c: &Buffer, m: usize, epilogue: Epilogue) {
     let gpu = self.gpu;
     let [mode, alpha] = epilogue.params();
-    let params = [m as u32, l.n as u32, l.k as u32, mode, alpha, l.dual as u32];
+    let params = [m as u32, l.cols as u32, l.k as u32, mode, alpha, l.dual as u32];
     // Only Q8_0 reads scales; other types bind the bias in their place.
     let buffers = [a, &l.bias, c, &l.weight, l.scales.as_ref().unwrap_or(&l.bias)];
     let f = gpu.fast.size;
@@ -801,9 +817,9 @@ impl<'a> Pass<'a> {
   /// `c[offset..]` = `epilogue(a·Wᵀ + b)` for one row `a`, W not rounded to f16.
   pub fn gemv(&mut self, a: &Buffer, l: &Linear, c: &Buffer, epilogue: Epilogue, offset: usize) {
     let [mode, alpha] = epilogue.params();
-    let params = [1, l.n as u32, l.k as u32, mode, alpha, 0, offset as u32];
+    let params = [1, l.cols as u32, l.k as u32, mode, alpha, 0, offset as u32];
     let buffers = [a, &l.bias, c, &l.weight, l.scales.as_ref().unwrap_or(&l.bias)];
-    self.run(&self.gpu.decoder().gemv[l.ty], &buffers, &params, [l.n / 32, 1, 1]);
+    self.run(&self.gpu.decoder().gemv[l.ty], &buffers, &params, [l.cols / 32, 1, 1]);
   }
 
   /// `c` = row `id` of the table `l` + `pos[offset..]` + the table's bias, `l.k` values.
@@ -933,6 +949,44 @@ impl<'a> Pass<'a> {
     }
   }
 
+  /// Rotary embedding in place over `rows` rows of `x`, `stride` floats each, at positions
+  /// `pos..pos + rows`: in each of the first `heads` heads of `head_dim`, the pairs (2i, 2i + 1)
+  /// for 2i < `rot` rotate. The table holds per position `rot` / 2 cosines, then as many sines.
+  #[allow(clippy::too_many_arguments)]
+  pub fn rope(
+    &mut self,
+    table: &Buffer,
+    x: &Buffer,
+    rows: usize,
+    stride: usize,
+    heads: usize,
+    head_dim: usize,
+    rot: usize,
+    pos: usize,
+  ) {
+    let params = [rows, stride, head_dim, 0, rot, 0, heads, pos].map(|v| v as u32);
+    let size = [(heads * rot / 2).div_ceil(256), rows, 1];
+    self.run(&self.gpu.kernels.rope, &[table, x], &params, size);
+  }
+
+  /// GroupNorm with one group, in place over `x` `[t][ch]`: normalized over all its values, then
+  /// times `n.w` and plus `n.b` per channel.
+  pub fn group_norm(&mut self, x: &Buffer, n: &Channels, t: usize, ch: usize, eps: f32) {
+    let params = [t as u32, ch as u32, 0, eps.to_bits()];
+    self.run(&self.gpu.kernels.group_norm, &[x, &n.w, &n.b], &params, [1, 1, 1]);
+  }
+
+  /// SwiGLU over `h` `[t][2·ch]`: `y` `[t][ch]` = SiLU(second half) · first half.
+  pub fn swiglu(&mut self, h: &Buffer, y: &Buffer, t: usize, ch: usize) {
+    let params = [t as u32, ch as u32];
+    self.run(&self.gpu.kernels.swiglu, &[h, y], &params, [ch.div_ceil(256), t, 1]);
+  }
+
+  /// The index of the largest of `x[..n]` (the lowest on a tie), as the bits of `out[0]`.
+  pub fn argmax(&mut self, x: &Buffer, out: &Buffer, n: usize) {
+    self.run(&self.gpu.kernels.argmax, &[x, out], &[n as u32], [1, 1, 1]);
+  }
+
   /// `x` `[t][f][ch]` to `y` `[t][ch · f]`, channel-major.
   pub fn flatten(&mut self, x: &Buffer, y: &Buffer, t: usize, f: usize, ch: usize) {
     let k = &self.gpu.kernels.flatten;
@@ -1031,16 +1085,18 @@ mod tests {
       Epilogue::Residual(alpha) => c + alpha * v,
       Epilogue::Gelu => gelu(v),
       Epilogue::GeluResidual => c + gelu(v),
+      Epilogue::Tanh => v.tanh(),
     }
   }
 
-  const EPILOGUES: [Epilogue; 6] = [
+  const EPILOGUES: [Epilogue; 7] = [
     Epilogue::Bias,
     Epilogue::Silu,
     Epilogue::Relu,
     Epilogue::Residual(0.5),
     Epilogue::Gelu,
     Epilogue::GeluResidual,
+    Epilogue::Tanh,
   ];
 
   /// A random [n][k] weight as F32, F16 and Q8_0 GGUF tensor data.
@@ -1074,59 +1130,66 @@ mod tests {
   #[test]
   fn gemm() {
     // 164 rows: the GEMM pads them to 192 output columns, which come out as epilogue(0); a
-    // 128-wide tile of the fast GEMM passes them.
-    let (n, k, padded) = (164, 96, 192);
-    let w = random(n * k, 1);
-    let bias = random(n, 2);
-    // 64 more biases: the first 64 outputs again at columns 192.., with no epilogue.
-    let dual: Vec<f32> = bias.iter().copied().chain(random(64, 5)).collect();
-    let f32s: &[u8] = bytemuck::cast_slice(&w);
-    let f16s: Vec<u8> = w.iter().flat_map(|x| f16::from_f32(*x).to_le_bytes()).collect();
-    let q8: Vec<u8> = (w.chunks(32))
-      .flat_map(|block| {
-        let d = block.iter().fold(0f32, |m, x| m.max(x.abs())) / 127.0;
-        let q = block.iter().map(move |x| (x / d).round() as i8 as u8);
-        f16::from_f32(d).to_le_bytes().into_iter().chain(q)
-      })
-      .collect();
-    let epilogues = EPILOGUES;
-    // Each weight is stored as two halves stacked along n, like q over k.
-    let wd = [k, n / 2];
-    for (ty, bytes) in [(Type::F32, f32s), (Type::F16, &f16s), (Type::Q8_0, &q8)] {
-      let (w1, w2) = bytes.split_at(bytes.len() / 2);
-      let file = Gguf::with_tensors(&[("w1", &wd, ty, w1), ("w2", &wd, ty, w2)]);
-      let t = |name| file.tensor(name, &wd).unwrap();
-      // The GEMM rounds W to f16.
-      let half = |x: &f32| f16::from_f32(*x).to_f32();
-      let wf: Vec<f32> = [t("w1").to_f32().unwrap(), t("w2").to_f32().unwrap()].concat();
-      let wf: Vec<f32> = wf.iter().map(half).collect();
-      // With the bias, without (zeros), and with dual outputs.
-      for b in [&bias[..], &[], &dual] {
-        let width = if b.len() > n { padded + 64 } else { padded };
-        for gpu in gpus() {
-          let l = gpu.linear(&[t("w1"), t("w2")], b).unwrap();
-          assert_eq!(l.width(), width);
-          // 2100 rows take the fast path's 8F-row tiles.
-          for m in [1, 37, 70, 2100] {
-            let a = random(m * k, 3);
-            // The fast GEMM rounds a to f16 as well.
-            let fast = gpu.tile_rows(padded, m).is_some();
-            let ar: Vec<f32> = if fast { a.iter().map(half).collect() } else { a.clone() };
-            let c = random(m * width, 4);
-            let ab = up(gpu, &a);
-            for e in epilogues {
-              let want: Vec<f32> = (0..m * width)
-                .map(|i| {
-                  let (r, j) = (i / width, i % width);
-                  let dot = |j: usize| (0..k).map(|x| ar[r * k + x] * wf[j * k + x]).sum::<f32>();
-                  if j >= padded {
-                    return b[n + j - padded] + dot(j - padded);
-                  }
-                  let v = if j < n { b.get(j).unwrap_or(&0.0) + dot(j) } else { 0.0 };
-                  epilogue(e, v, c[i])
-                })
-                .collect();
-              assert_close(&run(gpu, &c, |p, out| p.gemm(&ab, &l, out, m, e)), &want);
+    // 128-wide tile of the fast GEMM passes them. 288 rows (a multiple of 32, not of 64): the rows
+    // of c are 288 wide, and a tile passes them too.
+    for (n, cols) in [(164, 192), (288, 288)] {
+      let k = 96;
+      let w = random(n * k, 1);
+      let bias = random(n, 2);
+      // 64 more biases: the first 64 outputs again at columns cols.., with no epilogue.
+      let dual: Vec<f32> = bias.iter().copied().chain(random(64, 5)).collect();
+      let f32s: &[u8] = bytemuck::cast_slice(&w);
+      let f16s: Vec<u8> = w.iter().flat_map(|x| f16::from_f32(*x).to_le_bytes()).collect();
+      let q8: Vec<u8> = (w.chunks(32))
+        .flat_map(|block| {
+          let d = block.iter().fold(0f32, |m, x| m.max(x.abs())) / 127.0;
+          let q = block.iter().map(move |x| (x / d).round() as i8 as u8);
+          f16::from_f32(d).to_le_bytes().into_iter().chain(q)
+        })
+        .collect();
+      // Each weight is stored as two halves stacked along n, like q over k.
+      let wd = [k, n / 2];
+      for (ty, bytes) in [(Type::F32, f32s), (Type::F16, &f16s), (Type::Q8_0, &q8)] {
+        let (w1, w2) = bytes.split_at(bytes.len() / 2);
+        let file = Gguf::with_tensors(&[("w1", &wd, ty, w1), ("w2", &wd, ty, w2)]);
+        let t = |name| file.tensor(name, &wd).unwrap();
+        // The GEMM rounds W to f16.
+        let half = |x: &f32| f16::from_f32(*x).to_f32();
+        let wf: Vec<f32> = [t("w1").to_f32().unwrap(), t("w2").to_f32().unwrap()].concat();
+        let wf: Vec<f32> = wf.iter().map(half).collect();
+        // With the bias, without (zeros), and with dual outputs.
+        for b in [&bias[..], &[], &dual] {
+          let width = if b.len() > n { cols + 64 } else { cols };
+          for gpu in gpus() {
+            let l = gpu.linear(&[t("w1"), t("w2")], b).unwrap();
+            assert_eq!(l.width(), width);
+            // 2100 rows take the fast path's 8F-row tiles.
+            for m in [1, 37, 70, 2100] {
+              let a = random(m * k, 3);
+              // The fast GEMM rounds a to f16 as well.
+              let fast = gpu.tile_rows(n.next_multiple_of(64), m).is_some();
+              let ar: Vec<f32> = if fast { a.iter().map(half).collect() } else { a.clone() };
+              // One row more than written: it must stay as it was.
+              let c = random(m * width + 1, 4);
+              let ab = up(gpu, &a);
+              for e in EPILOGUES {
+                let dot =
+                  |r: usize, j: usize| (0..k).map(|x| ar[r * k + x] * wf[j * k + x]).sum::<f32>();
+                let want: Vec<f32> = (0..c.len())
+                  .map(|i| {
+                    let (r, j) = (i / width, i % width);
+                    if r == m {
+                      c[i]
+                    } else if j >= cols {
+                      b[n + j - cols] + dot(r, j - cols)
+                    } else {
+                      let v = if j < n { b.get(j).unwrap_or(&0.0) + dot(r, j) } else { 0.0 };
+                      epilogue(e, v, c[i])
+                    }
+                  })
+                  .collect();
+                assert_close(&run(gpu, &c, |p, out| p.gemm(&ab, &l, out, m, e)), &want);
+              }
             }
           }
         }
@@ -1162,11 +1225,13 @@ mod tests {
 
   #[test]
   fn im2col() {
-    let (t_in, ch) = (37, 20);
-    let x = random(t_in * ch, 9);
-    for [kernel, stride, pad] in [[5, 2, 2], [3, 1, 1], [3, 2, 1]] {
+    // Moonshine's first conv over raw samples: kernel 127, stride 64.
+    let shapes =
+      [(37, 20, [5, 2, 2]), (37, 20, [3, 1, 1]), (37, 20, [3, 2, 1]), (900, 1, [127, 64, 0])];
+    for (t_in, ch, [kernel, stride, pad]) in shapes {
+      let x = random(t_in * ch, 9);
       let t_out = (t_in + 2 * pad - kernel) / stride + 1;
-      // Rows of 100 or 60 columns, padded with zeros to 128 or 64.
+      // Rows of 100, 60 or 127 columns, padded with zeros to 128, 64 or 128.
       let width = (ch * kernel).next_multiple_of(32);
       let want: Vec<f32> = (0..t_out * width)
         .map(|i| {
@@ -1213,35 +1278,37 @@ mod tests {
 
   #[test]
   fn gemv_and_embed() {
-    // 100 rows padded to 104 by the 8-row workgroups... and to 128 by `linear`.
-    let (n, k) = (100, 96);
-    let bias = random(n, 2);
-    let a = random(k, 3);
-    let pos = random(2 * k, 6);
-    for (ty, bytes) in weights(n, k) {
-      let file = Gguf::with_tensors(&[("w", &[k, n], ty, &bytes)]);
-      let t = file.tensor("w", &[k, n]).unwrap();
-      let w = t.to_f32().unwrap();
-      for gpu in gpus() {
-        let l = gpu.linear(&[file.tensor("w", &[k, n]).unwrap()], &bias).unwrap();
-        let ab = up(gpu, &a);
-        // Outputs from 3 on; the gemv doesn't round W.
-        let c = random(3 + 128, 4);
-        for e in EPILOGUES {
-          let want: Vec<f32> = (0..c.len())
-            .map(|i| match i.checked_sub(3) {
-              Some(j) if j < n => {
-                epilogue(e, bias[j] + (0..k).map(|x| a[x] * w[j * k + x]).sum::<f32>(), c[i])
-              }
-              Some(_) => epilogue(e, 0.0, c[i]),
-              None => c[i],
-            })
-            .collect();
-          assert_close(&run(gpu, &c, |p, out| p.gemv(&ab, &l, out, e, 3)), &want);
+    // 100 rows padded to 128 by `linear`; 288, a multiple of 32, written as they are.
+    for (n, cols) in [(100, 128), (288, 288)] {
+      let k = 96;
+      let bias = random(n, 2);
+      let a = random(k, 3);
+      let pos = random(2 * k, 6);
+      for (ty, bytes) in weights(n, k) {
+        let file = Gguf::with_tensors(&[("w", &[k, n], ty, &bytes)]);
+        let t = file.tensor("w", &[k, n]).unwrap();
+        let w = t.to_f32().unwrap();
+        for gpu in gpus() {
+          let l = gpu.linear(&[file.tensor("w", &[k, n]).unwrap()], &bias).unwrap();
+          let ab = up(gpu, &a);
+          // Outputs from 3 on, and one past them that stays; the gemv doesn't round W.
+          let c = random(3 + cols + 1, 4);
+          for e in EPILOGUES {
+            let want: Vec<f32> = (0..c.len())
+              .map(|i| match i.checked_sub(3) {
+                Some(j) if j < n => {
+                  epilogue(e, bias[j] + (0..k).map(|x| a[x] * w[j * k + x]).sum::<f32>(), c[i])
+                }
+                Some(j) if j < cols => epilogue(e, 0.0, c[i]),
+                _ => c[i],
+              })
+              .collect();
+            assert_close(&run(gpu, &c, |p, out| p.gemv(&ab, &l, out, e, 3)), &want);
+          }
+          let pb = up(gpu, &pos);
+          let want: Vec<f32> = (0..k).map(|i| w[7 * k + i] + pos[k + i] + bias[i]).collect();
+          assert_close(&run(gpu, &vec![0.0; k], |p, out| p.embed(&l, &pb, out, 7, k)), &want);
         }
-        let pb = up(gpu, &pos);
-        let want: Vec<f32> = (0..k).map(|i| w[7 * k + i] + pos[k + i] + bias[i]).collect();
-        assert_close(&run(gpu, &vec![0.0; k], |p, out| p.embed(&l, &pb, out, 7, k)), &want);
       }
     }
   }
@@ -1249,38 +1316,45 @@ mod tests {
   #[test]
   fn attend_and_pack() {
     let half = |x: f32| f16::from_f32(x).to_f32();
-    let (heads, hd) = (2, 40);
-    let d = heads * hd;
-    // Rows of K then V of all heads, f16.
-    let kv = random(1500 * 2 * d, 7);
-    let q = random(d, 8);
-    for gpu in gpus() {
-      let (qb, xb) = (up(gpu, &q), up(gpu, &kv));
-      let cache = gpu.buffer(1500 * d);
-      // 1500 keys: Whisper's cross-attention over a whole window.
-      for n in [1, 37, 300, 1500] {
-        let mut want = vec![0.0; d];
-        for h in 0..heads {
-          let s: Vec<f32> = (0..n)
-            .map(|j| {
-              (0..hd).map(|c| half(q[h * hd + c]) * half(kv[j * 2 * d + h * hd + c])).sum::<f32>()
-            })
-            .map(|v| v / (hd as f32).sqrt())
-            .collect();
-          let mx = s.iter().fold(f32::MIN, |m, x| m.max(*x));
-          let e: Vec<f32> = s.iter().map(|x| (x - mx).exp()).collect();
-          let sum: f32 = e.iter().sum();
-          for c in 0..hd {
-            want[h * hd + c] =
-              (0..n).map(|j| e[j] * half(kv[j * 2 * d + d + h * hd + c])).sum::<f32>() / sum;
+    // Moonshine's heads of 36; past 2048 keys the kernel goes in blocks.
+    let keys = 4100;
+    for (heads, hd) in [(2, 40), (3, 36)] {
+      let d = heads * hd;
+      // Rows of K then V of all heads, f16.
+      let kv = random(keys * 2 * d, 7);
+      let q = random(d, 8);
+      for gpu in gpus() {
+        let (qb, xb) = (up(gpu, &q), up(gpu, &kv));
+        let cache = gpu.buffer(keys * d);
+        for n in [1, 37, 1500, 2049, keys] {
+          let mut want = vec![0.0; d];
+          for h in 0..heads {
+            let s: Vec<f32> = (0..n)
+              .map(|j| {
+                let k = |c: usize| half(kv[j * 2 * d + h * hd + c]);
+                (0..hd).map(|c| half(q[h * hd + c]) * k(c)).sum::<f32>()
+              })
+              .map(|v| v / (hd as f32).sqrt())
+              .collect();
+            let mx = s.iter().fold(f32::MIN, |m, x| m.max(*x));
+            let e: Vec<f32> = s.iter().map(|x| (x - mx).exp()).collect();
+            let sum: f32 = e.iter().sum();
+            for c in 0..hd {
+              want[h * hd + c] =
+                (0..n).map(|j| e[j] * half(kv[j * 2 * d + d + h * hd + c])).sum::<f32>() / sum;
+            }
           }
+          let got = run(gpu, &vec![0.0; d], |p, o| {
+            p.pack(&xb, &cache, keys * d, 0, 0);
+            p.attend(&qb, &cache, o, n, heads, hd);
+          });
+          assert_close(&got, &want);
         }
-        let got = run(gpu, &vec![0.0; d], |p, o| {
-          p.pack(&xb, &cache, 1500 * d, 0, 0);
-          p.attend(&qb, &cache, o, n, heads, hd);
-        });
-        assert_close(&got, &want);
       }
+    }
+    let kv = random(40, 7);
+    for gpu in gpus() {
+      let xb = up(gpu, &kv);
       // Pairs from x[3..] into y[5..].
       let y = random(5 + 10, 9);
       let got = run(gpu, &y, |p, out| p.pack(&xb, out, 10, 3, 5));
@@ -1449,6 +1523,64 @@ mod tests {
       });
       assert_close(&got, &want);
       assert_close(&run(gpu, &vec![0.0; flat.len()], |p, y| p.flatten(&xb, y, t, f, ch)), &flat);
+    }
+  }
+
+  #[test]
+  fn rope() {
+    // Rows [q | k | v] of 3 heads of 10, the first 6 dims of q's and k's heads rotating, from
+    // position 2.
+    let (rows, heads, hd, rot, pos) = (5, 3, 10, 6, 2);
+    let stride = 3 * heads * hd;
+    let x = random(rows * stride, 30);
+    let table = random((pos + rows) * rot, 31);
+    let want: Vec<f32> = (0..x.len())
+      .map(|e| {
+        let (r, i) = (e / stride, e % stride);
+        let d = i % hd;
+        if i >= 2 * heads * hd || d >= rot {
+          return x[e];
+        }
+        let t = &table[(pos + r) * rot..];
+        let (c, s) = (t[d / 2], t[rot / 2 + d / 2]);
+        if d % 2 == 0 { x[e] * c - x[e + 1] * s } else { x[e - 1] * s + x[e] * c }
+      })
+      .collect();
+    for gpu in gpus() {
+      let tb = up(gpu, &table);
+      let got = run(gpu, &x, |p, xb| p.rope(&tb, xb, rows, stride, 2 * heads, hd, rot, pos));
+      assert_close(&got, &want);
+    }
+  }
+
+  #[test]
+  fn group_norm_swiglu_argmax() {
+    let (t, ch) = (37, 20);
+    let x = random(t * ch, 32);
+    let (w, b) = (random(ch, 33), random(ch, 34));
+    let n = x.len() as f32;
+    let mean = x.iter().sum::<f32>() / n;
+    let var = x.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n;
+    let rstd = 1.0 / (var + 1e-5).sqrt();
+    let norm: Vec<f32> =
+      x.iter().enumerate().map(|(i, v)| (v - mean) * rstd * w[i % ch] + b[i % ch]).collect();
+    let glu: Vec<f32> = (0..t * ch / 2)
+      .map(|i| x[i / 10 * 20 + i % 10] * silu(x[i / 10 * 20 + 10 + i % 10]))
+      .collect();
+    // The largest value twice: the lower index wins.
+    let mut logits = random(1000, 35);
+    logits[700] = 2.0;
+    logits[300] = 2.0;
+    for gpu in gpus() {
+      let c = gpu.channels(&w, &b).unwrap();
+      assert_close(&run(gpu, &x, |p, xb| p.group_norm(xb, &c, t, ch, 1e-5)), &norm);
+      let xb = up(gpu, &x);
+      assert_close(&run(gpu, &vec![0.0; glu.len()], |p, y| p.swiglu(&xb, y, t, ch / 2)), &glu);
+      let lb = up(gpu, &logits);
+      let got = run(gpu, &[0.0], |p, out| p.argmax(&lb, out, 1000));
+      assert_eq!(got[0].to_bits(), 300);
+      let got = run(gpu, &[0.0], |p, out| p.argmax(&lb, out, 500));
+      assert_eq!(got[0].to_bits(), 300);
     }
   }
 }

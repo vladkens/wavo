@@ -1,7 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 // Linear layer c = epilogue(a·Wᵀ + bias): `a` is row-major [m][k] F32, W is [n][k] in its GGUF
 // type. A workgroup computes a 64×64 tile of c, each thread 4×4 outputs strided by 16. K advances
-// 32 per step (one Q8_0 block). n % 64 == 0 and k % 32 == 0. W is rounded to f16 after
+// 32 per step (one Q8_0 block). W has a multiple of 64 rows and k % 32 == 0; c's rows are n + dual
+// wide, and outputs from n on (W's zero rows) are not written. W is rounded to f16 after
 // dequantization, as the reference's Metal matmul (`kernel_mul_mm`) does; without it, near-ties
 // (one CTC frame of e2e-ctc on ru-short) fall on the other side. The reference also rounds `a`,
 // which costs ~2% here and no fixture needs. The module also holds `gemv`, for one row of `a`, and
@@ -12,9 +13,11 @@ override WTYPE: u32;
 
 struct Params {
   m: u32,
+  // Output columns per row of c (before the dual ones).
   n: u32,
   k: u32,
-  // With v = a·Wᵀ + bias, c = v, 1: SiLU(v), 2: ReLU(v), 3: c + alpha·v, 4: GELU(v), 5: c + GELU(v).
+  // With v = a·Wᵀ + bias, c = v, 1: SiLU(v), 2: ReLU(v), 3: c + alpha·v, 4: GELU(v), 5: c + GELU(v),
+  // 6: tanh(v).
   mode: u32,
   alpha: f32,
   // Rows of c are n + dual wide: outputs j < dual are written again at n + j with bias[n + j].
@@ -68,11 +71,16 @@ fn store_one(i: u32, v: f32) {
     case 3u: { c[i] += p.alpha * v; }
     case 4u: { c[i] = gelu(v); }
     case 5u: { c[i] += gelu(v); }
+    // tanh(±10) is ±1 in f32; some drivers' tanh overflows to NaN on large inputs.
+    case 6u: { c[i] = tanh(clamp(v, -10.0, 10.0)); }
     default: { c[i] = v; }
   }
 }
 
 fn epilogue(m: u32, n: u32, acc: f32) {
+  if (n >= p.n) {
+    return;
+  }
   let i = m * (p.n + p.dual) + n;
   store_one(i, acc + bias[n]);
   if (n < p.dual) {

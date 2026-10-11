@@ -49,6 +49,15 @@ pass per token (gemv on Q8_0 rows, attention over the F16 self and cross caches,
 the vocabulary), and reads the logits back; suppression, timestamp rules, argmax, language and
 no-speech run on the CPU, and windows advance as the reference's seek loop.
 
+**Moonshine.** No frontend: the whole input in one pass, with the arena and the rotary table
+(computed on the CPU) sized for the longest input so far. One submission (one per layer on the
+portable path) holds the conv stem over the raw samples (im2col and GEMM with tanh, a one-workgroup
+GroupNorm, two more convs with GELU), the shared pre-LN blocks of `src/transformer.rs` with rotary
+q and k and portable attention (heads of 36 and 52 dims), the cross `[K | V]` packed into F16
+caches, and the `<s>` step. The decoder is Whisper's step on the GPU with SwiGLU and rotary q and
+k, ending in an argmax, so a token reads back 4 bytes; EOS, the 194-position cap and the
+repetition guard run on the CPU.
+
 ## Not tried yet
 
 GigaAM:

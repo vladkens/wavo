@@ -91,6 +91,8 @@ pub static MODELS: &[ModelInfo] = &[
   ModelInfo { name: "whisper-large", full_name: "whisper-large", size: 1_667_964_192, languages: "99 languages", punctuated: true },
   ModelInfo { name: "whisper-large-v2", full_name: "whisper-large-v2", size: 1_667_964_224, languages: "99 languages", punctuated: true },
   ModelInfo { name: "breeze-asr-25", full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", punctuated: true },
+  ModelInfo { name: "moonshine-tiny", full_name: "moonshine-tiny", size: 35_466_912, languages: "English", punctuated: true },
+  ModelInfo { name: "moonshine-base", full_name: "moonshine-base", size: 77_476_480, languages: "English", punctuated: true },
 ];
 
 /// The model a short or full name stands for.

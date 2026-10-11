@@ -4,8 +4,9 @@
 # Runs the reference CLI on 3rd/transcribe.cpp/samples/SAMPLE.wav and writes its transcript as the
 # block `## SAMPLE` of tests/fixtures/MODEL.txt: the other blocks stay byte for byte, all sorted by
 # name and separated by one blank line. A body line starts with `text: `, `tokens: `, `segments: `
-# or two spaces, so no transcript reads as a header. Writes nothing if the reference fails or
-# prints anything else.
+# or two spaces, so no transcript reads as a header; with TIMESTAMPS=none (Moonshine) a block is
+# the `text: ` line alone. Writes nothing if the reference fails, cuts a decode short (`run:` not
+# `ok`: truncated or repeating) or prints anything else.
 set -eu
 [ $# -ge 3 ] || { echo "usage: $0 MODEL TIMESTAMPS SAMPLE..." >&2; exit 2; }
 name=$1 timestamps=$2
@@ -25,6 +26,7 @@ fi
 for s in "$@"; do
   "$cli" -m "$model" --timestamps "$timestamps" "3rd/transcribe.cpp/samples/$s.wav" \
     > "$tmp/raw" 2> /dev/null || { echo "$s: transcribe-cli failed" >&2; exit 1; }
+  grep -qx 'run: ok' "$tmp/raw" || { echo "$s: $(grep '^run: ' "$tmp/raw")" >&2; exit 1; }
   # From `text:` to `realtime:` every line must be known, so the filter below drops no part of
   # the transcript, such as a second line of text.
   awk '/^text: /{r=1; next} /^  realtime: /{r=0}

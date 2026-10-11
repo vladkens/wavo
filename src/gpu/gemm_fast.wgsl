@@ -16,8 +16,9 @@ const F: u32 = 8u;
 // 4F or 8F, and the K step.
 override ROWS: u32;
 override KS: u32 = 8u * F * F / ROWS;
-// W has rows up to n rounded up to 64, so a tile 128 wide may pass them. Checking at F = 8 too cost
-// GigaAM on 34 s 8% on an M2.
+// W has rows up to n rounded up to 64, so a tile 128 wide may pass them: its loads past them are
+// skipped. Checking at F = 8 too cost GigaAM on 34 s 8% on an M2. Stores past n (c's row width,
+// which may be a multiple of 32 only) are skipped at any F.
 const WIDE: bool = F > 8u;
 // Halves of the a tile, where the Wᵀ tile starts.
 const AT: u32 = 8u * F * F;
@@ -105,7 +106,7 @@ fn flush(m0: u32, n0: u32, q: u32, lane: u32) {
   for (var i = lane; i < 16u * F * F; i += 128u) {
     let m = m0 + i / (8u * F * F) * ROWS / 2u + q * F + i / (8u * F) % F;
     let n = n0 + i % (8u * F);
-    if (m < p.m && (!WIDE || n < p.n)) {
+    if (m < p.m && n < p.n) {
       let v = ct[i] + bias[n];
       let o = m * (p.n + p.dual) + n;
       switch p.mode {
@@ -114,6 +115,7 @@ fn flush(m0: u32, n0: u32, q: u32, lane: u32) {
         case 3u: { c[o] += p.alpha * v; }
         case 4u: { c[o] = gelu(v); }
         case 5u: { c[o] += gelu(v); }
+        case 6u: { c[o] = tanh(clamp(v, -10.0, 10.0)); }
         default: { c[o] = v; }
       }
       if (n < p.dual) {
