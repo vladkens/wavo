@@ -124,3 +124,8 @@ fn whisper_large_v3_turbo() {
 fn whisper_tiny() {
   check("whisper-tiny", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
 }
+
+#[test]
+fn whisper_base() {
+  check("whisper-base", &["jfk", "zh-short", "ru-long", "uk-short"]);
+}
