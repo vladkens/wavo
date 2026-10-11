@@ -155,7 +155,7 @@ pub struct Linear {
   /// Output columns: the rows of `W` when a multiple of 32, else `n`.
   cols: usize,
   k: usize,
-  /// Outputs written a second time after the n others, with their own bias.
+  /// Outputs written a second time after the `cols` others, with their own bias.
   dual: usize,
   /// GEMM pipeline index: 0: F32, 1: F16, 2: Q8_0
   ty: usize,

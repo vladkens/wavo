@@ -71,13 +71,15 @@ pub fn srt(tokens: &[Token], starts: &[usize], audio_ms: u32) -> String {
 }
 
 /// Subtitles from a model that times segments, not tokens (Whisper: every token carries its
-/// segment's start): one cue per segment, shown until the next one starts or the audio ends.
+/// segment's start; Moonshine: 0 in each piece of the audio): one cue per segment, shown until
+/// the next one starts or the audio ends.
 pub fn srt_segments(tokens: &[Token], audio_ms: u32) -> String {
   let mut cues: Vec<(u32, u32, String)> = Vec::new();
   for t in tokens {
+    let piece = t.piece.replace('▁', " ");
     match cues.last_mut() {
-      Some(cue) if cue.0 == t.start_ms => cue.2 += &t.piece,
-      _ => cues.push((t.start_ms, t.start_ms, t.piece.clone())),
+      Some(cue) if cue.0 == t.start_ms => cue.2 += &piece,
+      _ => cues.push((t.start_ms, t.start_ms, piece)),
     }
   }
   cues.iter_mut().for_each(|c| c.2 = c.2.trim().to_string());
@@ -177,6 +179,12 @@ mod tests {
     assert_eq!(
       srt_segments(&t, 3000),
       "1\n00:00:00,000 --> 00:00:02,000\n我们走吧。\n\n2\n00:00:02,000 --> 00:00:03,000\n好\n\n"
+    );
+    // SentencePiece pieces (Moonshine).
+    let t = tokens(&[("▁And", 0), ("▁so", 0), ("▁ask", 4000)]);
+    assert_eq!(
+      srt_segments(&t, 5000),
+      "1\n00:00:00,000 --> 00:00:04,000\nAnd so\n\n2\n00:00:04,000 --> 00:00:05,000\nask\n\n"
     );
   }
 
