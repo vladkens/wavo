@@ -81,7 +81,10 @@ fn cli(args: &[&str]) -> Result<()> {
     ["rm", name] => rm(name)?,
     ["bench", model, audio] => bench(model, audio, 10)?,
     ["bench", model, audio, "-n", n] => bench(model, audio, n.parse().context("-n")?)?,
-    [audio, ..] if !COMMANDS.contains(audio) && Path::new(audio).is_file() => run(args)?,
+    // wavo AUDIO, also with run options first: wavo -y AUDIO
+    [arg, ..] if arg.starts_with('-') || (!COMMANDS.contains(arg) && Path::new(arg).is_file()) => {
+      run(args)?
+    }
     _ => bail!("unknown command: wavo {}\n\n{}", args.join(" "), usage()),
   }
   Ok(())
