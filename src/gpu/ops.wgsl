@@ -94,7 +94,7 @@ fn layer_norm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_in
 
 // im2col for a conv1d over x [t][ch]: col[i][c · kernel + k] = x[stride · i + k − pad][c], matching
 // a ggml conv weight [kernel, ch, out]. Rows are padded with zeros to a multiple of 32 columns, as
-// `Gpu::linear` pads the weight (80 mels: 240 → 256).
+// `Gpu::conv` pads the weight (80 mels: 240 → 256).
 
 @group(0) @binding(0) var<storage, read> col_x: array<f32>;
 @group(0) @binding(1) var<storage, read_write> col_y: array<f32>;
