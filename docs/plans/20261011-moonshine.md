@@ -289,48 +289,48 @@ Decided with the person:
 
 ### Task 1: plan and rules
 
-- [ ] This plan agreed, with decisions 1–6.
-- [ ] Roadmap phases 15 (tiny and base, correct), 16 (fast), 17 (language variants), 18
+- [x] This plan agreed, with decisions 1–6.
+- [x] Roadmap phases 15 (tiny and base, correct), 16 (fast), 17 (language variants), 18
       (streaming one-shot, optional). `agents.md` needs nothing: `scripts/fixtures.sh` documents
       text-only fixtures and the rustdoc a Moonshine token's start time.
 
 ### Task 2: model and fixtures (phase 15)
 
-- [ ] `moonshine-tiny` (35 466 912 B) and `moonshine-base` (77 476 480 B), "English", in
+- [x] `moonshine-tiny` (35 466 912 B) and `moonshine-base` (77 476 480 B), "English", in
       `hub::MODELS` and the lists it checks; `moonshine-tiny` in `CI_MODELS` and `CI_TESTS`;
       `make models`.
-- [ ] The published header checked against Model facts: keys, shapes, tensor types.
-- [ ] `make fixtures`: `TIMESTAMPS=none` gives a text-only file; the recipe fails when `run:` is
+- [x] The published header checked against Model facts: keys, shapes, tensor types.
+- [x] `make fixtures`: `TIMESTAMPS=none` gives a text-only file; the recipe fails when `run:` is
       not `ok`.
-- [ ] `make fixtures MODEL=<model> TIMESTAMPS=none SAMPLES="jfk dots jobs-silence"` for both,
+- [x] `make fixtures MODEL=<model> TIMESTAMPS=none SAMPLES="jfk dots jobs-silence"` for both,
       each generated twice; a clip that truncates or loops is replaced.
-- [ ] `tests/models.rs`: text-only fixtures; `moonshine_tiny` and `moonshine_base` over the three
+- [x] `tests/models.rs`: text-only fixtures; `moonshine_tiny` and `moonshine_base` over the three
       clips. Lands with Task 4.
 
 ### Task 3: shared core (GigaAM, Parakeet and Whisper output and speed unchanged)
 
-- [ ] GEMM and gemv with output widths that are multiples of 32 (masked stores, row stride n);
+- [x] GEMM and gemv with output widths that are multiples of 32 (masked stores, row stride n);
       tests at n 288 and 864, both paths.
-- [ ] `Epilogue::Tanh`, `im2col` padded columns; tests.
-- [ ] `rope`, `group_norm`, `swiglu`, `argmax`, each against a CPU loop on small odd shapes.
-- [ ] `attend` over more than 2048 keys; tests at 1, 37, 2049 and 4100 keys.
-- [ ] Pre-LN transformer pieces shared by Whisper and Moonshine; Whisper fixtures exact, warm
+- [x] `Epilogue::Tanh`, `im2col` padded columns; tests.
+- [x] `rope`, `group_norm`, `swiglu`, `argmax`, each against a CPU loop on small odd shapes.
+- [x] `attend` over more than 2048 keys; tests at 1, 37, 2049 and 4100 keys.
+- [x] Pre-LN transformer pieces shared by Whisper and Moonshine; Whisper fixtures exact, warm
       `jfk` A/B/A unchanged.
-- [ ] All fixtures exact; `make check`; `make test`.
+- [x] All fixtures exact; `make check`; `make test`.
 
 ### Task 4: vertical slice `src/moonshine/` (correct)
 
-- [ ] `tokenizer.rs`: decode with byte fallback and pieces; unit tests with a character split over
+- [x] `tokenizer.rs`: decode with byte fallback and pieces; unit tests with a character split over
       byte tokens and a control token.
-- [ ] `encoder.rs`, `mod.rs` (the decoder is the shared one); `Model` picks the family from
+- [x] `encoder.rs`, `mod.rs` (the decoder is the shared one); `Model` picks the family from
       `general.architecture`; `max_audio_ms()` per decision 3; no warm-up at load (no family keeps
       one since the 2026-10-11 load work).
-- [ ] Decode loop: prompt, EOS, the 194-position cap; repetition guard per decision 2 with
+- [x] Decode loop: prompt, EOS, the 194-position cap; repetition guard per decision 2 with
       scripted-id unit tests (stop bar, budget trim, emphatic repeats kept).
-- [ ] CLI: `--srt` per segment for Moonshine.
-- [ ] Adapted code names its source (`model.cpp` loop, `transcribe-repetition-guard.h`,
+- [x] CLI: `--srt` per segment for Moonshine.
+- [x] Adapted code names its source (`model.cpp` loop, `transcribe-repetition-guard.h`,
       `transcribe-tokenizer.cpp` decode, `rope.metal` angles).
-- [ ] Fixtures exact; `make check`; `make test`. On a mismatch compare with the reference dumps
+- [x] Fixtures exact; `make check`; `make test`. On a mismatch compare with the reference dumps
       (`enc.conv1.out`, `enc.groupnorm.out`, `enc.conv2.out`, `enc.conv3.out`,
       `enc.block.N.out`, `enc.final`, `dec.block.N.out`, `dec.logits_raw`), then try the
       reference's precision: F32 caches without q rounding, then the encoder GEMMs' `a` to f16.
@@ -338,10 +338,10 @@ Decided with the person:
 
 ### Task 5: first benchmark
 
-- [ ] `wavo bench -n 20` against `transcribe-bench --warmup 1 --iters 10` (Metal and CPU) on
+- [x] `wavo bench -n 20` against `transcribe-bench --warmup 1 --iters 10` (Metal and CPU) on
       `jfk`, `dots` and `jobs-silence`, first call in a fresh process, peak from
       `/usr/bin/time -l`; the numbers in `## Result` and the PR.
-- [ ] `docs/perf.md`: how Moonshine runs; `readme.md`: model table, Token start times; tick
+- [x] `docs/perf.md`: how Moonshine runs; `readme.md`: model table, Token start times; tick
       roadmap phase 15. `make check`; `make test`.
 
 ### Task 6: fast (phase 16, next PR; detailed from the profile)
@@ -368,3 +368,27 @@ Decided with the person:
       masks, adapter, untied head, 6.5 tokens/s budget; fixtures `jfk dots jobs-silence`.
 - [ ] `moonshine-streaming-small` and `-medium`: GEMM K tails (620, 80), non-square attention;
       fixtures.
+
+## Result
+
+Phase 15: fixtures exact on the M2 (fast kernels), the RTX 4060 (portable kernels, Vulkan), the
+N100 (portable, Vulkan) and the M1. Core + Moonshine is 3.71k non-test lines (core 3.02k, shared
+transformer 0.28k, `src/moonshine/` 0.41k): the Task 4 simplification is still open.
+
+Baseline, warm median of 20 calls (reference: 10), ms. The M2 was busy with another job (load
+average 2–3), so its numbers are rough: the reference ran 2.8× slower there than its M4 Max
+catalog numbers.
+
+| Model, clip | M2 wavo | M2 Metal | M2 CPU | RTX 4060 wavo | RTX 4060 Vulkan |
+|---|---|---|---|---|---|
+| tiny `jfk` | **60** | 158 | 140 | **19** | 31 |
+| tiny `dots` | **406** | 1475 | 997 | **142** | 144 |
+| tiny `jobs-silence` | **30** | 76 | 51 | **12** | 19 |
+| base `jfk` | **88** | 263 | 256 | **33** | 40 |
+| base `dots` | **659** | 2853 | 2212 | 241 | **227** |
+| base `jobs-silence` | **18** | 38 | 59 | **9** | 11 |
+
+M2 load 24–38 ms against 47–68; peak footprint lower on short clips (tiny `jfk` 83 vs 118 MiB)
+and higher on `dots` (tiny 187 vs 138, base 259 vs 236 MiB): portable attention keeps all
+scores. Whisper unchanged: whisper-tiny `jfk` on the RTX 4060 main 50.0 / 51.2 / 51.5, branch
+51.4 / 51.3 ms.

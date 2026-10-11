@@ -235,6 +235,10 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### Attention
 
+- 2026-10-11, Whisper and Moonshine, decoder `attend` in blocks of 2048 keys with an online
+  softmax, so cross-attention takes any length (Moonshine runs one pass over the whole input):
+  bit-identical up to 2048 keys; whisper-tiny `jfk` on the RTX 4060 50.0 / 51.2 / 51.5 ms on main,
+  51.4 / 51.3 with it. Kept.
 - 2026-10-10, Whisper and GigaAM, flash attention with the output in registers, 9.5 KB shared:
   Whisper jfk 1550 → 1403, GigaAM ru-long 297 → 276 ms, Parakeet unchanged; fixtures exact. Kept.
 - 2026-10-10, Parakeet V2 and GigaAM, one flash kernel for both attentions. One layout (one
@@ -495,6 +499,9 @@ Numbers are in the plans' "## Result" sections.
   2.2–2.3× faster than wavo on 11–35 s at a third of the energy; WhisperKit (ANE) is 1.4–1.8×
   slower at ~15% more energy; parakeet-mlx 1.7–1.8× slower on 11–35 s. [Other
   engines](plans/20261010-other-engines.md).
+- 2026-10-11, Moonshine tiny and base, baseline: fixtures exact on the first run with F16 caches;
+  warm 1.7–3.4× faster than the reference's faster backend on a busy M2, on par or faster on the
+  RTX 4060 but for base `dots` (241 vs 227 ms). [Moonshine plan](plans/20261011-moonshine.md)
 - 2026-10-11, Windows RTX 4060, GPU timestamps around the 16×16 GEMM: the portable GEMMs were 50%
   of the kernels on turbo `jfk` and 75% on Parakeet V3 `dots`; after it attention is 74% on turbo
   (471 of 633 ms). [16×16 GEMM plan](plans/completed/20261011-nvidia-fast.md).
