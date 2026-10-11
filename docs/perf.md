@@ -500,8 +500,8 @@ Numbers are in the plans' "## Result" sections.
   slower at ~15% more energy; parakeet-mlx 1.7–1.8× slower on 11–35 s. [Other
   engines](plans/20261010-other-engines.md).
 - 2026-10-11, Moonshine tiny and base, baseline: fixtures exact on the first run with F16 caches;
-  warm 1.7–3.4× faster than the reference's faster backend on a busy M2, on par or faster on the
-  RTX 4060 but for base `dots` (241 vs 227 ms). [Moonshine plan](plans/20261011-moonshine.md)
+  warm 1.7–3.4× faster than the reference's faster backend on a busy M2, faster on the RTX 4060
+  but for base `dots` (228 vs 227 ms). [Moonshine plan](plans/20261011-moonshine.md)
 - 2026-10-11, Windows RTX 4060, GPU timestamps around the 16×16 GEMM: the portable GEMMs were 50%
   of the kernels on turbo `jfk` and 75% on Parakeet V3 `dots`; after it attention is 74% on turbo
   (471 of 633 ms). [16×16 GEMM plan](plans/completed/20261011-nvidia-fast.md).

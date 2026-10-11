@@ -371,7 +371,7 @@ Decided with the person:
 
 ## Result
 
-Phase 15 (#30): fixtures exact on the M2 (fast kernels), the RTX 4060 (portable kernels,
+Phase 15 (#30): fixtures exact on the M2 (8×8 tier), the RTX 4060 (16×16 GEMM tier of #28,
 Vulkan), the N100 (portable, Vulkan) and the M1. Core + Moonshine is 3.71k non-test lines (core
 3.02k, shared transformer 0.28k, `src/moonshine/` 0.41k): the Task 4 simplification is still
 open.
@@ -382,14 +382,15 @@ catalog numbers.
 
 | Model, clip | M2 wavo | M2 Metal | M2 CPU | RTX 4060 wavo | RTX 4060 Vulkan |
 |---|---|---|---|---|---|
-| tiny `jfk` | **60** | 158 | 140 | **19** | 31 |
-| tiny `dots` | **406** | 1475 | 997 | **142** | 144 |
-| tiny `jobs-silence` | **30** | 76 | 51 | **12** | 19 |
-| base `jfk` | **88** | 263 | 256 | **33** | 40 |
-| base `dots` | **659** | 2853 | 2212 | 241 | **227** |
-| base `jobs-silence` | **18** | 38 | 59 | **9** | 11 |
+| tiny `jfk` | **60** | 158 | 140 | **18** | 31 |
+| tiny `dots` | **406** | 1475 | 997 | **137** | 144 |
+| tiny `jobs-silence` | **30** | 76 | 51 | **11** | 19 |
+| base `jfk` | **88** | 263 | 256 | **29** | 40 |
+| base `dots` | **659** | 2853 | 2212 | 228 | 227 |
+| base `jobs-silence` | **18** | 38 | 59 | **6** | 11 |
 
 M2 load 24–38 ms against 47–68; peak footprint lower on short clips (tiny `jfk` 83 vs 118 MiB)
 and higher on `dots` (tiny 187 vs 138, base 259 vs 236 MiB): portable attention keeps all
-scores. Whisper unchanged: whisper-tiny `jfk` on the RTX 4060 main 50.0 / 51.2 / 51.5, branch
-51.4 / 51.3 ms.
+scores. Other models unchanged on the RTX 4060, main / this branch, A/B/A/B/A: whisper-turbo
+`jfk` 639.7 / 641.0 / 642.3 / 643.6 / 645.1 ms, Parakeet V3 `jfk` 73.2 / 73.6 / 73.3 / 73.6 /
+73.3 (after a first run of 77.0), `dots` 229.8 / 229.2 / 228.6 / 230.3 / 229.8.
