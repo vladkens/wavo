@@ -100,7 +100,7 @@ decoder 2.1 s.
   per transcription, and its first transcript after a cached load comes in 190–250 ms against
   wavo's 250–480. The ANE runs Parakeet's encoder at ~7 TFLOP/s against ~1.7 for wavo's GPU
   kernels. On 306 s wavo's one pass is quadratic; `wavo run` in 60 s segments takes 4.1 s with
-  load, still 2.7× FluidAudio's 15 s windows.
+  load, still 2.4–2.6× FluidAudio's load plus call (1.6–1.7 s) in 15 s windows.
 - Whisper on the ANE is no win on the M2: WhisperKit is 1.4–1.8× slower than wavo and uses
   ~15% more energy. The ANE runs Whisper's encoder (1280 wide, 1500 frames) at ~1.6 TFLOP/s,
   slower than the GPU, and its decoder step is 4× wavo's; the CPU draws 7–8 W driving it.
@@ -147,4 +147,5 @@ GigaAM), as an opt-in macOS backend whose output is approximate; not for Whisper
 - Cost: ~400–600 lines of Rust (Core ML wrapper, windowing, a directory model in `hub`, a CLI
   switch) plus a ~300–500-line conversion script, about one to two weeks of agent work with
   validation; a one-time 16 s compile per model, best done by `pull`. Gain for Parakeet: 2.2–2.3×
-  warm, ~3× less energy per transcription, a first transcript in 190–250 instead of 250–480 ms.
+  warm, ~3× less energy per transcription, a first transcript in 190–250 instead of 250–480 ms
+  once the compiled model is cached.
