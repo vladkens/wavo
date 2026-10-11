@@ -127,7 +127,7 @@ fn whisper_tiny() {
 
 #[test]
 fn whisper_base() {
-  check("whisper-base", &["jfk", "zh-short", "ru-long", "uk-short"]);
+  check("whisper-base", &["jfk", "zh-short", "uk-short", "dots"]);
 }
 
 #[test]
