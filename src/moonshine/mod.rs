@@ -70,9 +70,11 @@ impl Moonshine {
       let key = |name: &str| u(&format!("{part}.{name}"));
       let (d, heads) = (key("d_model")?, key("n_heads")?);
       let hd = d / heads.max(1);
+      // The rotated dims of a head, rounded down to even (`weights.h`).
+      let rot = (hd as f32 * factor) as usize & !1;
       // `attend` keeps a head of up to 128 as pairs.
-      if hd * heads != d || key("n_kv_heads")? != heads || hd > 128 || hd % 2 != 0 {
-        bail!("unsupported {part} shape: d_model {d}, {heads} heads");
+      if hd * heads != d || key("n_kv_heads")? != heads || hd > 128 || hd % 2 != 0 || rot > hd {
+        bail!("unsupported {part} shape: d_model {d}, {heads} heads, {rot} rotary dims");
       }
       Ok(transformer::Config {
         d,
@@ -80,8 +82,7 @@ impl Moonshine {
         layers: key("n_layers")?,
         d_ff: key("ffn_dim")?,
         bias: false,
-        // The rotated dims of a head, rounded down to even (`weights.h`).
-        rot: (hd as f32 * factor) as usize & !1,
+        rot,
         gated: part == "decoder",
       })
     };
