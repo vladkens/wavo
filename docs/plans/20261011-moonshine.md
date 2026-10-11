@@ -371,9 +371,10 @@ Decided with the person:
 
 ## Result
 
-Phase 15: fixtures exact on the M2 (fast kernels), the RTX 4060 (portable kernels, Vulkan), the
-N100 (portable, Vulkan) and the M1. Core + Moonshine is 3.71k non-test lines (core 3.02k, shared
-transformer 0.28k, `src/moonshine/` 0.41k): the Task 4 simplification is still open.
+Phase 15 (#30): fixtures exact on the M2 (fast kernels), the RTX 4060 (portable kernels,
+Vulkan), the N100 (portable, Vulkan) and the M1. Core + Moonshine is 3.71k non-test lines (core
+3.02k, shared transformer 0.28k, `src/moonshine/` 0.41k): the Task 4 simplification is still
+open.
 
 Baseline, warm median of 20 calls (reference: 10), ms. The M2 was busy with another job (load
 average 2–3), so its numbers are rough: the reference ran 2.8× slower there than its M4 Max
