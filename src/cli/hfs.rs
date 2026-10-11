@@ -235,7 +235,7 @@ fn download(url: &str, part: &Path, size: u64, file: &str, bars: &MultiProgress)
     eprintln!("downloading {file} ({:.2} GB{resume})", mb(size) / 1e3);
   }
   let style =
-    "{msg} {bar:24} {percent:>3}% {decimal_bytes}/{decimal_total_bytes}, {decimal_bytes_per_sec}";
+    "{msg}: {percent:>3}% {decimal_bytes} / {decimal_total_bytes}, {decimal_bytes_per_sec}";
   let bar = ProgressBar::new(size).with_style(ProgressStyle::with_template(style)?);
   let bar = bars.add(bar.with_message(file.to_string()));
   bar.set_position(done);
