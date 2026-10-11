@@ -238,54 +238,39 @@ fn group_norm(@builtin(local_invocation_index) lid: u32) {
   }
 }
 
-// SwiGLU over rows h [t][2·ch]: y [t][ch] = SiLU(gate) · x, x the first half, gate the second.
+// SwiGLU in place over one row h [x | gate] of 2·ch: h[c] = SiLU(gate[c]) · x[c].
 
-@group(0) @binding(0) var<storage, read> sw_h: array<f32>;
-@group(0) @binding(1) var<storage, read_write> sw_y: array<f32>;
+@group(0) @binding(0) var<storage, read_write> sw_h: array<f32>;
 
 @compute @workgroup_size(256)
-fn swiglu(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
-  let c = wg.x * 256u + lid;
-  if (c >= p.ch) {
-    return;
+fn swiglu(@builtin(global_invocation_id) id: vec3<u32>) {
+  let c = id.x;
+  if (c < p.ch) {
+    let g = sw_h[p.ch + c];
+    sw_h[c] = g / (1.0 + exp(-g)) * sw_h[c];
   }
-  let base = wg.y * 2u * p.ch;
-  let g = sw_h[base + p.ch + c];
-  sw_y[wg.y * p.ch + c] = g / (1.0 + exp(-g)) * sw_h[base + c];
 }
 
-// The index of the largest of x[0..p.t], the lowest one on a tie, as the bits of am_out[0].
+// The index of the largest of x[0..p.t], the lowest one on a tie, as the bits of am_out[0]: the
+// maximum, then the largest −i where it occurs (exact in f32 below 2^24).
 
 @group(0) @binding(0) var<storage, read> am_x: array<f32>;
 @group(0) @binding(1) var<storage, read_write> am_out: array<u32>;
 
-var<workgroup> at: array<u32, 256>;
-
 @compute @workgroup_size(256)
 fn argmax(@builtin(local_invocation_index) lid: u32) {
-  var best = -3.0e38;
-  var id = 0xffffffffu;
+  var mx = -3.0e38;
   for (var i = lid; i < p.t; i += 256u) {
-    if (am_x[i] > best) {
-      best = am_x[i];
-      id = i;
-    }
+    mx = max(mx, am_x[i]);
   }
-  red[lid] = best;
-  at[lid] = id;
-  workgroupBarrier();
-  for (var s = 128u; s > 0u; s >>= 1u) {
-    if (lid < s) {
-      let v = red[lid + s];
-      if (v > red[lid] || v == red[lid] && at[lid + s] < at[lid]) {
-        red[lid] = v;
-        at[lid] = at[lid + s];
-      }
-    }
-    workgroupBarrier();
+  mx = reduce(mx, lid, true);
+  var first = -3.0e38;
+  for (var i = lid; i < p.t; i += 256u) {
+    first = select(first, max(first, -f32(i)), am_x[i] == mx);
   }
+  first = reduce(first, lid, true);
   if (lid == 0u) {
-    am_out[0] = at[0];
+    am_out[0] = u32(-first);
   }
 }
 

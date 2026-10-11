@@ -976,10 +976,9 @@ impl<'a> Pass<'a> {
     self.run(&self.gpu.kernels.group_norm, &[x, &n.w, &n.b], &params, [1, 1, 1]);
   }
 
-  /// SwiGLU over `h` `[t][2·ch]`: `y` `[t][ch]` = SiLU(second half) · first half.
-  pub fn swiglu(&mut self, h: &Buffer, y: &Buffer, t: usize, ch: usize) {
-    let params = [t as u32, ch as u32];
-    self.run(&self.gpu.kernels.swiglu, &[h, y], &params, [ch.div_ceil(256), t, 1]);
+  /// SwiGLU in place over one row `h` `[x | gate]` of 2·`ch`: `h[..ch]` = SiLU(gate) · x.
+  pub fn swiglu(&mut self, h: &Buffer, ch: usize) {
+    self.run(&self.gpu.kernels.swiglu, &[h], &[0, ch as u32], [ch.div_ceil(256), 1, 1]);
   }
 
   /// The index of the largest of `x[..n]` (the lowest on a tie), as the bits of `out[0]`.
@@ -1564,9 +1563,10 @@ mod tests {
     let rstd = 1.0 / (var + 1e-5).sqrt();
     let norm: Vec<f32> =
       x.iter().enumerate().map(|(i, v)| (v - mean) * rstd * w[i % ch] + b[i % ch]).collect();
-    let glu: Vec<f32> = (0..t * ch / 2)
-      .map(|i| x[i / 10 * 20 + i % 10] * silu(x[i / 10 * 20 + 10 + i % 10]))
-      .collect();
+    // One row of 300 values and 300 gates, in place: the gates stay.
+    let h = &x[..600];
+    let glu: Vec<f32> =
+      (0..600).map(|i| if i < 300 { h[i] * silu(h[300 + i]) } else { h[i] }).collect();
     // The largest value twice: the lower index wins.
     let mut logits = random(1000, 35);
     logits[700] = 2.0;
@@ -1574,8 +1574,7 @@ mod tests {
     for gpu in gpus() {
       let c = gpu.channels(&w, &b).unwrap();
       assert_close(&run(gpu, &x, |p, xb| p.group_norm(xb, &c, t, ch, 1e-5)), &norm);
-      let xb = up(gpu, &x);
-      assert_close(&run(gpu, &vec![0.0; glu.len()], |p, y| p.swiglu(&xb, y, t, ch / 2)), &glu);
+      assert_close(&run(gpu, h, |p, hb| p.swiglu(hb, 300)), &glu);
       let lb = up(gpu, &logits);
       let got = run(gpu, &[0.0], |p, out| p.argmax(&lb, out, 1000));
       assert_eq!(got[0].to_bits(), 300);

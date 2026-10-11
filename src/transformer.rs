@@ -37,15 +37,22 @@ pub fn norm(gpu: &Gpu, g: &Gguf, name: &str, d: usize, bias: bool) -> Result<Cha
   gpu.channels(&t("weight")?, &if bias { t("bias")? } else { vec![0.0; d] })
 }
 
-/// `{prefix}.{q,k,v}` stacked; with `bias`, q and v have biases (k never has one).
-fn qkv(gpu: &Gpu, g: &Gguf, prefix: &str, d: usize, bias: bool) -> Result<Linear> {
-  let w = ["q", "k", "v"].map(|n| g.tensor(&format!("{prefix}.{n}.weight"), &[d, d]));
-  let w = w.into_iter().collect::<Result<Vec<_>>>()?;
-  if !bias {
-    return gpu.linear(&w, &[]);
+/// `{prefix}.{name}` for `names` stacked; with `bias`, each has its bias but k (zeros).
+fn stacked(
+  gpu: &Gpu,
+  g: &Gguf,
+  prefix: &str,
+  names: &[&str],
+  d: usize,
+  bias: bool,
+) -> Result<Linear> {
+  let tensor = |n: &str, p: &str, dims: &[usize]| g.tensor(&format!("{prefix}.{n}.{p}"), dims);
+  let w = names.iter().map(|n| tensor(n, "weight", &[d, d])).collect::<Result<Vec<_>>>()?;
+  let mut b = Vec::new();
+  for &n in names.iter().filter(|_| bias) {
+    b.extend(if n == "k" { vec![0.0; d] } else { tensor(n, "bias", &[d])?.to_f32()? });
   }
-  let b = |n: &str| g.tensor(&format!("{prefix}.{n}.bias"), &[d])?.to_f32();
-  gpu.linear(&w, &[b("q")?, vec![0.0; d], b("v")?].concat())
+  gpu.linear(&w, &b)
 }
 
 /// Loads `load(i)` for each of `n` layers on its own thread: repacking and uploading dominate load
@@ -92,7 +99,7 @@ impl Encoder {
       let linear = |n: &str, dims: &[usize], b| conformer::linear(gpu, g, &[p(n)], dims, b);
       Ok(Block {
         norm_attn: norm(gpu, g, &p("norm_attn"), d, bias)?,
-        qkv: qkv(gpu, g, &p("attn"), d, bias)?,
+        qkv: stacked(gpu, g, &p("attn"), &["q", "k", "v"], d, bias)?,
         out: linear("attn.out", &[d, d], bias)?,
         norm_ffn: norm(gpu, g, &p("norm_ffn"), d, bias)?,
         fc1: linear("ffn.fc1", &[d, f], true)?,
@@ -155,10 +162,8 @@ pub struct Steps {
   x: Buffer,
   y: Buffer,
   qkv: Buffer,
-  /// fc1's output: `[x | gate]` when gated.
+  /// fc1's output: `[x | gate]` when gated, SwiGLU'd in place.
   h: Buffer,
-  /// SwiGLU's output.
-  g: Buffer,
   att: Buffer,
   pub logits: Buffer,
   /// Per layer `[context][d]` words.
@@ -174,19 +179,13 @@ impl Decoder {
     let layers = |i: usize| {
       let p = |n: &str| format!("dec.blocks.{i}.{n}");
       let linear = |n: &str, dims: &[usize], b| conformer::linear(gpu, g, &[p(n)], dims, b);
-      let kv = ["k", "v"].map(|n| g.tensor(&p(&format!("cross_attn.{n}.weight")), &[d, d]));
-      let kv = kv.into_iter().collect::<Result<Vec<_>>>()?;
-      let kv_bias = match bias {
-        true => [vec![0.0; d], g.tensor(&p("cross_attn.v.bias"), &[d])?.to_f32()?].concat(),
-        false => Vec::new(),
-      };
       Ok(Layer {
         norm_self: norm(gpu, g, &p("norm_self"), d, bias)?,
-        qkv: qkv(gpu, g, &p("self_attn"), d, bias)?,
+        qkv: stacked(gpu, g, &p("self_attn"), &["q", "k", "v"], d, bias)?,
         self_out: linear("self_attn.out", &[d, d], bias)?,
         norm_cross: norm(gpu, g, &p("norm_cross"), d, bias)?,
         cross_q: linear("cross_attn.q", &[d, d], bias)?,
-        cross_kv: gpu.linear(&kv, &kv_bias)?,
+        cross_kv: stacked(gpu, g, &p("cross_attn"), &["k", "v"], d, bias)?,
         cross_out: linear("cross_attn.out", &[d, d], bias)?,
         norm_ffn: norm(gpu, g, &p("norm_ffn"), d, bias)?,
         fc1: linear("ffn.fc1", &[d, up], true)?,
@@ -221,7 +220,6 @@ impl Decoder {
       y: gpu.buffer(c.d),
       qkv: gpu.buffer(3 * c.d),
       h: gpu.buffer(if c.gated { 2 * c.d_ff } else { c.d_ff }),
-      g: gpu.buffer(if c.gated { c.d_ff } else { 1 }),
       att: gpu.buffer(c.d),
       logits: gpu.buffer(self.embed.width()),
       own: cache(self.context),
@@ -269,14 +267,12 @@ impl Decoder {
       p.attend(&b.qkv, cross, &b.att, frames, heads, hd);
       p.gemv(&b.att, &l.cross_out, &b.x, Epilogue::Residual(1.0), 0);
       p.layer_norm(&b.x, &l.norm_ffn, &b.y, 1, d, None);
+      let act = if self.cfg.gated { Epilogue::Bias } else { Epilogue::Gelu };
+      p.gemv(&b.y, &l.fc1, &b.h, act, 0);
       if self.cfg.gated {
-        p.gemv(&b.y, &l.fc1, &b.h, Epilogue::Bias, 0);
-        p.swiglu(&b.h, &b.g, 1, f);
-        p.gemv(&b.g, &l.fc2, &b.x, Epilogue::Residual(1.0), 0);
-      } else {
-        p.gemv(&b.y, &l.fc1, &b.h, Epilogue::Gelu, 0);
-        p.gemv(&b.h, &l.fc2, &b.x, Epilogue::Residual(1.0), 0);
+        p.swiglu(&b.h, f);
       }
+      p.gemv(&b.h, &l.fc2, &b.x, Epilogue::Residual(1.0), 0);
     }
     p.layer_norm(&b.x, &self.norm, &b.y, 1, d, None);
     p.gemv(&b.y, &self.embed, &b.logits, Epilogue::Bias, 0);
