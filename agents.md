@@ -26,8 +26,8 @@ the first call matter as much as warm speed.
 - The CLI sits behind the default `cli` feature (binary `wavo` in `src/cli/`, `required-features
   = ["cli"]`), so `cargo add wavo --no-default-features` gets only the library. The CLI's own
   dependencies are optional and enabled by `cli`: `anyhow`, `ureq` (rustls with ring and webpki
-  roots), `symphonia`, `rubato`. ring compiles some C and assembly: the one accepted exception to
-  pure Rust, and only in the CLI.
+  roots), `symphonia`, `rubato`, `indicatif` (no default features). ring compiles some C and
+  assembly: the one accepted exception to pure Rust, and only in the CLI.
 - Add, remove or upgrade dependencies only with `cargo add` / `cargo remove` / `cargo upgrade`
   (e.g. `cargo add wgpu@=30.0.1 --no-default-features --features std,wgsl,metal,vulkan`, or
   `cargo add ureq --optional` for the CLI). Never edit `[dependencies]` or `Cargo.lock` by hand.

@@ -15,11 +15,11 @@
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, IsTerminal, Read, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 pub struct Cache {
   root: PathBuf,
@@ -79,9 +79,9 @@ impl Cache {
   }
 
   /// Downloads the file at `main` unless that revision is cached, as huggingface_hub does.
-  pub fn pull(&self, repo: &str, file: &str, live: bool) -> Result<PathBuf> {
+  pub fn pull(&self, repo: &str, file: &str, bars: &MultiProgress) -> Result<PathBuf> {
     let remote = head(repo, file)?;
-    self.install(repo, file, &remote, |part| download(&remote.url, part, remote.size, file, live))
+    self.install(repo, file, &remote, |part| download(&remote.url, part, remote.size, file, bars))
   }
 
   /// Holds `<root>/.locks/<repo folder>/<name>.lock` until the file is dropped.
@@ -218,9 +218,9 @@ fn head(repo: &str, file: &str) -> Result<Remote> {
   })
 }
 
-/// Appends to `part` from where an interrupted pull stopped; progress goes to stderr, updated in
-/// place when `live` and stderr is a terminal.
-fn download(url: &str, part: &Path, size: u64, file: &str, live: bool) -> Result<()> {
+/// Appends to `part` from where an interrupted pull stopped. Progress goes to a bar in `bars` on a
+/// terminal, else to a plain line on stderr at the start and one at the end.
+fn download(url: &str, part: &Path, size: u64, file: &str, bars: &MultiProgress) -> Result<()> {
   let mut out = OpenOptions::new().create(true).append(true).open(part)?;
   let have = out.metadata()?.len();
   let mut done = if have < size { have } else { 0 };
@@ -229,29 +229,25 @@ fn download(url: &str, part: &Path, size: u64, file: &str, live: bool) -> Result
     out.set_len(0)?;
     done = 0;
   }
-  let mb = |bytes: u64| bytes as f64 / 1e6;
-  let resume = if done > 0 { format!(", resuming at {:.0} MB", mb(done)) } else { String::new() };
-  eprintln!("downloading {file} ({:.2} GB{resume})", mb(size) / 1e3);
-  let (mut body, mut buf) = (resp.into_body().into_reader(), vec![0; 1 << 20]);
-  let (start, from, tty) = (Instant::now(), done, live && io::stderr().is_terminal());
-  let mut shown = start;
-  let show = |done: u64| {
-    let speed = mb(done - from) / start.elapsed().as_secs_f64();
-    format!("{:3}% {:.0} / {:.0} MB, {speed:.1} MB/s ", done * 100 / size, mb(done), mb(size))
-  };
-  loop {
-    let n = body.read(&mut buf).context("download interrupted, pull again to resume")?;
-    if n == 0 {
-      break;
-    }
-    out.write_all(&buf[..n])?;
-    done += n as u64;
-    if tty && shown.elapsed() > Duration::from_millis(200) {
-      shown = Instant::now();
-      eprint!("\r{}", show(done));
-    }
+  let (mb, plain) = (|bytes: u64| bytes as f64 / 1e6, bars.is_hidden());
+  if plain {
+    let resume = if done > 0 { format!(", resuming at {:.0} MB", mb(done)) } else { String::new() };
+    eprintln!("downloading {file} ({:.2} GB{resume})", mb(size) / 1e3);
   }
-  eprintln!("{}{file}: {}", if tty { "\r" } else { "" }, show(done));
+  let style =
+    "{msg}: {percent:>3}% {decimal_bytes} / {decimal_total_bytes}, {decimal_bytes_per_sec}";
+  let bar = ProgressBar::new(size).with_style(ProgressStyle::with_template(style)?);
+  let bar = bars.add(bar.with_message(file.to_string()));
+  bar.set_position(done);
+  bar.reset_eta(); // a resumed part doesn't count toward the speed
+  let mut body = bar.wrap_read(resp.into_body().into_reader());
+  let got = io::copy(&mut body, &mut out).context("download interrupted, pull again to resume")?;
+  bar.finish();
+  if plain {
+    let (done, speed) = (done + got, mb(got) / bar.elapsed().as_secs_f64());
+    let pct = done * 100 / size;
+    eprintln!("{file}: {pct:3}% {:.0} / {:.0} MB, {speed:.1} MB/s", mb(done), mb(size));
+  }
   Ok(())
 }
 
@@ -269,6 +265,8 @@ fn link(blob: &Path, pointer: &Path, etag: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+  use std::time::Duration;
+
   use super::*;
 
   fn temp(name: &str) -> Cache {
