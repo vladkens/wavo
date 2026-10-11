@@ -95,10 +95,13 @@ Parakeet's fixed cost per call (`first_depthwise`, frames padded to 64); with th
 approval, since it changes arithmetic, an int8 GEMM (`dot4I8Packed`) on Q8_0 activations as the
 reference's CPU path does.
 
-GPUs with 16×16 F16 cooperative matrices ([plan](plans/completed/20261011-nvidia-fast.md)): Whisper's decoder on large models (gemv
-140 + attend 115 ms on large-v3 `jfk`, the reference's whole decoder 249 ms); the GEMM under 16
-workgroups (split-K or a 64-wide tile); the tier on AMD (a Radeon 610M's driver crashed, see the
-Log; RDNA3 and newer drivers untested) and Intel Arc.
+GPUs with 16×16 F16 cooperative matrices ([plan](plans/completed/20261011-nvidia-fast.md)):
+Whisper's decoder on large models (gemv 140 + attend 65 ms on large-v3 `jfk`, the reference's
+whole decoder 249 ms); Parakeet's relative attention, still the portable scores, softmax and
+values (~58 of ~120 ms of kernels on V3 `dots`), as a flash kernel on 16×16 matrices or a portable
+one (which would help the N100 too); the GEMM under 16 workgroups (split-K or a 64-wide tile); the
+tier on AMD (a Radeon 610M's driver crashed, see the Log; RDNA3 and newer drivers untested) and
+Intel Arc.
 
 Load: compiling the pipelines while the weights upload (~7 ms, but every kernel lookup would
 wait on a thread); starting the device while the GGUF header is read (≤ 3 ms left).
