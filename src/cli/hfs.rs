@@ -19,7 +19,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
 
 /// Downloads that fail on the network resume this many more times.
@@ -137,9 +137,7 @@ impl Cache {
         let part = blob.with_file_name(format!("{}.incomplete", remote.etag));
         fetch(&part)?;
         let got = fs::metadata(&part)?.len();
-        if got != remote.size {
-          bail!("{file}: downloaded {got} bytes, expected {}", remote.size);
-        }
+        ensure!(got == remote.size, "{file}: downloaded {got} bytes, expected {}", remote.size);
         fs::rename(&part, &blob)?;
       }
       link(&blob, &pointer, &remote.etag)?;
@@ -168,14 +166,12 @@ impl Cache {
     if pointers.is_empty() {
       return Ok(None);
     }
-    let mut blobs: Vec<PathBuf> = (pointers.iter().filter_map(|p| fs::read_link(p).ok()))
+    let blobs: Vec<PathBuf> = (pointers.iter().filter_map(|p| fs::read_link(p).ok()))
       .filter_map(|target| target.file_name().map(|etag| dir.join("blobs").join(etag)))
       .collect();
     if blobs.iter().any(|b| b.is_symlink()) {
       bail!("hf keeps {file} in its shared blob store; run: hf cache rm hf://models/{repo}/{file}");
     }
-    blobs.sort();
-    blobs.dedup();
     let (mut freed, mut emptied) = (0, Vec::new());
     for pointer in &pointers {
       let meta = pointer.symlink_metadata()?;
@@ -186,7 +182,8 @@ impl Cache {
         emptied.push(snapshot.file_name().unwrap().to_string_lossy().into_owned());
       }
     }
-    // Blobs are content-addressed: another file name may still point at the same one.
+    // Blobs are content-addressed: another file name may still point at the same one. A blob two
+    // snapshots share is listed twice, and no longer a file on its second turn.
     let used = linked(&dir.join("snapshots"));
     for blob in blobs.iter().filter(|b| b.is_file()) {
       if !used.iter().any(|u| Some(u.as_os_str()) == blob.file_name()) {
