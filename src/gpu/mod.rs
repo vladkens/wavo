@@ -324,7 +324,8 @@ impl Gpu {
     });
     let mut next = || kept.next().flatten();
     // All six GEMMs are taken before any is checked, so the kernels after them stay in place.
-    let gemm: Option<Vec<_>> = (0..6).map(|_| next()).collect();
+    let gemm: Vec<_> = (0..6).map(|_| next()).collect();
+    let gemm: Option<Vec<_>> = gemm.into_iter().collect();
     Fast {
       size: if gemm.is_some() { size } else { 0 },
       gemm,
@@ -1055,6 +1056,19 @@ mod tests {
       })
       .collect();
     [(Type::F32, f32s), (Type::F16, f16s), (Type::Q8_0, q8)]
+  }
+
+  #[test]
+  fn failed_gemm_probe() {
+    // A GEMM that fails its probe turns the fast GEMM off and leaves the kernels after it in place.
+    let gpu = &gpus()[1];
+    let Some(size) = fast_size(&adapter().unwrap()) else { return };
+    let (mut gemm, kernels) = compile_fast(&gpu.device, size).unwrap();
+    // The portable GEMM writes nothing for m = 0.
+    gemm[0] = gpu.kernels.gemm[0].clone();
+    let fast = gpu.probe(size, (gemm, kernels.clone()));
+    assert!(fast.gemm.is_none() && fast.size == 0);
+    assert!([fast.layer_norm, fast.conv_glu, fast.attention, fast.relative] == kernels);
   }
 
   #[test]
