@@ -201,10 +201,12 @@ the first call matter as much as warm speed.
      model of each family) and, when a PR changes `src/`, `Cargo.toml` or `Cargo.lock`,
      `make bench-compare`: `wavo bench` of GigaAM v3 and Parakeet v3 against main's `dev` build,
      warning at over 25% slower; then run the full benchmarks locally. Copilot reviews every PR
-     automatically: fix what is right, answer the rest in the thread. Before handing the PR over,
-     the orchestrator also runs Codex on the PR's checkout, `codex -C <worktree> review --base
-     origin/main -c model_reasoning_effort=xhigh`, and fixes what is right; skip this step when
-     Codex is unavailable (not logged in, or out of quota).
+     automatically: fix what is right, answer the rest in the thread. Once the orchestrator accepts
+     the solution, it asks the implementing agent for a final Codex review on the PR's checkout,
+     `codex -C <worktree> review --base origin/main -c model_reasoning_effort=xhigh`: the agent
+     fixes what is right, reruns the checks and reports each finding as fixed or rejected with the
+     reason; the orchestrator checks that last diff and hands the PR to the person. Skip the Codex
+     step when Codex is unavailable (not logged in, or out of quota).
   6. The person does the final review and merges: squash, one commit on `main`, the branch is
      deleted. Never commit or push to `main` directly.
   7. On conflicts, the orchestrator (or an agent it asks) rebases the branch onto `main`, reruns the
