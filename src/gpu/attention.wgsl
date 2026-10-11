@@ -120,3 +120,152 @@ fn values(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l:
     }
   }
 }
+
+@group(0) @binding(0) var<storage, read> fl_qk: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> fl_v: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> fl_o: array<vec4<f32>>;
+
+// q as [column][query] pairs, k as [column][key] quads, then v as [key][column] quads; zeros past
+// head_dim and t.
+var<workgroup> fq: array<vec2<f32>, 1024>;
+var<workgroup> fk: array<vec4<f32>, 512>;
+// Probabilities as [key][query] pairs.
+var<workgroup> fp: array<vec2<f32>, 512>;
+// Per thread column x, a value per query: [x][query].
+var<workgroup> fx: array<f32, 256>;
+
+// Without relative positions, head_dim ≤ 64 and a multiple of 4: attention without the scores in
+// memory. A workgroup takes 32 queries of one head and walks the keys in blocks of 32 with an online
+// softmax. Thread (x, y) scores queries 2y and 2y + 1 against keys 4x..4x + 3, then sums the
+// values of columns 4x..4x + 3 and 32 + 4x..32 + 4x + 3 for those queries.
+@compute @workgroup_size(8, 16)
+fn flash(
+  @builtin(workgroup_id) wg: vec3<u32>,
+  @builtin(local_invocation_id) l: vec3<u32>,
+  @builtin(local_invocation_index) lid: u32,
+) {
+  let h4 = p.head_dim / 4u;
+  let q0 = wg.x * 32u;
+  let head = wg.y * p.head_dim;
+  // Pairs of q rows by column quads, transposed to [column][pair].
+  for (var e = lid; e < 256u; e += 128u) {
+    let r = 2u * (e % 16u);
+    let c = e / 16u;
+    var x = vec4(0.0);
+    var y = vec4(0.0);
+    if (c < h4) {
+      if (q0 + r < p.t) {
+        x = fl_qk[((q0 + r) * p.stride + head) / 4u + c];
+      }
+      if (q0 + r + 1u < p.t) {
+        y = fl_qk[((q0 + r + 1u) * p.stride + head) / 4u + c];
+      }
+    }
+    fq[4u * c * 16u + r / 2u] = vec2(x.x, y.x);
+    fq[(4u * c + 1u) * 16u + r / 2u] = vec2(x.y, y.y);
+    fq[(4u * c + 2u) * 16u + r / 2u] = vec2(x.z, y.z);
+    fq[(4u * c + 3u) * 16u + r / 2u] = vec2(x.w, y.w);
+  }
+  let r0 = 2u * l.y;
+  let keys = 4u * l.x + vec4(0u, 1u, 2u, 3u);
+  var m = vec2(-3.0e38);
+  var sum = vec2(0.0);
+  var oa0 = vec4(0.0);
+  var ob0 = vec4(0.0);
+  var oa1 = vec4(0.0);
+  var ob1 = vec4(0.0);
+  for (var j0 = 0u; j0 < p.t; j0 += 32u) {
+    // Thread lid transposes keys 4·(lid % 8).. by column quad lid / 8 into [column][key quad].
+    let r = j0 + 4u * (lid % 8u);
+    let c = lid / 8u;
+    var k: array<vec4<f32>, 4>;
+    for (var i = 0u; i < 4u; i++) {
+      k[i] = vec4(0.0);
+      if (r + i < p.t && c < h4) {
+        k[i] = fl_qk[((r + i) * p.stride + p.ch + head) / 4u + c];
+      }
+    }
+    fk[4u * c * 8u + lid % 8u] = vec4(k[0].x, k[1].x, k[2].x, k[3].x);
+    fk[(4u * c + 1u) * 8u + lid % 8u] = vec4(k[0].y, k[1].y, k[2].y, k[3].y);
+    fk[(4u * c + 2u) * 8u + lid % 8u] = vec4(k[0].z, k[1].z, k[2].z, k[3].z);
+    fk[(4u * c + 3u) * 8u + lid % 8u] = vec4(k[0].w, k[1].w, k[2].w, k[3].w);
+    workgroupBarrier();
+    var s0 = vec4(0.0);
+    var s1 = vec4(0.0);
+    for (var c = 0u; c < p.head_dim; c++) {
+      let q = fq[c * 16u + l.y];
+      let k = fk[c * 8u + l.x];
+      s0 += q.x * k;
+      s1 += q.y * k;
+    }
+    let valid = keys < vec4(p.t - j0);
+    let x0 = select(vec4(-3.0e38), s0 * p.scale, valid);
+    let x1 = select(vec4(-3.0e38), s1 * p.scale, valid);
+    fx[l.x * 32u + r0] = max(max(x0.x, x0.y), max(x0.z, x0.w));
+    fx[l.x * 32u + r0 + 1u] = max(max(x1.x, x1.y), max(x1.z, x1.w));
+    workgroupBarrier();
+    var top = m;
+    for (var i = 0u; i < 8u; i++) {
+      top = max(top, vec2(fx[i * 32u + r0], fx[i * 32u + r0 + 1u]));
+    }
+    let alpha = exp(m - top);
+    m = top;
+    let e0 = exp(x0 - top.x);
+    let e1 = exp(x1 - top.y);
+    sum = sum * alpha + vec2(dot(e0, vec4(1.0)), dot(e1, vec4(1.0)));
+    oa0 *= alpha.x;
+    ob0 *= alpha.x;
+    oa1 *= alpha.y;
+    ob1 *= alpha.y;
+    fp[4u * l.x * 16u + l.y] = vec2(e0.x, e1.x);
+    fp[(4u * l.x + 1u) * 16u + l.y] = vec2(e0.y, e1.y);
+    fp[(4u * l.x + 2u) * 16u + l.y] = vec2(e0.z, e1.z);
+    fp[(4u * l.x + 3u) * 16u + l.y] = vec2(e0.w, e1.w);
+    for (var e = lid; e < 512u; e += 128u) {
+      let r = e / 16u;
+      let c = e % 16u;
+      var x = vec4(0.0);
+      if (j0 + r < p.t && c < h4) {
+        x = fl_v[((j0 + r) * p.v_stride + p.v_offset + head) / 4u + c];
+      }
+      fk[e] = x;
+    }
+    workgroupBarrier();
+    for (var j = 0u; j < 32u; j++) {
+      let pj = fp[j * 16u + l.y];
+      let va = fk[j * 16u + l.x];
+      let vb = fk[j * 16u + 8u + l.x];
+      oa0 += pj.x * va;
+      ob0 += pj.x * vb;
+      oa1 += pj.y * va;
+      ob1 += pj.y * vb;
+    }
+    workgroupBarrier();
+  }
+  // Each thread summed only its own keys' probabilities.
+  fx[l.x * 32u + r0] = sum.x;
+  fx[l.x * 32u + r0 + 1u] = sum.y;
+  workgroupBarrier();
+  var total = vec2(0.0);
+  for (var i = 0u; i < 8u; i++) {
+    total += vec2(fx[i * 32u + r0], fx[i * 32u + r0 + 1u]);
+  }
+  let o = ((q0 + r0) * p.ch + head) / 4u;
+  let ch4 = p.ch / 4u;
+  if (q0 + r0 < p.t) {
+    if (l.x < h4) {
+      fl_o[o + l.x] = oa0 / total.x;
+    }
+    if (8u + l.x < h4) {
+      fl_o[o + 8u + l.x] = ob0 / total.x;
+    }
+  }
+  if (q0 + r0 + 1u < p.t) {
+    if (l.x < h4) {
+      fl_o[o + ch4 + l.x] = oa1 / total.y;
+    }
+    if (8u + l.x < h4) {
+      fl_o[o + ch4 + 8u + l.x] = ob1 / total.y;
+    }
+  }
+}

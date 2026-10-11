@@ -53,7 +53,7 @@ no-speech run on the CPU, and windows advance as the reference's seek loop.
 (computed on the CPU) sized for the longest input so far. One submission (one per layer on the
 portable path) holds the conv stem over the raw samples (im2col and GEMM with tanh, a one-workgroup
 GroupNorm, two more convs with GELU), the shared pre-LN blocks of `src/transformer.rs` with rotary
-q and k and portable attention (heads of 36 and 52 dims), the cross `[K | V]` packed into F16
+q and k and the portable flash attention (heads of 36 and 52 dims), the cross `[K | V]` packed into F16
 caches, and the `<s>` step. The decoder is Whisper's step on the GPU with SwiGLU and rotary q and
 k, ending in an argmax, so a token reads back 4 bytes; EOS, the 194-position cap and the
 repetition guard run on the CPU.
@@ -90,7 +90,7 @@ cross attention split over key blocks.
 GPUs without cooperative matrices, open in [the Linux plan](plans/20261010-linux.md) (Tasks 5
 and 7): profile the portable encoder with GPU timestamps; subgroup LayerNorm and conv_glu at any
 subgroup width, apart from the cooperative-matrix gate; a register-tiled GEMM with Q8_0/F16
-dequantized in registers (optionally F16 math); flash attention without cooperative matrices;
+dequantized in registers (optionally F16 math);
 Parakeet's fixed cost per call (`first_depthwise`, frames padded to 64); with the person's
 approval, since it changes arithmetic, an int8 GEMM (`dot4I8Packed`) on Q8_0 activations as the
 reference's CPU path does.
@@ -235,6 +235,18 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### Attention
 
+- 2026-10-12, Whisper, Moonshine and GigaAM, portable flash attention for heads of ≤ 64 dims (a
+  multiple of 4) without relative positions: a workgroup of 128 threads takes 32 queries of one
+  head and walks the keys in blocks of 32 (q, k transposed and v in shared memory, 21 KB), each
+  thread scoring 2 queries × 4 keys and summing 2 × 8 output columns, online softmax; no scores
+  in memory. RTX 4060 A/B/A: whisper-turbo `jfk` 639 / 260 / 642, `ru-long` 1365 / 603 / 1370,
+  GigaAM `ru-long` 124 / 79 / 124, Moonshine tiny `dots` 138 / 115 / 138, base 228 / 194 / 228
+  ms; Parakeet unchanged. M2 Moonshine `dots` tiny 424 → 302, base 687 → 498 ms, peak 187 → 120
+  and 259 → 194 MiB (reference 138 / 236). Fixtures exact (all 21 models on the RTX 4060, M2).
+  Kept. Turbo `jfk` on the RTX 4060 after it, GPU timestamps per call: attention 473 → 86 ms,
+  GEMM 122, decoder gemv 23.5 and attend 13 ms.
+  - Writing a vector component by a runtime index (`a[i][r % 2u] = x` on a workgroup array of
+    vectors) gave NaN on the M2: the staging writes whole vectors instead.
 - 2026-10-11, Whisper and Moonshine, decoder `attend` in blocks of 2048 keys with an online
   softmax, so cross-attention takes any length (Moonshine runs one pass over the whole input):
   bit-identical up to 2048 keys; whisper-tiny `jfk` on the RTX 4060 50.0 / 51.2 / 51.5 ms on main,

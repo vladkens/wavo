@@ -46,6 +46,7 @@ struct Kernels {
   layer_norm: Pipeline,
   im2col: Pipeline,
   conv_glu: Pipeline,
+  flash: Pipeline,
   scores: Pipeline,
   softmax: Pipeline,
   values: Pipeline,
@@ -73,6 +74,7 @@ impl Kernels {
       layer_norm: pipeline(device, &ops, "layer_norm", &[]),
       im2col: pipeline(device, &ops, "im2col", &[]),
       conv_glu: pipeline(device, &ops, "conv_glu", &[]),
+      flash: pipeline(device, &attention, "flash", &[]),
       scores: pipeline(device, &attention, "scores", &[]),
       softmax: pipeline(device, &ops, "softmax", &[]),
       values: pipeline(device, &attention, "values", &[]),
@@ -525,9 +527,18 @@ impl Gpu {
     k.as_ref().filter(|_| (min..=max).contains(&head_dim) && head_dim.is_multiple_of(8))
   }
 
-  /// Floats of attention scratch for `t` frames: the portable path keeps all scores.
+  /// Whether the portable path has a flash kernel for heads of `head_dim`.
+  fn portable_flash(head_dim: usize, relative: bool) -> bool {
+    !relative && head_dim <= 64 && head_dim.is_multiple_of(4)
+  }
+
+  /// Floats of attention scratch for `t` frames: the portable path without flash attention keeps
+  /// all scores.
   pub fn scores_len(&self, t: usize, heads: usize, head_dim: usize, relative: bool) -> usize {
-    if self.flash(head_dim, relative).is_some() { 1 } else { heads * t * t }
+    match self.flash(head_dim, relative).is_some() || Self::portable_flash(head_dim, relative) {
+      true => 1,
+      false => heads * t * t,
+    }
   }
 
   fn begin(&self) -> (wgpu::CommandEncoder, wgpu::ComputePass<'static>) {
@@ -916,6 +927,9 @@ impl<'a> Pass<'a> {
       return self.run(k, buffers, &params[..7 + d as usize], [t.div_ceil(queries), heads, 1]);
     }
     let (k, tiles) = (&self.gpu.kernels, t.div_ceil(16));
+    if Gpu::portable_flash(head_dim, d == 1) {
+      return self.run(&k.flash, &[qk, v, o], &params[..7], [t.div_ceil(32), heads, 1]);
+    }
     self.run(&k.scores, &[qk, pos, s], &params, [tiles, tiles, heads]);
     self.run(&k.softmax, &[s], &params[..1], [t, heads, 1]);
     self.run(&k.values, &[s, v, o], &params, [tiles, heads, 1]);
@@ -1394,7 +1408,7 @@ mod tests {
   #[test]
   fn attention() {
     // head_dim 56: the flash kernel's last 8 columns stay out.
-    for (t, hd) in [(37usize, 48), (100, 48), (100, 56)] {
+    for (t, hd) in [(37usize, 48), (100, 48), (100, 56), (5, 36), (70, 52), (100, 64), (40, 80)] {
       let heads = 2;
       let d = heads * hd;
       // The fast path reads rows up to t rounded up to 64.
