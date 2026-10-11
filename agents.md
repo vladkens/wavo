@@ -203,7 +203,8 @@ the first call matter as much as warm speed.
      warning at over 25% slower; then run the full benchmarks locally. Copilot reviews every PR
      automatically: fix what is right, answer the rest in the thread. Once the orchestrator accepts
      the solution, the implementing agent runs `codex -C <worktree> review --base origin/main -c
-     model_reasoning_effort=xhigh` if available and fixes or rejects each finding with a reason.
+     model_reasoning_effort=xhigh` if available and fixes or rejects each finding with a reason;
+     the orchestrator checks that last diff before handing the PR over.
   6. The person does the final review and merges: squash, one commit on `main`, the branch is
      deleted. Never commit or push to `main` directly.
   7. On conflicts, the orchestrator (or an agent it asks) rebases the branch onto `main`, reruns the
