@@ -367,9 +367,10 @@ mod tests {
       MODELS.iter().map(|m| format!("{}` | {}", m.name, row(m))).collect();
     assert_eq!(readme, expected, "model table in readme.md");
 
+    // The published crate has neither file: these two checks run in the repository only.
+    let (Ok(makefile), Ok(tests)) = (read("Makefile"), read("tests/models.rs")) else { return };
     let mut full: Vec<&str> = MODELS.iter().map(|m| m.full_name).collect();
     full.sort();
-    let makefile = read("Makefile").unwrap();
     let mut make = Vec::new();
     for line in makefile.lines().skip_while(|l| !l.starts_with("MODELS := ")) {
       make.extend(line.trim_start_matches("MODELS := ").split_whitespace().filter(|w| *w != "\\"));
@@ -380,7 +381,6 @@ mod tests {
     make.sort();
     assert_eq!(make, full, "MODELS in the Makefile");
 
-    let tests = read("tests/models.rs").unwrap();
     let mut tested: Vec<&str> = (tests.lines())
       .filter_map(|l| l.trim_start().strip_prefix("check(\"")?.split('"').next())
       .collect();
