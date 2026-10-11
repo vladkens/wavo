@@ -81,16 +81,13 @@ Parakeet's fixed cost per call (`first_depthwise`, frames padded to 64); with th
 approval, since it changes arithmetic, an int8 GEMM (`dot4I8Packed`) on Q8_0 activations as the
 reference's CPU path does.
 
-GPUs with 16×16 F16 cooperative matrices, from the RTX 4060 profile in [the 16×16 GEMM
-plan](plans/20261011-nvidia-fast.md): the 16×16 GEMM on AMD and Intel Arc (AMD's Windows driver
-25.10 crashed compiling any 16×16 shader on a Radeon 610M; a discrete RDNA3 card, newer drivers
-and Arc are untested); flash attention on 16×16 F16
-matrices, the largest gain left there and the most new code (the portable attention is 471 of 633
-ms of kernels on Whisper turbo, against the reference's whole encoder at 160 ms; Parakeet's
-relative scores 49 of 120 ms; it would round q, k, v and the probabilities to f16, which the
-fixtures must survive); Whisper's decoder on large models (gemv 140 + attend 115 ms on large-v3
-`jfk`, the reference's whole decoder 249 ms); the 16×16 GEMM under 16 workgroups, where the
-portable one runs now (split-K or a 64-wide tile).
+GPUs with 16×16 F16 cooperative matrices ([plan](plans/20261011-nvidia-fast.md)): flash
+attention on them, the largest gain left (on an RTX 4060 the portable attention is 471 of 633 ms
+of kernels on Whisper turbo, the reference's whole encoder 160 ms; it would round q, k, v and the
+probabilities to f16, which the fixtures must survive); Whisper's decoder on large models (gemv
+140 + attend 115 ms on large-v3 `jfk`, the reference's whole decoder 249 ms); the GEMM under 16
+workgroups (split-K or a 64-wide tile); the tier on AMD (a Radeon 610M's driver crashed, see the
+Log; RDNA3 and newer drivers untested) and Intel Arc.
 
 Load: compiling the pipelines while the weights upload (~7 ms, but every kernel lookup would
 wait on a thread); starting the device while the GGUF header is read (≤ 3 ms left).
@@ -159,22 +156,17 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 ### GEMM
 
 - 2026-10-11, all models, Windows RTX 4060: the fast GEMM on 16×16 F16 cooperative matrices (F32
-  accumulators) where the adapter has those and no 8×8 F32 ones. gemm_fast.wgsl is written in F
-  and built with F = 8 or 16 (at 16: 64 or 128 rows × 128 columns, K 32 or 16 per step, ~24 KB
-  shared). GEMMs on turbo `jfk` 536 → 119 ms; warm 10–40% faster on every model (turbo 1082 →
-  646, Parakeet V3 `dots` 357 → 233 ms); fixtures exact. Kept. [Plan](plans/20261011-nvidia-fast.md).
-  - Under 16 workgroups the 128-wide tiles lose: on GigaAM `ru` (113 rows) the 768-wide layers
-    get 12, FFN down 6.96 → 10.54 ms, `ru` 23.5 → 25.4 ms. Those GEMMs take the portable kernel:
-    `ru` 20.2 ms. Kept.
-  - Columns past n (W is padded to 64 rows, a 128-wide tile passes them): checking them at F = 8
-    too cost the M2 8% on GigaAM `ru-long` (251 → 280 ms), so only F = 16 checks. Staging in
-    loops of one or two steps cost the M2 3% on `ru` (41.0 → 42.5 ms), so the first step stays
-    out of the loops. After both the M2 is at main's speed.
-  - The Radeon 610M in the same laptop (AMD driver 25.10.30.02, Vulkan) reports 16×16×16 F16 →
-    F32 and subgroups of 32–64, but the process dies while the driver compiles the first 16×16
-    GEMM pipeline, and also a 10-line shader with one 16×16 load, multiply-add and store (f32 or
-    f16 accumulator, 32 or 128 threads, either layout); NVIDIA compiles the same. A probe can't
-    catch a crash, so the 16×16 tier is limited to NVIDIA's vendor id.
+  accumulators), gemm_fast.wgsl written in F and built with F = 8 or 16 (at 16: 64 or 128 rows ×
+  128 columns). GEMMs on turbo `jfk` 536 → 119 ms; warm 10–40% faster on every model (turbo 1082
+  → 646, Parakeet V3 `dots` 357 → 233 ms); fixtures exact. Kept.
+  [Plan](plans/20261011-nvidia-fast.md).
+  - Under 16 workgroups the 128-wide tiles lose (GigaAM `ru`'s 768-wide layers get 12: FFN down
+    6.96 → 10.54 ms, `ru` 23.5 → 25.4 ms), so those GEMMs stay portable: `ru` 20.2 ms. Kept.
+  - Checking columns past n (W is padded to 64 rows) at F = 8 too cost the M2 8% on `ru-long`;
+    staging in loops of one or two steps cost it 3% on `ru`. Both stay off the F = 8 path.
+  - The laptop's Radeon 610M (AMD driver 25.10.30.02) reports 16×16 F16 → F32 matrices, but the
+    process dies while the driver compiles any shader using them, even a 10-line one; a probe
+    can't catch that. The tier is limited to NVIDIA's vendor id.
 
 - 2026-10-10, all models, Windows RTX 4060: NVIDIA's Vulkan driver folds the portable GEMM's
   `pack2x16float` round trip into a no-op (AMD's truncates), so W was not rounded to f16 and
@@ -270,10 +262,9 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### Other encoder kernels and dispatches
 
-- 2026-10-11, all models, Windows RTX 4060: the subgroup LayerNorm and conv_glu (ops_fast.wgsl)
-  along with the 16×16 GEMM: LayerNorm 1.55 → 1.67 and conv_glu 0.89 → 1.16 ms on Parakeet V3
-  `dots`, LayerNorm 5.0 → 8.2 ms on turbo `jfk` (GPU timestamps). Rejected there: with 16×16
-  matrices only the GEMM is fast.
+- 2026-10-11, all models, Windows RTX 4060: the subgroup LayerNorm and conv_glu next to the 16×16
+  GEMM: LayerNorm 5.0 → 8.2 ms on turbo `jfk`, conv_glu 0.89 → 1.16 ms on Parakeet V3 `dots` (GPU
+  timestamps). Rejected there.
 
 - 2026-10-10, Parakeet V2 and GigaAM, simplification (core + Parakeet 3171 → 3103 lines): one
   LayerNorm kernel whose rotary output runs behind a uniform head_dim check (without rotary the
@@ -486,10 +477,9 @@ plus first call.
 
 Numbers are in the plans' "## Result" sections.
 
-- 2026-10-11, Windows RTX 4060, profile with GPU timestamps before and after the 16×16 GEMM:
-  portable GEMMs were 50% of the kernels on turbo `jfk` (536 of 1055 ms) and 75% on Parakeet V3
-  `dots`; after it attention is 74% on turbo (471 of 633 ms). [16×16 GEMM
-  plan](plans/20261011-nvidia-fast.md).
+- 2026-10-11, Windows RTX 4060, GPU timestamps around the 16×16 GEMM: the portable GEMMs were 50%
+  of the kernels on turbo `jfk` and 75% on Parakeet V3 `dots`; after it attention is 74% on turbo
+  (471 of 633 ms). [16×16 GEMM plan](plans/20261011-nvidia-fast.md).
 
 - 2026-10-11, Whisper variants, baseline: on the M2 8–30% faster than the reference; on Windows
   the portable encoder is 1.5–3.4× behind the reference's cooperative matrices from base on.

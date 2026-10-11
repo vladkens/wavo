@@ -21,9 +21,10 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 
 Open:
 
-- **Fast kernels beyond Apple.** Other GPUs run the portable kernels: Whisper is 1.1–3.4×
-  slower than transcribe.cpp on an RTX 4060. A fast tier for F16 16×16 cooperative matrices is
-  in the works; the Linux plan's portable-encoder items stay open.
+- **Fast kernels beyond Apple.** The GEMM on F16 16×16 cooperative matrices runs on NVIDIA
+  (#28, [plan](plans/20261011-nvidia-fast.md)): 10–40% faster on an RTX 4060, Parakeet ahead of
+  transcribe.cpp, Whisper still 2–3× behind. Open: attention on 16×16 matrices, the tier on AMD
+  and Intel Arc, and the Linux plan's portable-encoder items.
 - **Fast build.** The in-house FFT replaced `rustfft` (#15); left: wgpu features per target.
   [Plan](plans/20261010-fast-build.md)
 - **Other engines.** Measure wavo against the other ways to run the same models on a Mac, not
