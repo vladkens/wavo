@@ -1,7 +1,6 @@
 # GigaAM v3 e2e-rnnt
 
-Done: GigaAM v3 e2e-rnnt matches the reference on its three fixtures, commit afc44a2 (before pull
-requests).
+Done: 2026-10-09, commit afc44a2
 
 Roadmap phase 1: the first working model, matched exactly against the reference, plus a baseline
 benchmark. Follow `agents.md`. All three tasks land as one commit.

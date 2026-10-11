@@ -1,7 +1,6 @@
 # Parakeet TDT V2
 
-Done: Parakeet TDT V2 on the shared core, fixtures exact on the first run, commit 9aae69c (before
-pull requests).
+Done: 2026-10-10, commit 9aae69c
 
 Roadmap phase 4: `parakeet-tdt-0.6b-v2` as a second family on the shared core, matched exactly
 against the reference, plus a first benchmark. Follow `agents.md` → "Adding a model".

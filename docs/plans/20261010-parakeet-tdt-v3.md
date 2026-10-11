@@ -1,7 +1,6 @@
 # Parakeet TDT V3
 
-Done: Parakeet TDT V3 as config on the V2 code path, decoder weights Q8_0 on four threads, commit
-31bfebf (before pull requests).
+Done: 2026-10-10, commit 31bfebf
 
 Roadmap phase 6: `parakeet-tdt-0.6b-v3` (25 European languages) as a variant of the Parakeet
 family. Follow `agents.md` → "Adding a model"; read `docs/perf.md` before speed work.

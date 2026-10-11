@@ -1,7 +1,6 @@
 # GigaAM v3 e2e-rnnt, fast
 
-Done: warm faster than the reference on all three clips, load and peak below it, commit 7b02350
-(before pull requests).
+Done: 2026-10-09, commit 7b02350
 
 Roadmap phase 2. Follow `agents.md`; read `docs/perf.md` first and log every attempt there.
 

@@ -1,7 +1,6 @@
 # Real recordings vs transcribe.cpp
 
-Done: `make compare` on 2,923 dictation recordings, the same text as the reference in 99.86%
-(GigaAM) and 98.9% (Parakeet V3), PR #6.
+Done: 2026-10-10, PR #6
 
 Roadmap phase 10: check on a few thousand real dictation recordings, not the 15 fixture clips,
 that wavo gives transcribe.cpp's text and is faster. The recordings are private voice notes: only

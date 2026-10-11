@@ -1,7 +1,6 @@
 # Long audio
 
-Done: `wavo run` splits long audio at pauses into segments of the model's window, `--segment`
-overrides it, PR #3.
+Done: 2026-10-10, PR #3
 
 Roadmap phase 9: `wavo run` transcribes recordings of any length by splitting them at pauses into
 segments each model handles well. Follow `agents.md`; log every measurement in `docs/perf.md`.

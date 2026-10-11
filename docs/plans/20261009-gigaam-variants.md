@@ -1,7 +1,6 @@
 # GigaAM v3 variants
 
-Done: e2e-ctc, rnnt and ctc as heads of the shared encoder, fixtures exact, commit 7720de8 (before
-pull requests).
+Done: 2026-10-09, commit 7720de8
 
 Roadmap phase 3: `gigaam-v3-e2e-ctc`, `gigaam-v3-rnnt` and `gigaam-v3-ctc` on the existing
 GigaAM code. Follow `agents.md` → "Adding a model".

@@ -1,7 +1,6 @@
 # Parakeet TDT V2, fast
 
-Done: warm, first call, load and peak below the reference on all three clips, commit 5c15289
-(before pull requests).
+Done: 2026-10-10, commit 5c15289
 
 Roadmap phase 5. Follow `agents.md`; read `docs/perf.md` first and log every attempt there.
 

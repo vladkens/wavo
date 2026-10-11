@@ -1,6 +1,7 @@
 # Fast build
 
-After the models are in. Keep the fixtures exact; log the numbers in `docs/perf.md`.
+After the models are in. Keep the fixtures exact; log each attempt in `docs/perf.md`, the numbers
+in Result below.
 
 - [x] One FFT module for every size the models use (2, 3 and 5 factors: 320, 400, 512), shared
       by all frontends; drop `rustfft` if GigaAM and Parakeet fixtures stay exact.

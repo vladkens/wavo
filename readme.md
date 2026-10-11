@@ -128,10 +128,10 @@ Apple M2, the same Q8_0 model file, wavo against transcribe.cpp on Metal, an 11 
 
 | Model | Transcribe, ms | Load, ms | Memory, MiB |
 |---|---|---|---|
-| `gigaam-v3` | **96** / 100 | **77** / 124 | **302** / 325 |
-| `parakeet-v2` | **143** / 199 | **159** / 274 | **740** / 820 |
-| `parakeet-v3` | **154** / 215 | **169** / 284 | **763** / 884 |
-| `whisper-turbo` | **1240** / 1390 | **215** / 310 | **1018** / 1055 |
+| `gigaam-v3` | **96** / 100 | **44** / 104 | **302** / 325 |
+| `parakeet-v2` | **143** / 199 | **81** / 245 | **740** / 820 |
+| `parakeet-v3` | **154** / 215 | **89** / 245 | **763** / 884 |
+| `whisper-turbo` | **1240** / 1390 | **105** / 298 | **1018** / 1055 |
 
 For dictation, where a model is loaded for each recording, the whole run (start, load, transcribe)
 is about a quarter to a third shorter. More numbers in [docs/perf.md](docs/perf.md).
