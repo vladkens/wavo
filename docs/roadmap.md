@@ -10,8 +10,8 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **5. Parakeet TDT V2, fast.** [Plan](plans/20261010-parakeet-fast.md)
 - [x] **6. Parakeet TDT V3.** [Plan](plans/20261010-parakeet-tdt-v3.md)
 - [x] **7. Ollama-like CLI** (#2). [Plan](plans/20261010-cli.md)
-- [x] **8. Linux and Windows** through Vulkan (#5, #7, #12). [Linux](plans/20261010-linux.md),
-      [Windows](plans/20261010-windows.md)
+- [x] **8. Linux and Windows** through Vulkan, working and tested (#5, #7, #12).
+      [Linux](plans/20261010-linux.md), [Windows](plans/20261010-windows.md)
 - [x] **9. Long audio,** split at pauses (#3). [Plan](plans/20261010-long-audio.md)
 - [x] **10. Real recordings vs transcribe.cpp** (#6). [Plan](plans/20261010-real-recordings.md)
 - [x] **11. Whisper large-v3-turbo, correct** (#8). [Plan](plans/20261010-whisper.md)
@@ -21,7 +21,10 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 
 Open:
 
-- **Fast build.** The own FFT replaced `rustfft` (#15); left: wgpu features per target.
+- **Fast kernels beyond Apple.** Other GPUs run the portable kernels: Whisper is 1.1–3.4×
+  slower than transcribe.cpp on an RTX 4060. A fast tier for F16 16×16 cooperative matrices is
+  in the works; the Linux plan's portable-encoder items stay open.
+- **Fast build.** The in-house FFT replaced `rustfft` (#15); left: wgpu features per target.
   [Plan](plans/20261010-fast-build.md)
 - **Other engines.** Measure wavo against the other ways to run the same models on a Mac, not
   only transcribe.cpp. [Plan](plans/20261010-other-engines.md)

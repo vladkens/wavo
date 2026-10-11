@@ -24,8 +24,8 @@ the `Makefile` and `.github/workflows/main.yml`.
   either only with the person's approval. Every public struct and enum is `#[non_exhaustive]`.
 - Only `wavo pull` and `Hub::pull` use the network; `run` and `bench` never download. `pull` blocks:
   the library starts no download threads.
-- The library leaves resampling and splitting long audio to the caller; the CLI does both. VAD
-  and streaming are in neither.
+- The library leaves resampling and splitting long audio at pauses to the caller (Whisper's own
+  30 s windows aside); the CLI does both. VAD and streaming are in neither.
 
 ## Code
 

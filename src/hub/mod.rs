@@ -367,8 +367,17 @@ mod tests {
       MODELS.iter().map(|m| format!("{}` | {}", m.name, row(m))).collect();
     assert_eq!(readme, expected, "model table in readme.md");
 
-    // The published crate has neither file: these two checks run in the repository only.
-    let (Ok(makefile), Ok(tests)) = (read("Makefile"), read("tests/models.rs")) else { return };
+    // The published crate has neither file: these two checks run in the repository only, and
+    // fail there if either file is missing or unreadable.
+    let (makefile, tests) = match (read("Makefile"), read("tests/models.rs")) {
+      (Ok(makefile), Ok(tests)) => (makefile, tests),
+      (Err(a), Err(b)) if [&a, &b].iter().all(|e| e.kind() == std::io::ErrorKind::NotFound) => {
+        return;
+      }
+      (makefile, tests) => {
+        panic!("Makefile: {:?}, tests/models.rs: {:?}", makefile.err(), tests.err())
+      }
+    };
     let mut full: Vec<&str> = MODELS.iter().map(|m| m.full_name).collect();
     full.sort();
     let mut make = Vec::new();
