@@ -57,7 +57,6 @@ MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
 CI_MODELS := gigaam-v3-e2e-rnnt parakeet-tdt-0.6b-v3 whisper-tiny
 CI_TESTS := gigaam_v3_e2e_rnnt parakeet_tdt_v3 whisper_tiny
 REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
-CLI := 3rd/transcribe.cpp/build/bin/transcribe-cli
 # Whisper has segment timestamps only: TIMESTAMPS=segment.
 TIMESTAMPS := token
 
@@ -90,15 +89,9 @@ reference:
 		"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=$(CURDIR)/3rd/transcribe.cpp/build/bin"
 	cmake --build 3rd/transcribe.cpp/build --config Release --target transcribe-cli transcribe-bench -j
 
-# make fixtures MODEL=gigaam-v3-e2e-rnnt SAMPLES="ru ru-short ru-long"
+# make fixtures MODEL=gigaam-v3-e2e-rnnt SAMPLES="ru ru-short ru-long" (see the script)
 fixtures:
-	@set -eu; model=$$(hf download handy-computer/$(MODEL)-gguf $(MODEL)-Q8_0.gguf | sed 's/^path=//'); \
-	mkdir -p tests/fixtures/$(MODEL); \
-	for s in $(SAMPLES); do \
-		$(CLI) -m "$$model" --timestamps $(TIMESTAMPS) 3rd/transcribe.cpp/samples/$$s.wav 2>/dev/null \
-			| awk '/^text: /{print} /^(tokens|segments): /{t=1; print; next} t && /^  \[/{print}' \
-			> tests/fixtures/$(MODEL)/$$s.txt; \
-	done
+	scripts/fixtures.sh "$(MODEL)" "$(TIMESTAMPS)" $(SAMPLES)
 
 # make compare MODEL=gigaam-v3-e2e-rnnt LIST=wavs.txt OUT=dir (see the script)
 compare:

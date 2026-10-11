@@ -184,10 +184,11 @@ mod tests {
   #[test]
   fn cues_keep_the_fixture_text() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    for model in std::fs::read_dir(fixtures).unwrap() {
-      for file in std::fs::read_dir(model.unwrap().path()).unwrap() {
-        let fixture = std::fs::read_to_string(file.unwrap().path()).unwrap();
-        let mut lines = fixture.lines();
+    for file in std::fs::read_dir(fixtures).unwrap() {
+      let fixture = std::fs::read_to_string(file.unwrap().path()).unwrap();
+      // A block per clip: a `## <clip>` header, then body lines, none of which starts with `## `.
+      for block in fixture.strip_prefix("## ").unwrap().split("\n## ") {
+        let mut lines = block.lines().skip(1).filter(|l| !l.is_empty());
         let text = lines.next().unwrap().strip_prefix("text: ").unwrap().replace("(empty)", "");
         let segments = lines.next().is_some_and(|l| l.starts_with("segments: "));
         // `  [   0.96 ->    1.00] p=0.000 ▁В`, with `▁` sometimes printed as a space, or a

@@ -31,13 +31,18 @@ fn read_wav(path: &Path) -> Vec<f32> {
   wav.samples::<i16>().map(|s| s.unwrap() as f32 / 32768.0).collect()
 }
 
-/// Text and `(piece, start ms)` tokens from a fixture: `text: ...`, `tokens: N`, then lines like
+/// Text and `(piece, start ms)` tokens from the block `## <sample>` of `tests/fixtures/<name>.txt`,
+/// its lines up to the next header: `text: ...`, `tokens: N`, then lines like
 /// `  [   0.96 ->    1.00] p=0.000 ▁В`, or only `text: (empty)`. Pieces come with `▁` as a space,
 /// as the reference prints some of them. Whisper fixtures have `segments: N` and lines
 /// `  [   0.00 ->   10.40] text` instead: then the pairs are segment texts and starts.
-fn read_fixture(path: &Path) -> (String, Vec<(String, u32)>, bool) {
-  let fixture = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-  let mut lines = fixture.lines();
+fn read_fixture(name: &str, sample: &str) -> (String, Vec<(String, u32)>, bool) {
+  let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}.txt"));
+  let fixture = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+  let header = format!("## {sample}");
+  let mut lines = fixture.lines().skip_while(|l| *l != header);
+  assert!(lines.next().is_some(), "{path:?}: no {header}");
+  let mut lines = lines.take_while(|l| !l.starts_with("## ")).filter(|l| !l.is_empty());
   let text = lines.next().and_then(|l| l.strip_prefix("text: ")).expect("text line");
   if text == "(empty)" {
     assert!(lines.next().is_none(), "{path:?}: tokens after an empty text");
@@ -67,8 +72,7 @@ fn check(name: &str, samples: &[&str]) {
   let model = wavo::Model::load(model_path(name)).unwrap();
   for sample in samples {
     let pcm = read_wav(&root.join(format!("3rd/transcribe.cpp/samples/{sample}.wav")));
-    let fixture = root.join(format!("tests/fixtures/{name}/{sample}.txt"));
-    let (text, tokens, segments) = read_fixture(&fixture);
+    let (text, tokens, segments) = read_fixture(name, sample);
     let got = model.transcribe(&pcm).unwrap();
     assert_eq!(got.text, text, "{name} {sample}: text");
     let mut got: Vec<(String, u32)> =
