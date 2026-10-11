@@ -174,3 +174,8 @@ fn whisper_large() {
 fn whisper_large_v2() {
   check("whisper-large-v2", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
 }
+
+#[test]
+fn breeze_asr_25() {
+  check("Breeze-ASR-25", &["jfk", "zh-short", "zh-long", "jobs-silence"]);
+}

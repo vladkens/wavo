@@ -47,6 +47,7 @@ pub const MODELS: &[Model] = &[
   Model { name: "whisper-medium.en", variant: "whisper-medium.en", size: 831_460_928, about: "English" },
   Model { name: "whisper-large", variant: "whisper-large", size: 1_667_964_192, about: "99 languages" },
   Model { name: "whisper-large-v2", variant: "whisper-large-v2", size: 1_667_964_224, about: "99 languages" },
+  Model { name: "breeze-asr-25", variant: "Breeze-ASR-25", size: 1_667_964_224, about: "Taiwanese Mandarin and English" },
 ];
 
 /// What a MODEL argument names.
@@ -202,6 +203,10 @@ mod tests {
     let m = find("whisper-turbo").unwrap();
     assert_eq!(m.repo(), "handy-computer/whisper-large-v3-turbo-gguf");
     assert_eq!(m.file(), "whisper-large-v3-turbo-Q8_0.gguf");
+    assert_eq!(name("Breeze-ASR-25"), "breeze-asr-25");
+    let m = find("breeze-asr-25").unwrap();
+    assert_eq!(m.repo(), "handy-computer/Breeze-ASR-25-gguf");
+    assert_eq!(m.file(), "Breeze-ASR-25-Q8_0.gguf");
   }
 
   #[test]
