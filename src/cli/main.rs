@@ -5,14 +5,14 @@ mod audio;
 mod hfs;
 mod models;
 mod output;
-mod progress;
 mod split;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
+use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
 use models::{MODELS, Source};
 
 const USAGE: &str = "\
@@ -120,29 +120,30 @@ fn run(args: &[&str]) -> Result<()> {
     _ => bail!(USAGE),
   };
   let path = model_path(model)?;
-  let (ms, transcript, starts) = progress::show(|p| -> Result<_> {
-    p.set("decoding the audio");
-    let pcm = audio::read(audio)?;
-    p.set("loading the model");
-    let model = load(&path)?;
-    let max_ms = segment.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
-    let max = if max_ms == 0 { usize::MAX } else { max_ms as usize * 16 };
-    let ranges = split::segments(&pcm, max);
-    let n = ranges.len();
-    let parts = ranges.into_iter().enumerate().map(|(i, r)| {
-      p.set(if n == 1 { "transcribing".into() } else { format!("transcribing {}/{n}", i + 1) });
-      Ok((r.start, model.transcribe(&pcm[r])?))
-    });
-    let (transcript, starts) = split::join(parts.collect::<Result<Vec<_>>>()?);
-    Ok(((pcm.len() / 16) as u32, transcript, starts))
-  })?;
+  let bar = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear); // on errors too
+  bar.set_style(ProgressStyle::with_template("{spinner} {msg} {elapsed}")?);
+  bar.enable_steady_tick(Duration::from_millis(100));
+  bar.set_message("decoding the audio");
+  let pcm = audio::read(audio)?;
+  bar.set_message("loading the model");
+  let model = load(&path)?;
+  let max_ms = segment.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
+  let max = if max_ms == 0 { usize::MAX } else { max_ms as usize * 16 };
+  let ranges = split::segments(&pcm, max);
+  let n = ranges.len();
+  let parts = ranges.into_iter().enumerate().map(|(i, r)| {
+    bar.set_message(format!("transcribing {}/{n}", i + 1));
+    Ok((r.start, model.transcribe(&pcm[r])?))
+  });
+  let (transcript, starts) = split::join(parts.collect::<Result<Vec<_>>>()?);
+  bar.finish_and_clear();
   match format {
     Some("--json") => println!("{}", output::json(&transcript)),
     // Whisper times segments, not tokens.
     Some(_) if models::architecture(&path).as_deref() == Some("whisper") => {
-      print!("{}", output::srt_segments(&transcript.tokens, ms))
+      print!("{}", output::srt_segments(&transcript.tokens, (pcm.len() / 16) as u32))
     }
-    Some(_) => print!("{}", output::srt(&transcript.tokens, &starts, ms)),
+    Some(_) => print!("{}", output::srt(&transcript.tokens, &starts, (pcm.len() / 16) as u32)),
     None => println!("{}", transcript.text),
   }
   Ok(())
@@ -156,33 +157,25 @@ fn named(arg: &str) -> Result<&'static models::Model> {
   }
 }
 
-/// One thread per distinct model; live progress only for a single one, whose line would be
-/// overwritten.
+/// One thread and progress bar per distinct model.
 fn pull(args: &[&str]) -> Result<()> {
-  let mut models: Vec<&models::Model> = Vec::new();
-  for arg in args {
-    let m = named(arg)?;
-    if !models.iter().any(|seen| seen.name == m.name) {
-      models.push(m);
-    }
-  }
-  let (cache, live) = (hfs::Cache::new(), models.len() == 1);
+  let mut models = args.iter().map(|arg| named(arg)).collect::<Result<Vec<_>>>()?;
+  let mut seen = std::collections::HashSet::new();
+  models.retain(|m| seen.insert(m.name));
+  let (cache, bars) = (hfs::Cache::new(), MultiProgress::new());
   let results: Vec<_> = std::thread::scope(|s| {
-    let cache = &cache;
+    let (cache, bars) = (&cache, &bars);
     let pulls: Vec<_> =
-      models.iter().map(|m| s.spawn(move || cache.pull(&m.repo(), &m.file(), live))).collect();
+      models.iter().map(|m| s.spawn(move || cache.pull(&m.repo(), &m.file(), bars))).collect();
     pulls.into_iter().map(|pull| pull.join().unwrap()).collect()
   });
-  let mut failed = 0;
-  for (m, result) in models.iter().zip(results) {
+  for (m, result) in models.iter().zip(&results) {
     match result {
       Ok(path) => println!("{}", path.display()),
-      Err(e) => {
-        eprintln!("error: pulling {}: {e:#}", m.name);
-        failed += 1;
-      }
+      Err(e) => eprintln!("error: pulling {}: {e:#}", m.name),
     }
   }
+  let failed = results.iter().filter(|r| r.is_err()).count();
   if failed > 0 {
     bail!("{failed} of {} pulls failed", models.len());
   }
