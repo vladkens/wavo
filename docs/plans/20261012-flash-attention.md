@@ -13,7 +13,7 @@ kernel for any GPU, then fast tiers on cooperative matrices where they measure f
       4060 and the N100.
 - [x] Fast tier on 16×16 F16 cooperative matrices (NVIDIA); A/B/A against the portable kernel.
 - [ ] Apple's 8×8 tier: the same kernel against `flash.wgsl`, kept where faster.
-- [ ] Decoder attention (self and cross) over key blocks, if the profile asks for it.
+- [x] Decoder attention (self and cross) over key blocks, if the profile asks for it.
 - [ ] Parakeet's relative attention: measured or reasoned out.
 - [ ] A/B/A on Parakeet V3 and GigaAM v3 (M2 and RTX 4060); `make check` and `make test` on
       both.

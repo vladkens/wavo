@@ -132,11 +132,13 @@ fn compile_fast(device: &wgpu::Device, f: usize) -> Option<FastPipelines> {
   (errors == 0).then_some((gemm, kernels))
 }
 
-/// Kernels for one decoder token: `gemv` and `embed` per weight type, `attend` and `pack`.
+/// Kernels for one decoder token: `gemv` and `embed` per weight type, `attend`, `combine` and
+/// `pack`.
 struct Decoder {
   gemv: Vec<Pipeline>,
   embed: Vec<Pipeline>,
   attend: Pipeline,
+  combine: Pipeline,
   pack: Pipeline,
 }
 
@@ -506,6 +508,7 @@ impl Gpu {
         gemv: gemms(device, gemm, "gemv"),
         embed: gemms(device, gemm, "embed"),
         attend: pipeline(device, &decode, "attend", &[]),
+        combine: pipeline(device, &decode, "combine", &[]),
         pack: pipeline(device, &decode, "pack", &[]),
       }
     })
@@ -606,6 +609,14 @@ impl Gpu {
 
 fn fail(failure: &Mutex<Option<String>>, message: String) {
   failure.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert(message);
+}
+
+/// Keys per workgroup of `Pass::attend`.
+const ATTEND_KEYS: usize = 256;
+
+/// Floats of `Pass::attend`'s scratch for up to `n` keys.
+pub fn attend_len(n: usize, heads: usize, head_dim: usize) -> usize {
+  n.div_ceil(ATTEND_KEYS) * heads * (head_dim + 2)
 }
 
 /// Rows of projected positions for relative attention over `t` frames: positions t + 15 down to
@@ -848,16 +859,24 @@ impl<'a> Pass<'a> {
   }
 
   /// Attention of one query per head, `q` `[heads · head_dim]`, over keys 0..n of an F16 cache
-  /// into `o`. A cache row is K of all heads, then V, as f16 pairs.
-  pub fn attend(&mut self, q: &Buffer, kv: &Buffer, o: &Buffer, n: usize, heads: usize, hd: usize) {
+  /// into `o`, through `part` (`attend_len` floats). A cache row is K of all heads, then V, as f16
+  /// pairs.
+  #[allow(clippy::too_many_arguments)]
+  pub fn attend(
+    &mut self,
+    q: &Buffer,
+    kv: &Buffer,
+    part: &Buffer,
+    o: &Buffer,
+    n: usize,
+    heads: usize,
+    hd: usize,
+  ) {
     let scale = (1.0 / (hd as f32).sqrt()).to_bits();
-    let (stride, v) = ((heads * hd) as u32, (heads * hd / 2) as u32);
-    self.run(
-      &self.gpu.decoder().attend,
-      &[q, kv, o],
-      &[n as u32, hd as u32, scale, stride, v],
-      [heads, 1, 1],
-    );
+    let params = [n as u32, hd as u32, scale, (heads * hd) as u32, (heads * hd / 2) as u32];
+    let k = self.gpu.decoder();
+    self.run(&k.attend, &[q, kv, part], &params, [n.div_ceil(ATTEND_KEYS), heads, 1]);
+    self.run(&k.combine, &[part, o], &params, [heads, 1, 1]);
   }
 
   /// Packs `pairs` pairs of floats from `x[src..]` into f16 pairs at `y[dst..]`.
@@ -1331,7 +1350,7 @@ mod tests {
   #[test]
   fn attend_and_pack() {
     let half = |x: f32| f16::from_f32(x).to_f32();
-    // Moonshine's heads of 36; past 2048 keys the kernel goes in blocks.
+    // Moonshine's heads of 36; the kernel splits the keys into parts of 256.
     let keys = 4100;
     for (heads, hd) in [(2, 40), (3, 36)] {
       let d = heads * hd;
@@ -1341,7 +1360,8 @@ mod tests {
       for gpu in gpus() {
         let (qb, xb) = (up(gpu, &q), up(gpu, &kv));
         let cache = gpu.buffer(keys * d);
-        for n in [1, 37, 1500, 2049, keys] {
+        let part = gpu.buffer(attend_len(keys, heads, hd));
+        for n in [1, 37, 256, 257, 1500, 2049, keys] {
           let mut want = vec![0.0; d];
           for h in 0..heads {
             let s: Vec<f32> = (0..n)
@@ -1361,7 +1381,7 @@ mod tests {
           }
           let got = run(gpu, &vec![0.0; d], |p, o| {
             p.pack(&xb, &cache, keys * d, 0, 0);
-            p.attend(&qb, &cache, o, n, heads, hd);
+            p.attend(&qb, &cache, &part, o, n, heads, hd);
           });
           assert_close(&got, &want);
         }

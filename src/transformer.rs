@@ -10,7 +10,7 @@
 use crate::conformer;
 use crate::error::Result;
 use crate::gguf::Gguf;
-use crate::gpu::{Buffer, Channels, Epilogue, Gpu, Linear, Pass};
+use crate::gpu::{Buffer, Channels, Epilogue, Gpu, Linear, Pass, attend_len};
 
 pub struct Config {
   pub d: usize,
@@ -165,6 +165,8 @@ pub struct Steps {
   /// fc1's output: `[x | gate]` when gated, SwiGLU'd in place.
   h: Buffer,
   att: Buffer,
+  /// `Pass::attend`'s scratch.
+  part: Buffer,
   pub logits: Buffer,
   /// Per layer `[context][d]` words.
   own: Vec<Buffer>,
@@ -221,6 +223,7 @@ impl Decoder {
       qkv: gpu.buffer(3 * c.d),
       h: gpu.buffer(if c.gated { 2 * c.d_ff } else { c.d_ff }),
       att: gpu.buffer(c.d),
+      part: gpu.buffer(attend_len(frames.max(self.context), c.heads, c.head_dim())),
       logits: gpu.buffer(self.embed.width()),
       own: cache(self.context),
       cross: cache(frames),
@@ -260,11 +263,11 @@ impl Decoder {
       }
       // k and v (2·d floats from d) into the cache row `pos`, d words.
       p.pack(&b.qkv, own, d, d, pos * d);
-      p.attend(&b.qkv, own, &b.att, pos + 1, heads, hd);
+      p.attend(&b.qkv, own, &b.part, &b.att, pos + 1, heads, hd);
       p.gemv(&b.att, &l.self_out, &b.x, Epilogue::Residual(1.0), 0);
       p.layer_norm(&b.x, &l.norm_cross, &b.y, 1, d, None);
       p.gemv(&b.y, &l.cross_q, &b.qkv, Epilogue::Bias, 0);
-      p.attend(&b.qkv, cross, &b.att, frames, heads, hd);
+      p.attend(&b.qkv, cross, &b.part, &b.att, frames, heads, hd);
       p.gemv(&b.att, &l.cross_out, &b.x, Epilogue::Residual(1.0), 0);
       p.layer_norm(&b.x, &l.norm_ffn, &b.y, 1, d, None);
       let act = if self.cfg.gated { Epilogue::Bias } else { Epilogue::Gelu };

@@ -1,6 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-// Decoder kernels for one token: attention of one query per head over an F16 K/V cache, and F32
-// rows packed into such a cache. A cache row holds f16 pairs: K of all heads, then V.
+// Decoder kernels for one token: attention of one query per head over an F16 K/V cache, split over
+// workgroups of keys, and F32 rows packed into such a cache. A cache row holds f16 pairs: K of all
+// heads, then V.
 
 struct Params {
   // attend: keys; pack: pairs.
@@ -19,11 +20,14 @@ var<immediate> p: Params;
 
 @group(0) @binding(0) var<storage, read> at_q: array<f32>;
 @group(0) @binding(1) var<storage, read> at_kv: array<u32>;
-@group(0) @binding(2) var<storage, read_write> at_o: array<f32>;
+@group(0) @binding(2) var<storage, read_write> at_part: array<f32>;
 
-// Blocks of 2048 keys, head_dim up to 128.
+// Keys per workgroup.
+const KEYS: u32 = 256u;
+
+// A key per thread, head_dim up to 128.
 var<workgroup> q: array<f32, 128>;
-var<workgroup> s: array<f32, 2048>;
+var<workgroup> s: array<f32, 256>;
 var<workgroup> rs: array<f32, 256>;
 var<workgroup> rv: array<vec2<f32>, 256>;
 
@@ -46,66 +50,90 @@ fn reduce(v: f32, lid: u32, is_max: bool) -> f32 {
   return r;
 }
 
-// One workgroup per head: scores of the head's query against keys 0..n, softmax, the weighted sum
-// of V, in blocks of 2048 keys with an online softmax (over one block it is the plain one). The
-// query is rounded to f16, as the reference's flash attention stores it.
+// Workgroup (c, h): head h's query against its keys c·KEYS.. (up to n): the scores' maximum m,
+// the sum l of exp(score − m) and the sum of exp(score − m)·V, as part [h][c][head_dim + 2]:
+// the sums of V, then m and l. `combine` merges the parts of each head. The query is rounded to
+// f16, as the reference's flash attention stores it.
 @compute @workgroup_size(256)
 fn attend(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
   let hd = p.head_dim;
   let pairs = hd / 2u;
-  let h = wg.x;
+  let h = wg.y;
   for (var i = lid; i < hd; i += 256u) {
     q[i] = unpack2x16float(pack2x16float(vec2(at_q[h * hd + i], 0.0))).x;
   }
   workgroupBarrier();
+  let j0 = wg.x * KEYS;
+  let n = min(p.n - j0, KEYS);
+  var x = -3.0e38;
+  if (lid < n) {
+    let base = (j0 + lid) * p.stride + h * pairs;
+    var acc = 0.0;
+    for (var i = 0u; i < pairs; i++) {
+      let k = unpack2x16float(at_kv[base + i]);
+      acc += q[2u * i] * k.x + q[2u * i + 1u] * k.y;
+    }
+    x = acc * p.scale;
+  }
+  let m = reduce(x, lid, true);
+  var e = 0.0;
+  if (lid < n) {
+    e = exp(x - m);
+  }
+  s[lid] = e;
+  let l = reduce(e, lid, false);
   // Thread (g, c) sums V pair c over keys g, g + groups, ...
   let groups = 256u / pairs;
   let c = lid % pairs;
   let g = lid / pairs;
   var o = vec2(0.0);
-  var mx = -3.0e38;
-  var sum = 0.0;
-  for (var j0 = 0u; j0 < p.n; j0 += 2048u) {
-    let n = min(p.n - j0, 2048u);
-    var bm = -3.0e38;
-    for (var j = lid; j < n; j += 256u) {
-      let base = (j0 + j) * p.stride + h * pairs;
-      var acc = 0.0;
-      for (var x = 0u; x < pairs; x++) {
-        let k = unpack2x16float(at_kv[base + x]);
-        acc += q[2u * x] * k.x + q[2u * x + 1u] * k.y;
-      }
-      s[j] = acc * p.scale;
-      bm = max(bm, s[j]);
+  if (g < groups) {
+    for (var j = g; j < n; j += groups) {
+      o += s[j] * unpack2x16float(at_kv[(j0 + j) * p.stride + p.v_offset + h * pairs + c]);
     }
-    let m = max(mx, reduce(bm, lid, true));
-    // The sum and output so far, rescaled to the new maximum (to 0 before the first block).
-    let f = exp(mx - m);
-    mx = m;
-    var bs = 0.0;
-    for (var j = lid; j < n; j += 256u) {
-      let e = exp(s[j] - m);
-      s[j] = e;
-      bs += e;
-    }
-    sum = sum * f + reduce(bs, lid, false);
-    o *= f;
-    if (g < groups) {
-      for (var j = g; j < n; j += groups) {
-        o += s[j] * unpack2x16float(at_kv[(j0 + j) * p.stride + p.v_offset + h * pairs + c]);
-      }
-    }
-    workgroupBarrier();
   }
   rv[lid] = o;
   workgroupBarrier();
+  let part = (h * ((p.n + KEYS - 1u) / KEYS) + wg.x) * (hd + 2u);
   if (lid < pairs) {
     var t = vec2(0.0);
     for (var k = 0u; k < groups; k++) {
       t += rv[k * pairs + lid];
     }
-    at_o[h * hd + 2u * lid] = t.x / sum;
-    at_o[h * hd + 2u * lid + 1u] = t.y / sum;
+    at_part[part + 2u * lid] = t.x;
+    at_part[part + 2u * lid + 1u] = t.y;
+  }
+  if (lid == 0u) {
+    at_part[part + hd] = m;
+    at_part[part + hd + 1u] = l;
+  }
+}
+
+@group(0) @binding(0) var<storage, read> cb_part: array<f32>;
+@group(0) @binding(1) var<storage, read_write> cb_o: array<f32>;
+
+// One workgroup per head: attend's parts rescaled to their common maximum, summed and normalized.
+@compute @workgroup_size(64)
+fn combine(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+  let hd = p.head_dim;
+  let parts = (p.n + KEYS - 1u) / KEYS;
+  let base = wg.x * parts * (hd + 2u);
+  var m = -3.0e38;
+  for (var c = 0u; c < parts; c++) {
+    m = max(m, cb_part[base + c * (hd + 2u) + hd]);
+  }
+  var l = 0.0;
+  for (var c = 0u; c < parts; c++) {
+    let at = base + c * (hd + 2u) + hd;
+    l += exp(cb_part[at] - m) * cb_part[at + 1u];
+  }
+  for (var i = lid; i < hd; i += 64u) {
+    var o = 0.0;
+    for (var c = 0u; c < parts; c++) {
+      let at = base + c * (hd + 2u);
+      o += exp(cb_part[at + hd] - m) * cb_part[at + i];
+    }
+    cb_o[wg.x * hd + i] = o / l;
   }
 }
 

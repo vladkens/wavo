@@ -85,8 +85,7 @@ Conformer families (31 ms per window, a third of the energy) is costed in [Other
 engines](plans/20261010-other-engines.md).
 
 Whisper, open in [the Whisper plan](plans/completed/20261010-whisper.md) (Task 6): decoder gemv bandwidth
-against ~100 GB/s, LayerNorm folded into the next gemv, the two prompt tokens as one two-row step,
-cross attention split over key blocks.
+against ~100 GB/s, LayerNorm folded into the next gemv, the two prompt tokens as one two-row step.
 
 GPUs without cooperative matrices, open in [the Linux plan](plans/20261010-linux.md) (Tasks 5
 and 7): profile the portable encoder with GPU timestamps; subgroup LayerNorm and conv_glu at any
@@ -233,6 +232,15 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### Attention
 
+- 2026-10-12, Whisper and Moonshine decoder: `attend` split over workgroups of 256 keys per head
+  (each writes its maximum, sum and unnormalized output) and a `combine` dispatch per head that
+  merges them, always both dispatches so a step's dispatch list (and its cached bind groups)
+  doesn't depend on the number of keys. One workgroup per head had left most of the GPU idle (8
+  heads on Moonshine). RTX 4060 A/B/A: whisper-turbo `jfk` 206.8 / 201.4 / 207.2, `ru-long`
+  493.5 / 472.4 / 495.0, large-v3 `jfk` 472.9 / 420.7 / 472.5, tiny 29.2 / 23.3 / 28.0, Moonshine
+  `dots` tiny 112.4 / 90.7 / 112.4, base 190.3 / 140.6 / 190.4 ms. M2: Moonshine `dots` tiny 292 /
+  278 / 295, base 489 / 447 / 488, whisper-tiny `jfk` 74.5 / 68.7 / 74.5 ms, turbo within noise.
+  Fixtures exact. Kept.
 - 2026-10-12, Whisper, Moonshine and GigaAM, RTX 4060: flash attention on 16×16 F16 cooperative
   matrices (`flash_f16.wgsl`, after ggml's `flash_attn_cm1.comp`): four subgroups take 64
   queries, k and v staged as f16 per 64-key block, q and output fragments in registers, the
