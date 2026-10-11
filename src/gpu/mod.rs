@@ -58,6 +58,59 @@ struct Kernels {
   decoder: OnceLock<Decoder>,
 }
 
+impl Kernels {
+  fn new(device: &wgpu::Device) -> Self {
+    let gemm = module(device, include_str!("gemm.wgsl"));
+    let ops = module(device, include_str!("ops.wgsl"));
+    let attention = module(device, include_str!("attention.wgsl"));
+    let spatial = module(device, include_str!("spatial.wgsl"));
+    Self {
+      gemm: gemms(device, &gemm, "gemm"),
+      layer_norm: pipeline(device, &ops, "layer_norm", &[]),
+      im2col: pipeline(device, &ops, "im2col", &[]),
+      conv_glu: pipeline(device, &ops, "conv_glu", &[]),
+      scores: pipeline(device, &attention, "scores", &[]),
+      softmax: pipeline(device, &ops, "softmax", &[]),
+      values: pipeline(device, &attention, "values", &[]),
+      depthwise: pipeline(device, &spatial, "depthwise", &[]),
+      first_depthwise: pipeline(device, &spatial, "first_depthwise", &[]),
+      flatten: pipeline(device, &spatial, "flatten", &[]),
+      mark: pipeline(device, &ops, "mark", &[]),
+      gemm_module: gemm,
+      decoder: OnceLock::new(),
+    }
+  }
+}
+
+/// The fast GEMMs (per weight type 32- and 64-row tiles), LayerNorm, conv_glu, flash attention and
+/// relative attention, before their probes.
+type FastPipelines = (Vec<Pipeline>, [Pipeline; 4]);
+
+/// Compiles the fast kernels; `None` if any fails.
+fn compile_fast(device: &wgpu::Device) -> Option<FastPipelines> {
+  // Error scopes are per thread.
+  let scopes = [wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation]
+    .map(|f| device.push_error_scope(f));
+  let gemm = module(device, include_str!("gemm_fast.wgsl"));
+  let ops = module(device, include_str!("ops_fast.wgsl"));
+  let relative = module(device, include_str!("attention_fast.wgsl"));
+  let flash = module(device, include_str!("flash.wgsl"));
+  let gemm: Vec<_> = (0..6)
+    .map(|i| {
+      let constants = [("WTYPE", (i / 2) as f64), ("ROWS", (32 << (i % 2)) as f64)];
+      pipeline(device, &gemm, "gemm", &constants)
+    })
+    .collect();
+  let kernels = [
+    pipeline(device, &ops, "layer_norm", &[]),
+    pipeline(device, &ops, "conv_glu", &[]),
+    pipeline(device, &flash, "flash", &[]),
+    pipeline(device, &relative, "attention", &[]),
+  ];
+  let errors = scopes.into_iter().rev().filter_map(|s| pollster::block_on(s.pop())).count();
+  (errors == 0).then_some((gemm, kernels))
+}
+
 /// Kernels for one decoder token: `gemv` and `embed` per weight type, `attend` and `pack`.
 struct Decoder {
   gemv: Vec<Pipeline>,
@@ -180,25 +233,11 @@ impl Gpu {
     let f = failure.clone();
     device.set_device_lost_callback(move |_, message| fail(&f, format!("device lost: {message}")));
 
-    let gemm = module(&device, include_str!("gemm.wgsl"));
-    let ops = module(&device, include_str!("ops.wgsl"));
-    let attention = module(&device, include_str!("attention.wgsl"));
-    let spatial = module(&device, include_str!("spatial.wgsl"));
-    let kernels = Kernels {
-      gemm: gemms(&device, &gemm, "gemm"),
-      layer_norm: pipeline(&device, &ops, "layer_norm", &[]),
-      im2col: pipeline(&device, &ops, "im2col", &[]),
-      conv_glu: pipeline(&device, &ops, "conv_glu", &[]),
-      scores: pipeline(&device, &attention, "scores", &[]),
-      softmax: pipeline(&device, &ops, "softmax", &[]),
-      values: pipeline(&device, &attention, "values", &[]),
-      depthwise: pipeline(&device, &spatial, "depthwise", &[]),
-      first_depthwise: pipeline(&device, &spatial, "first_depthwise", &[]),
-      flatten: pipeline(&device, &spatial, "flatten", &[]),
-      mark: pipeline(&device, &ops, "mark", &[]),
-      gemm_module: gemm,
-      decoder: OnceLock::new(),
-    };
+    // The fast kernels compile on a second thread meanwhile.
+    let (kernels, compiled) = std::thread::scope(|s| {
+      let compiled = s.spawn(|| if fast { compile_fast(&device) } else { None });
+      (Kernels::new(&device), compiled.join().unwrap())
+    });
     let mut weights = wgpu::BufferUsages::STORAGE;
     if mappable {
       weights |= wgpu::BufferUsages::MAP_WRITE;
@@ -226,52 +265,57 @@ impl Gpu {
       calls: Mutex::new(0),
       failure,
     };
-    if fast {
-      gpu.fast = gpu.fast_kernels();
+    if let Some(compiled) = compiled {
+      gpu.fast = gpu.probe(compiled);
     }
     Ok(gpu)
   }
 
-  /// Compiles the fast kernels and keeps each one whose probe reports its subgroup layout.
-  fn fast_kernels(&self) -> Fast {
-    let scopes = [wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation]
-      .map(|f| self.device.push_error_scope(f));
-    let gemm = module(&self.device, include_str!("gemm_fast.wgsl"));
-    let ops = module(&self.device, include_str!("ops_fast.wgsl"));
-    let relative = module(&self.device, include_str!("attention_fast.wgsl"));
-    let flash = module(&self.device, include_str!("flash.wgsl"));
-    // Per weight type 32- and 64-row tiles.
-    let gemm: Vec<_> = (0..6)
-      .map(|i| {
-        let constants = [("WTYPE", (i / 2) as f64), ("ROWS", (32 << (i % 2)) as f64)];
-        pipeline(&self.device, &gemm, "gemm", &constants)
+  /// Keeps each fast kernel whose probe reports its subgroup layout. With all params zero a
+  /// kernel sees an empty problem and writes its layout, `subgroups` of 32 lanes, to its output.
+  /// The probes run in one submission; a device error turns them all off.
+  fn probe(&self, compiled: FastPipelines) -> Fast {
+    let (gemm, [layer_norm, conv_glu, attention, relative]) = compiled;
+    // Per kernel: bindings, the output's, params and subgroups.
+    let mut probes: Vec<_> = gemm.into_iter().map(|k| (k, 5, 2, 6, 4.0)).collect();
+    probes.extend([
+      (layer_norm, 6, 3, 4, 4.0),
+      (conv_glu, 6, 5, 6, 4.0),
+      (attention, 3, 2, 7, 4.0),
+      (relative, 4, 3, 8, 1.0),
+    ]);
+    let read = self.readback(2 * probes.len());
+    let mut groups = Vec::new();
+    let mut p = Pass::new(self, &mut groups, 0);
+    let outs: Vec<Buffer> = (probes.iter())
+      .map(|(k, bindings, out, params, _)| {
+        let mut buffers: Vec<Buffer> = (0..*bindings).map(|_| self.buffer(16)).collect();
+        p.run(k, &buffers.iter().collect::<Vec<_>>(), &[0; 8][..*params], [1, 1, 1]);
+        buffers.swap_remove(*out)
       })
       .collect();
-    let kernels = ["layer_norm", "conv_glu"].map(|entry| pipeline(&self.device, &ops, entry, &[]));
-    let attention = pipeline(&self.device, &flash, "flash", &[]);
-    let relative = pipeline(&self.device, &relative, "attention", &[]);
-    let errors = scopes.into_iter().rev().filter_map(|s| pollster::block_on(s.pop())).count();
-    if errors > 0 {
-      return Fast::default();
+    let Pass { mut encoder, pass, .. } = p;
+    drop(pass);
+    for (i, out) in outs.iter().enumerate() {
+      encoder.copy_buffer_to_buffer(out, 0, &read, 8 * i as u64, 8);
     }
-    let [layer_norm, conv_glu] = kernels;
-    // All params zero: the kernel sees an empty problem and reports its subgroup layout, which
-    // must be `subgroups` of 32 lanes.
-    let probe = |k: Pipeline, bindings: usize, out: usize, params: usize, subgroups: f32| {
-      let buffers: Vec<Buffer> = (0..bindings).map(|_| self.buffer(16)).collect();
-      let refs: Vec<&Buffer> = buffers.iter().collect();
-      let read = self.readback(2);
-      let r = self.run(&mut Vec::new(), &buffers[out], &read, 2, |p| {
-        p.run(&k, &refs, &[0; 8][..params], [1, 1, 1]);
-      });
-      (r.ok() == Some(vec![32.0, subgroups])).then_some(k)
-    };
+    self.queue.submit([encoder.finish()]);
+    let (tx, rx) = mpsc::channel();
+    read.slice(..).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+    let mapped = self.device.poll(wgpu::PollType::wait_indefinitely()).is_ok()
+      && rx.recv().unwrap().is_ok()
+      && self.failure.lock().unwrap_or_else(PoisonError::into_inner).take().is_none();
+    let range = mapped.then(|| read.slice(..).get_mapped_range().ok()).flatten();
+    let got: Vec<f32> = range.map(|r| bytemuck::cast_slice(&r).to_vec()).unwrap_or_default();
+    let mut kept = (probes.into_iter().zip(got.chunks(2)))
+      .map(|((k, .., subgroups), got)| (got == [32.0, subgroups]).then_some(k));
+    let mut next = || kept.next().flatten();
     Fast {
-      gemm: gemm.into_iter().map(|k| probe(k, 5, 2, 6, 4.0)).collect(),
-      layer_norm: probe(layer_norm, 6, 3, 4, 4.0),
-      conv_glu: probe(conv_glu, 6, 5, 6, 4.0),
-      attention: probe(attention, 3, 2, 7, 4.0),
-      relative: probe(relative, 4, 3, 8, 1.0),
+      gemm: (0..6).map(|_| next()).collect(),
+      layer_norm: next(),
+      conv_glu: next(),
+      attention: next(),
+      relative: next(),
     }
   }
 
@@ -388,20 +432,16 @@ impl Gpu {
       Type::Q8_0 => {
         let (data, scales) = (self.mapped(n * k), self.mapped(n * k / 16));
         let (mut dv, mut sv) = (data.get_mapped_range_mut(..)?, scales.get_mapped_range_mut(..)?);
-        let (mut d, mut s) =
-          (Vec::with_capacity(PIECE / 34 * 32), Vec::with_capacity(PIECE / 34 * 2));
         let mut block = 0;
         for w in weights {
           w.read(PIECE, |i, piece| {
-            d.clear();
-            s.clear();
-            for b in piece.as_chunks::<34>().0 {
-              s.extend_from_slice(&b[..2]);
-              d.extend_from_slice(&b[2..]);
-            }
-            let first = block + i / 34;
-            dv.slice(first * 32..first * 32 + d.len()).copy_from_slice(&d);
-            sv.slice(first * 2..first * 2 + s.len()).copy_from_slice(&s);
+            // Each block's scale and data go straight into the mappings.
+            let blocks = piece.as_chunks::<34>().0;
+            let (a, b) = (block + i / 34, block + i / 34 + blocks.len());
+            let d = dv.slice(a * 32..b * 32).into_chunks::<32>().0;
+            d.write_iter(blocks.iter().map(|q| <[u8; 32]>::try_from(&q[2..]).unwrap()));
+            let s = sv.slice(a * 2..b * 2).into_chunks::<2>().0;
+            s.write_iter(blocks.iter().map(|q| [q[0], q[1]]));
           })?;
           block += w.len() / 32;
         }

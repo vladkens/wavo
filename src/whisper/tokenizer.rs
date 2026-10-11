@@ -47,9 +47,10 @@ impl Tokenizer {
     &self.bytes[if id == 0 { 0 } else { self.ends[id - 1] }..self.ends[id]]
   }
 
-  /// The id of the piece spelled `s`.
+  /// The id of the piece spelled `s`, searched from the end, where the special tokens are: a
+  /// forward scan for each of 99 languages took 8 ms at load.
   pub fn find(&self, s: &str) -> Option<usize> {
-    (0..self.len()).find(|&i| self.bytes(i) == s.as_bytes())
+    (0..self.len()).rev().find(|&i| self.bytes(i) == s.as_bytes())
   }
 }
 

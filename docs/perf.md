@@ -670,6 +670,22 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
 
+- 2026-10-11, all models, load: four fixed costs and a copy (see "Load time"). M2, load average
+  3–6, `wavo bench -n 1` in a fresh process per sample, f663ede (A) and this (B) interleaved A/B/A
+  per round, 7 rounds (GigaAM 9), load median: whisper-base 67.1 / 43.3 / 66.6, small 105.2 /
+  72.6 / 105.4, large-v3 319.0 / 269.2 / 319.3, turbo 214.1 / 175.4 / 211.4, GigaAM e2e-rnnt 76.6
+  / 65.4 / 74.6, Parakeet V3 163.6 / 148.5 / 165.1 ms; first call unchanged, fixtures exact.
+  Kept. Per part (temporary timers, median of 5 runs):
+  - GGUF metadata decoded when read, not all at open: Whisper's 1.9 MB header holds 51,866
+    tokens, as many token types and 50,000 merges, ~150k values. Open 8.1 → 1.2 ms; reading the
+    tokens in the tokenizer 0.9 → 1.8 ms.
+  - Whisper's 99 language tokens searched from the end of the vocabulary, where the special
+    tokens are: 8.1 → 0.2 ms.
+  - Fast pipelines compiled on a second thread while the portable ones compile: 7.8 → 4.6 ms.
+  - The ten fast-kernel probes in one submission instead of one each: 4.7 → 2.5 ms.
+  - Q8_0 blocks written straight into the mapped buffers instead of through a scale and a data
+    `Vec` per 278 KB piece: large-v3 encoder + decoder upload 170 → 138 ms (8 runs interleaved).
+
 - 2026-10-10, build, own FFT (`src/fft.rs`, transcribe.cpp's radix-2 over odd DFT leaves in
   Stockham order, FMA on x86_64 when present) for all three frontends instead of `rustfft`.
   Windows, Ryzen 9 7945HX, `cargo build --release --timings`, two A/B rounds: clean 40.0 / 38.7 →

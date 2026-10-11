@@ -38,48 +38,54 @@ impl Type {
   }
 }
 
-#[derive(Debug)]
-pub enum Value {
+/// A metadata value, decoded from the header when a model reads it.
+#[derive(Debug, Clone, Copy)]
+pub enum Value<'a> {
   /// Any integer type: no model reads a u64 above `i64::MAX`.
   Int(i64),
   Float(f64),
   Bool(bool),
-  Str(String),
-  Array(Vec<Value>),
+  /// `None` when not UTF-8.
+  Str(Option<&'a str>),
+  /// Items of GGUF type `item`, read by `Gguf::array`.
+  Array {
+    item: u32,
+    len: usize,
+  },
 }
 
 /// A metadata type that models read: `u32`, `i32`, `f32`, `bool` or `&str`.
 pub trait Meta<'a>: Sized {
-  fn from(v: &'a Value) -> Option<Self>;
+  fn from(v: Value<'a>) -> Option<Self>;
 }
 
 impl Meta<'_> for u32 {
-  fn from(v: &Value) -> Option<Self> {
-    if let Value::Int(v) = *v { v.try_into().ok() } else { None }
+  fn from(v: Value) -> Option<Self> {
+    if let Value::Int(v) = v { v.try_into().ok() } else { None }
   }
 }
 
 impl Meta<'_> for i32 {
-  fn from(v: &Value) -> Option<Self> {
-    if let Value::Int(v) = *v { v.try_into().ok() } else { None }
+  fn from(v: Value) -> Option<Self> {
+    if let Value::Int(v) = v { v.try_into().ok() } else { None }
   }
 }
 
 impl Meta<'_> for f32 {
-  fn from(v: &Value) -> Option<Self> {
-    if let Value::Float(v) = *v { Some(v as f32) } else { None }
+  fn from(v: Value) -> Option<Self> {
+    if let Value::Float(v) = v { Some(v as f32) } else { None }
   }
 }
 
 impl Meta<'_> for bool {
-  fn from(v: &Value) -> Option<Self> {
-    if let Value::Bool(v) = *v { Some(v) } else { None }
+  fn from(v: Value) -> Option<Self> {
+    if let Value::Bool(v) = v { Some(v) } else { None }
   }
 }
 
 impl<'a> Meta<'a> for &'a str {
-  fn from(v: &'a Value) -> Option<Self> {
-    if let Value::Str(s) = v { Some(s) } else { None }
+  fn from(v: Value<'a>) -> Option<Self> {
+    if let Value::Str(s) = v { s } else { None }
   }
 }
 
@@ -93,7 +99,9 @@ pub struct Gguf {
   path: PathBuf,
   /// The start of the file, at least the header; tensors inside it are read from here.
   head: Vec<u8>,
-  meta: HashMap<String, Value>,
+  /// Per key the value's GGUF type and its offset in `head`. Values are decoded when read, so a
+  /// vocabulary nobody reads costs nothing.
+  meta: HashMap<String, (u32, usize)>,
   tensors: HashMap<String, Info>,
   data: usize,
 }
@@ -140,7 +148,8 @@ impl Gguf {
     for _ in 0..n_meta {
       let key = r.string()?;
       let ty = r.u32()?;
-      meta.insert(key, r.value(ty)?);
+      meta.insert(key, (ty, r.pos));
+      r.skip(ty)?;
     }
 
     let mut tensors = HashMap::new();
@@ -156,29 +165,32 @@ impl Gguf {
       tensors.insert(name, Info { dims, ty, offset });
     }
 
-    let align = match meta.get("general.alignment") {
-      Some(Value::Int(a)) => *a as usize,
+    let end = r.pos;
+    let mut g = Self { path, head, meta, tensors, data: 0 };
+    let align = match g.value("general.alignment") {
+      Ok((_, Value::Int(a))) => a as usize,
       _ => 32,
     };
-    let data = r.pos.next_multiple_of(align);
-    for (name, t) in &tensors {
-      if data + t.offset + t.ty.size(t.dims.iter().product()) > len {
+    g.data = end.next_multiple_of(align);
+    for (name, t) in &g.tensors {
+      if g.data + t.offset + t.ty.size(t.dims.iter().product()) > len {
         bail!("tensor {name} is out of file bounds");
       }
     }
-    Ok(Self { path, head, meta, tensors, data })
+    Ok(g)
   }
 
-  fn value(&self, key: &str) -> Result<&Value> {
-    match self.meta.get(key) {
-      Some(v) => Ok(v),
-      None => bail!("missing metadata {key}"),
-    }
+  /// The value of `key`, and a reader past it (at an array's items).
+  fn value(&self, key: &str) -> Result<(Reader<'_>, Value<'_>)> {
+    let Some(&(ty, pos)) = self.meta.get(key) else { bail!("missing metadata {key}") };
+    let mut r = Reader { bytes: &self.head, pos };
+    let v = r.value(ty)?;
+    Ok((r, v))
   }
 
   /// The metadata value `key` as a `T`.
   pub fn get<'a, T: Meta<'a>>(&'a self, key: &str) -> Result<T> {
-    let v = self.value(key)?;
+    let (_, v) = self.value(key)?;
     match T::from(v) {
       Some(v) => Ok(v),
       None => bail!("metadata {key}: expected {}, got {v:?}", std::any::type_name::<T>()),
@@ -200,8 +212,10 @@ impl Gguf {
 
   /// The metadata array `key` as `T`s.
   pub fn array<'a, T: Meta<'a>>(&'a self, key: &str) -> Result<Vec<T>> {
-    let Value::Array(items) = self.value(key)? else { bail!("metadata {key}: expected an array") };
-    let items = items.iter().map(T::from).collect::<Option<_>>();
+    let (mut r, Value::Array { item, len }) = self.value(key)? else {
+      bail!("metadata {key}: expected an array")
+    };
+    let items = (0..len).map(|_| r.value(item).map(T::from)).collect::<Result<Option<_>>>()?;
     let Some(items) = items else {
       bail!("metadata {key}: expected an array of {}", std::any::type_name::<T>())
     };
@@ -295,12 +309,44 @@ impl<'a> Reader<'a> {
     Ok(u64::from_le_bytes(self.array()?))
   }
 
-  fn string(&mut self) -> Result<String> {
+  fn bytes(&mut self) -> Result<&'a [u8]> {
     let n = self.u64()? as usize;
-    Ok(String::from_utf8_lossy(self.take(n)?).into_owned())
+    self.take(n)
   }
 
-  fn value(&mut self, ty: u32) -> Result<Value> {
+  fn string(&mut self) -> Result<String> {
+    Ok(String::from_utf8_lossy(self.bytes()?).into_owned())
+  }
+
+  /// Moves past a value of type `ty`.
+  fn skip(&mut self, ty: u32) -> Result<()> {
+    let size = |ty| match ty {
+      0 | 1 | 7 => Some(1),
+      2 | 3 => Some(2),
+      4..=6 => Some(4),
+      10..=12 => Some(8),
+      _ => None,
+    };
+    match ty {
+      8 => _ = self.bytes()?,
+      9 => {
+        let item = self.u32()?;
+        let n = self.u64()? as usize;
+        match size(item) {
+          Some(size) => _ = self.take(n * size)?,
+          None => (0..n).try_for_each(|_| self.skip(item))?,
+        }
+      }
+      _ => match size(ty) {
+        Some(size) => _ = self.take(size)?,
+        None => bail!("unknown GGUF value type {ty}"),
+      },
+    }
+    Ok(())
+  }
+
+  /// Reads a value of type `ty`; for an array its item type and length, the items follow.
+  fn value(&mut self, ty: u32) -> Result<Value<'a>> {
     Ok(match ty {
       0 => Value::Int(self.array::<1>()?[0] as i64),
       1 => Value::Int(self.array::<1>()?[0] as i8 as i64),
@@ -310,12 +356,8 @@ impl<'a> Reader<'a> {
       5 => Value::Int(i32::from_le_bytes(self.array()?) as i64),
       6 => Value::Float(f32::from_le_bytes(self.array()?) as f64),
       7 => Value::Bool(self.array::<1>()?[0] != 0),
-      8 => Value::Str(self.string()?),
-      9 => {
-        let item = self.u32()?;
-        let n = self.u64()? as usize;
-        Value::Array((0..n).map(|_| self.value(item)).collect::<Result<_>>()?)
-      }
+      8 => Value::Str(std::str::from_utf8(self.bytes()?).ok()),
+      9 => Value::Array { item: self.u32()?, len: self.u64()? as usize },
       10 => Value::Int(self.u64()? as i64),
       11 => Value::Int(i64::from_le_bytes(self.array()?)),
       12 => Value::Float(f64::from_le_bytes(self.array()?)),
