@@ -25,12 +25,26 @@ jobs:
         with:
           shared-key: release
           save-if: ${{ github.event_name != 'pull_request' }}
+      # The CI models' Hugging Face cache, keyed by their names. Only main saves it: a PR's cache
+      # would serve that PR alone and count against the repo's quota.
+      - id: models
+        run: echo "key=hf-$(sed -n 's/^CI_MODELS := //p' Makefile | tr ' ' '+')" >> "$GITHUB_OUTPUT"
+      - id: hf
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/huggingface/hub
+          key: ${{ steps.models.outputs.key }}
       - run: rustup toolchain install nightly --profile minimal --component rustfmt
       - run: make build
       - run: make models-ci > "$RUNNER_TEMP/models.log" 2>&1 & # downloads in the background
       - run: make check
       - run: make samples
       - run: make models-ci # waits for those downloads, or retries a failed one
+      - if: github.ref == 'refs/heads/main' && steps.hf.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/huggingface/hub
+          key: ${{ steps.models.outputs.key }}
       - run: make test-ci
 
   # A slowdown only warns; a broken build or a failing model fails the job.
