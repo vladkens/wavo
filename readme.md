@@ -217,10 +217,10 @@ in the neighbouring subnet). A Windows update can switch the network to Public, 
 default SSH rule, so allow both rules on every profile:
 
 ```powershell
-Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
-Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
 Set-NetFirewallRule -DisplayGroup 'Remote Desktop' -Profile Any -RemoteAddress 192.168.8.0/23
 Set-NetFirewallRule -Name *ssh* -Profile Any -RemoteAddress 192.168.8.0/23
+Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
 Set-NetConnectionProfile -InterfaceAlias '<adapter>' -NetworkCategory Private
 ```
 
