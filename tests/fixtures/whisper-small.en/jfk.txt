@@ -1,0 +1,4 @@
+text: And so, my fellow Americans, ask not what your country can do for you. Ask what you can do for your country.
+segments: 2
+  [   0.00 ->    8.00] And so, my fellow Americans, ask not what your country can do for you.
+  [   8.00 ->   11.00] Ask what you can do for your country.

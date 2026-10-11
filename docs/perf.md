@@ -221,6 +221,59 @@ AC (2026-10-10, after the x86 decoder and per-layer submissions).
   and a 10-minute English m4a (Parakeet, 60 s): text byte-identical to the earlier run, which
   matched the M2's; 2.1 / 7.0 s (were 16.3 / 46.1 s), peak 146 / 276 MiB.
 
+## Other Whisper variants vs transcribe.cpp (2026-10-11, phase 13)
+
+Baseline after adding the variants as config, all on `jfk` (11 s, one 30 s window). Cells are wavo
+/ reference, ms (MiB for the peak).
+
+Windows, the RTX 4060 above (portable kernels) against the reference's Vulkan build, per model back
+to back: `wavo bench -n 20` (`-n 10` for the large ones), `transcribe-bench --warmup 1 --iters 10`,
+then `wavo run` and `transcribe-bench --warmup 0 --iters 1` under the 10 ms `PeakWorkingSet64`
+poll. One round; first call and load from the fresh process of each.
+
+| Model | Warm median | Warm min | First call | Load | Peak working set |
+|---|---|---|---|---|---|
+| whisper-tiny | 52.0 / 46.6 | 50.6 / 46.2 | 127 / 67.0 | 581 (cold shader cache) / 158 | 112 / 130 |
+| whisper-tiny.en | 50.6 / 44.1 | 50.0 / 43.1 | 51.2 / 61.2 | 156 / 149 | 112 / 130 |
+| whisper-base | 90.4 / 60.9 | 88.5 / 57.0 | 98.7 / 80.6 | 176 / 175 | 128 / 169 |
+| whisper-base.en | 89.7 / 57.3 | 87.9 / 55.6 | 98.3 / 76.8 | 169 / 176 | 128 / 168 |
+| whisper-small | 265 / 108 | 263 / 107 | 272 / 138 | 237 / 290 | 137 / 349 |
+| whisper-small.en | 269 / 108 | 266 / 106 | 278 / 134 | 231 / 286 | 138 / 348 |
+| whisper-medium | 737 / 248 | 735 / 232 | 752 / 292 | 417 / 658 | 173 / 891 |
+| whisper-medium.en | 727 / 213 | 724 / 212 | 746 / 269 | 406 / 657 | 180 / 890 |
+| whisper-large-v3 | 1398 / 435 | 1395 / 422 | 1489 / 504 | 578 / 1133 | 399 / 1129 |
+| whisper-large | 1370 / 401 | 1368 / 394 | 1488 / 478 | 564 / 1131 | 507 / 1129 |
+| whisper-large-v2 | 1372 / 401 | 1367 / 394 | 1474 / 479 | 591 / 1133 | 481 / 1129 |
+| breeze-asr-25 | 1380 / 407 | 1379 / 401 | 1478 / 486 | 568 / 1135 | 529 / 1129 |
+
+- The portable encoder against the reference's cooperative matrices: on par for tiny (+12%),
+  1.5× slower for base, 2.5× for small, 3.0–3.4× for medium, 3.2–3.4× for the large ones (the
+  reference's encoder 160–167 ms, its decoder 228–253 ms of a 400–435 ms call). Load is on par
+  for tiny and base, 18–50% below from small on; the working set is 112–529 MiB against
+  130–1129, the weights sitting in VRAM.
+- All 13 Whisper models' fixtures pass there. Loaded all at once they overran the 8 GB of VRAM,
+  so the model tests now take turns. whisper-base's `ru-long` was replaced by `dots`: on Windows the
+  reference's Vulkan and CPU builds and wavo all give "внутренне конвертов" where Metal gives
+  "внутри нет конвертов", a near-tie off Metal.
+
+M2, against the reference on Metal (`wavo bench -n 10`, `transcribe-bench --warmup 1 --iters 10`
+and `--warmup 0 --iters 1`), one round on a busy machine (load average 1.8 → 12.8: a disk-image
+tool at ~320% and a VM at ~155% of a core), so a sanity check only:
+
+| Model | Warm median | Warm min | First call | Load |
+|---|---|---|---|---|
+| whisper-tiny | 72.7 / 104.3 | 70.4 / 102.6 | 81.8 / 113.2 | 386 (cold) / 53 |
+| whisper-base | 119.6 / 162.3 | 117.9 / 160.4 | 120.2 / 166.2 | 103 / 62 |
+| whisper-small | 369 / 433 | 363 / 420 | 374 / 456 | 151 / 121 |
+| whisper-medium | 1064 / 1263 | 1028 / 1234 | 1099 / 1282 | 447 / 456 |
+| whisper-large-v3 | 2105 / 2287 | 2006 / 2268 | 2112 / 2398 | 1009 / 829 |
+
+- Warm and first call are 8–30% faster on all five. Load is slower for the small models (base
+  103 vs 62 ms: wavo's fixed GPU setup and warm-up window) and for large-v3 (1009 vs 829 ms,
+  1.67 GB of weights); on par for medium. Not measured again on a quiet machine.
+- M1: the texts of tiny, base, small, tiny.en and base.en (18 clips, `wavo run --segment 0` with
+  the M2's binary) equal the fixtures. N100 (mele): tiny and small fixtures pass.
+
 ## Other engines (2026-10-10)
 
 ### Whisper large-v3-turbo vs whisper.cpp

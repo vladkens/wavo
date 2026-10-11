@@ -39,13 +39,27 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
 | `gigaam-v3-rnnt` | 0.27 GB | Russian | lowercase, no punctuation |
 | `gigaam-v3-ctc` | 0.27 GB | Russian | lowercase, no punctuation |
 | `whisper-turbo` | 0.89 GB | 100 languages | cased, punctuated |
+| `whisper-tiny` | 0.05 GB | 99 languages | cased, punctuated |
+| `whisper-base` | 0.08 GB | 99 languages | cased, punctuated |
+| `whisper-small` | 0.27 GB | 99 languages | cased, punctuated |
+| `whisper-medium` | 0.83 GB | 99 languages | cased, punctuated |
+| `whisper-large-v3` | 1.67 GB | 100 languages | cased, punctuated |
+| `whisper-tiny.en` | 0.05 GB | English | cased, punctuated |
+| `whisper-base.en` | 0.08 GB | English | cased, punctuated |
+| `whisper-small.en` | 0.27 GB | English | cased, punctuated |
+| `whisper-medium.en` | 0.83 GB | English | cased, punctuated |
+| `whisper-large` | 1.67 GB | 99 languages | cased, punctuated |
+| `whisper-large-v2` | 1.67 GB | 99 languages | cased, punctuated |
+| `breeze-asr-25` | 1.67 GB | Taiwanese Mandarin and English | cased, punctuated |
 
 Parakeet is NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
 GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM), Whisper is OpenAI's
-[Whisper large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo).
+[Whisper](https://huggingface.co/openai/whisper-large-v3-turbo) and Breeze-ASR-25 is MediaTek
+Research's [Whisper large-v2 fine-tune](https://huggingface.co/MediaTek-Research/Breeze-ASR-25).
 Short names stand for the published ones: `parakeet-v3` is `parakeet-tdt-0.6b-v3`, `parakeet-v2`
-is `parakeet-tdt-0.6b-v2`, `gigaam-v3` is `gigaam-v3-e2e-rnnt` and `whisper-turbo` is
-`whisper-large-v3-turbo`; full names and a path to a `.gguf` work too.
+is `parakeet-tdt-0.6b-v2`, `gigaam-v3` is `gigaam-v3-e2e-rnnt`, `whisper-turbo` is
+`whisper-large-v3-turbo` and `breeze-asr-25` is `Breeze-ASR-25`; full names and a path to a
+`.gguf` work too.
 
 ## 📥 Installation
 

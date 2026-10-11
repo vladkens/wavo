@@ -179,7 +179,8 @@ mod tests {
     );
   }
 
-  /// Cue texts joined with spaces give each fixture's transcript text.
+  /// Cue texts give each fixture's transcript text, up to whitespace: Chinese segments join
+  /// without spaces.
   #[test]
   fn cues_keep_the_fixture_text() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
@@ -203,7 +204,8 @@ mod tests {
         let pieces: Vec<(&str, u32)> = pieces.iter().map(|p| (p.as_str(), 0)).collect();
         let srt = srt(&tokens(&pieces), &[], 1000);
         let cues: Vec<&str> = srt.split("\n\n").filter_map(|c| c.lines().nth(2)).collect();
-        assert_eq!(cues.join(" "), text.split_whitespace().collect::<Vec<_>>().join(" "));
+        let squeeze = |s: &str| s.split_whitespace().collect::<String>();
+        assert_eq!(squeeze(&cues.join(" ")), squeeze(&text));
       }
     }
   }

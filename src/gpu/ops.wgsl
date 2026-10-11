@@ -93,7 +93,8 @@ fn layer_norm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_in
 }
 
 // im2col for a conv1d over x [t][ch]: col[i][c · kernel + k] = x[stride · i + k − pad][c], matching
-// a ggml conv weight [kernel, ch, out].
+// a ggml conv weight [kernel, ch, out]. Rows are padded with zeros to a multiple of 32 columns, as
+// `Gpu::conv` pads the weight (80 mels: 240 → 256).
 
 @group(0) @binding(0) var<storage, read> col_x: array<f32>;
 @group(0) @binding(1) var<storage, read_write> col_y: array<f32>;
@@ -102,16 +103,17 @@ fn layer_norm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_in
 fn im2col(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
   let i = wg.y;
   let e = wg.x * 256u + lid;
-  if (e >= p.ch * p.kernel) {
+  let width = (p.ch * p.kernel + 31u) / 32u * 32u;
+  if (e >= width) {
     return;
   }
   // Source frame plus the padding.
   let s = p.stride * i + e % p.kernel;
   var v = 0.0;
-  if (s >= p.pad && s - p.pad < p.t) {
+  if (e < p.ch * p.kernel && s >= p.pad && s - p.pad < p.t) {
     v = col_x[(s - p.pad) * p.ch + e / p.kernel];
   }
-  col_y[i * p.ch * p.kernel + e] = v;
+  col_y[i * width + e] = v;
 }
 
 // Conformer conv module between the pointwise convs, one workgroup per frame: GLU (first half ·

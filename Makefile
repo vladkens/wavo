@@ -49,11 +49,12 @@ clean:
 .PHONY: test-unit test-ci models models-ci samples reference fixtures compare bench-compare
 
 MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
-	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 whisper-large-v3-turbo
+	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 \
+	whisper-large-v3-turbo whisper-tiny whisper-base whisper-small whisper-medium whisper-large-v3 whisper-tiny.en whisper-base.en whisper-small.en whisper-medium.en whisper-large whisper-large-v2 Breeze-ASR-25
 # CI downloads and tests (by these names in tests/models.rs) only the smallest model of each
-# family; switch when a smaller one is added (e.g. whisper-small). `make test` covers them all.
-CI_MODELS := gigaam-v3-e2e-rnnt parakeet-tdt-0.6b-v3 whisper-large-v3-turbo
-CI_TESTS := gigaam_v3_e2e_rnnt parakeet_tdt_v3 whisper_large_v3_turbo
+# family; switch when a smaller one is added. `make test` covers them all.
+CI_MODELS := gigaam-v3-e2e-rnnt parakeet-tdt-0.6b-v3 whisper-tiny
+CI_TESTS := gigaam_v3_e2e_rnnt parakeet_tdt_v3 whisper_tiny
 REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
 CLI := 3rd/transcribe.cpp/build/bin/transcribe-cli
 # Whisper has segment timestamps only: TIMESTAMPS=segment.
