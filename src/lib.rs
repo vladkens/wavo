@@ -210,6 +210,17 @@ pub struct Token {
   pub start_ms: u32,
 }
 
+/// A language [`Model::languages`] hears, with its probability.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct Language {
+  /// The code Whisper names it by: ISO 639-1 such as `en`, `ru` or `zh`, and a few longer ones
+  /// such as `haw` and `yue`.
+  pub code: String,
+  /// Probability in [0, 1]; over all the languages of the model they sum to 1.
+  pub probability: f32,
+}
+
 impl Model {
   /// Loads a model from its GGUF file and uploads its weights to the GPU.
   ///
@@ -265,6 +276,38 @@ impl Model {
       Family::Gigaam(m) => m.transcribe(pcm),
       Family::Parakeet(m) => m.transcribe(pcm),
       Family::Whisper(m) => m.transcribe(pcm),
+    }
+  }
+
+  /// The spoken language of 16 kHz mono PCM samples in [-1, 1], as a multilingual Whisper model
+  /// detects it on the first 30 s: every language the model knows, most likely first.
+  ///
+  /// The first is the language [`transcribe`](Self::transcribe) picks for the same samples. It
+  /// hears the first 30 s window only, but as in `transcribe` the features are scaled to the
+  /// loudest moment of all the samples, so later audio can shift the answer slightly; pass the
+  /// first 30 s to save time. Short
+  /// clips (a few seconds) are the least reliable, small models more so. Empty for models
+  /// without language identification: GigaAM, Parakeet and the English-only Whisper models
+  /// (`.en`).
+  ///
+  /// # Errors
+  ///
+  /// The GPU failed: [`Error::Gpu`], [`Error::Poll`], [`Error::Readback`] or [`Error::Map`].
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// # let pcm = vec![0.0f32; 16_000];
+  /// let model = wavo::Model::load("whisper-tiny-Q8_0.gguf")?;
+  /// if let Some(top) = model.languages(&pcm)?.first() {
+  ///   println!("{} ({:.0}%)", top.code, top.probability * 100.0);
+  /// }
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn languages(&self, pcm: &[f32]) -> Result<Vec<Language>> {
+    match &self.0 {
+      Family::Whisper(m) => m.languages(pcm),
+      Family::Gigaam(_) | Family::Parakeet(_) => Ok(Vec::new()),
     }
   }
 

@@ -20,7 +20,7 @@ use tokenizer::Tokenizer;
 use crate::error::{Result, bail};
 use crate::gguf::Gguf;
 use crate::gpu::{Buffer, Gpu, Groups};
-use crate::{Token, Transcript};
+use crate::{Language, Token, Transcript};
 
 /// The no-speech skip: a window is dropped when the no-speech probability is above this and the
 /// average log-probability of its tokens below `LOGPROB`.
@@ -36,6 +36,8 @@ pub struct Whisper {
   transcribe: usize,
   no_speech: usize,
   languages: Vec<usize>,
+  /// `general.languages`: the code of each of `languages`.
+  codes: Vec<String>,
   encoder: Encoder,
   decoder: Decoder,
   arena: Mutex<Arena>,
@@ -114,12 +116,12 @@ impl Whisper {
       begin_suppress: list("stt.whisper.begin_suppress_tokens")?,
     };
     // English-only (`.en`) models have no language or task tokens: they prompt with SOT alone.
-    let languages = match g.get::<bool>("stt.capability.lang_detect")? {
-      true => (g.array::<&str>("general.languages")?.iter())
-        .map(|code| tok.find(&format!("<|{code}|>")))
-        .collect::<Option<Vec<_>>>(),
-      false => Some(Vec::new()),
+    let codes: Vec<String> = match g.get::<bool>("stt.capability.lang_detect")? {
+      true => g.array::<&str>("general.languages")?.iter().map(|c| c.to_string()).collect(),
+      false => Vec::new(),
     };
+    let languages =
+      codes.iter().map(|code| tok.find(&format!("<|{code}|>"))).collect::<Option<Vec<_>>>();
     let Some(languages) = languages else { bail!("a language of general.languages has no token") };
     let all = [&ids.suppress[..], &ids.begin_suppress, &languages, &[ids.eot, no_timestamps]];
     if all.iter().flat_map(|v| v.iter()).any(|&i| i >= dec.vocab) {
@@ -143,6 +145,7 @@ impl Whisper {
       transcribe: u("transcribe_token_id")?,
       no_speech: no_timestamps - 1,
       languages,
+      codes,
       gpu,
       frontend,
       tok,
@@ -209,6 +212,17 @@ impl Whisper {
     Ok(Transcript { text, tokens })
   }
 
+  /// The languages on the first window, ranked from the same logits `transcribe` picks from.
+  pub fn languages(&self, pcm: &[f32]) -> Result<Vec<Language>> {
+    if self.languages.is_empty() {
+      return Ok(Vec::new());
+    }
+    let mut mel = self.frontend.compute(pcm);
+    mel.resize(2 * self.encoder.cfg.frames * self.encoder.cfg.mels, 0.0);
+    let sot = self.window(&mut self.lock(), &mel)?;
+    Ok(rank(&self.codes, self.languages.iter().map(|&id| sot[id])))
+  }
+
   /// Encodes a window of mel frames, computes the cross K/V and runs the decoder on SOT; returns
   /// its logits.
   fn window(&self, a: &mut Arena, mel: &[f32]) -> Result<Vec<f32>> {
@@ -233,5 +247,34 @@ impl Whisper {
         self.decoder.record_step(p, dec, token, pos + i, frames);
       }
     })
+  }
+}
+
+/// Softmax over the language tokens' logits, most likely first; ties keep the model's order, so
+/// the first is the language `transcribe` takes.
+fn rank(codes: &[String], logits: impl Iterator<Item = f32>) -> Vec<Language> {
+  let logits: Vec<f32> = logits.collect();
+  let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+  let exp: Vec<f32> = logits.iter().map(|&l| (l - max).exp()).collect();
+  let sum: f32 = exp.iter().sum();
+  let mut ranked: Vec<Language> = (codes.iter().zip(exp))
+    .map(|(code, e)| Language { code: code.clone(), probability: e / sum })
+    .collect();
+  ranked.sort_by(|a, b| b.probability.total_cmp(&a.probability));
+  ranked
+}
+
+#[cfg(test)]
+mod tests {
+  #[test]
+  fn rank() {
+    let codes = ["en", "ru", "de", "uk"].map(String::from);
+    let ranked = super::rank(&codes, [1.0, 3.0, 1.0, 3.0].into_iter());
+    let got: Vec<(&str, f32)> = ranked.iter().map(|l| (l.code.as_str(), l.probability)).collect();
+    let (hi, lo) = (1.0 / (2.0 + 2.0 * (-2f32).exp()), 1.0 / (2.0 + 2.0 * 2f32.exp()));
+    assert_eq!(got.iter().map(|g| g.0).collect::<Vec<_>>(), ["ru", "uk", "en", "de"]);
+    for (g, want) in got.iter().zip([hi, hi, lo, lo]) {
+      assert!((g.1 - want).abs() < 1e-6, "{g:?}, want {want}");
+    }
   }
 }

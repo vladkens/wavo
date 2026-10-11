@@ -110,6 +110,7 @@ audio in 42 ms (`gigaam-v3`), 79 ms (`parakeet-v3`) or 0.65 s (`whisper-turbo`).
 ```sh
 wavo talk.m4a                         # transcribe with parakeet-v3, the same as wavo run talk.m4a
 wavo run gigaam-v3 talk.mp3           # or with another model
+wavo talk.m4a --model auto            # or with the model for the language spoken
 wavo run whisper-turbo talk.mp3 -y    # download a missing model without asking
 wavo pull parakeet-v3                 # download a model
 wavo pull gigaam-v3 whisper-turbo     # or several at once
@@ -119,6 +120,11 @@ wavo list                             # downloaded models
 wavo rm parakeet-v3                   # delete one
 wavo bench gigaam-v3 talk.wav         # load time and speed on your machine
 ```
+
+With `--model auto`, `whisper-tiny` listens to the first 30 s and names the language, favouring
+the ones your system is set up for (macOS languages and keyboard layouts, Windows display
+languages, `LANG` on Linux), and wavo picks `gigaam-v3` for Russian, `parakeet-v3` for its 25
+European languages and `whisper-turbo` for the rest.
 
 When the model isn't downloaded yet, `wavo run` asks before downloading it, in a terminal; `-y`
 downloads without asking, for scripts. Without a terminal and `-y` it fails with the `wavo pull`
@@ -171,7 +177,8 @@ for token in &transcript.tokens {
 The `hub` feature downloads models by name (it adds an HTTP client); leave it out to load `.gguf`
 files you fetch yourself, with a pure Rust build. Decoding and resampling audio and splitting long
 recordings are up to you: `model.max_audio_ms()` tells how long a piece the model was trained on
-(25 s for GigaAM, 30 s for Whisper). The [API docs](https://docs.rs/wavo) have the details,
+(25 s for GigaAM, 30 s for Whisper), and `model.languages(&pcm)` names the language spoken, with
+multilingual Whisper models. The [API docs](https://docs.rs/wavo) have the details,
 including downloading on a thread with progress and cancel, as
 [examples/hub.rs](examples/hub.rs) does.
 

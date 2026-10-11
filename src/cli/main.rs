@@ -2,6 +2,7 @@
 //! `wavo`: speech to text with models pulled by name into the Hugging Face cache.
 
 mod audio;
+mod auto;
 mod models;
 mod output;
 mod split;
@@ -35,10 +36,14 @@ Run options:
   --srt                        print subtitles
   --segment SECS               split longer audio at pauses into parts of up to SECS
                                (25 for GigaAM, 30 for Whisper, else 60; 0 for one pass)
+  --model MODEL                the same as MODEL before AUDIO; auto picks the model by the
+                               language whisper-tiny hears, favouring the system's languages:
+                               gigaam-v3 for Russian, parakeet-v3 for its 25 languages, else
+                               whisper-turbo
   -y, --yes                    download a missing model without asking
 
-MODEL is a name below, its full name or a path to a .gguf file. AUDIO is wav, mp3, m4a, flac
-or ogg (Vorbis), downmixed to mono and resampled to 16 kHz.
+MODEL is a name below, its full name or a path to a .gguf file; run also takes auto. AUDIO is
+wav, mp3, m4a, flac or ogg (Vorbis), downmixed to mono and resampled to 16 kHz.
 Models live in the Hugging Face cache (HF_HUB_CACHE or HF_HOME), shared with the hf CLI;
 only `wavo pull` and `wavo run` (after asking, or with -y) use the network.
 
@@ -139,12 +144,15 @@ fn load(path: &Path) -> Result<wavo::Model> {
 }
 
 fn run(args: &[&str]) -> Result<()> {
-  const USAGE: &str = "usage: wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS] [-y]";
-  let (mut format, mut segment, mut download, mut rest) = (None, None, Download::Ask, Vec::new());
+  const USAGE: &str =
+    "usage: wavo run [MODEL] AUDIO [--model MODEL] [--json | --srt] [--segment SECS] [-y]";
+  let (mut format, mut segment, mut download) = (None, None, Download::Ask);
+  let (mut named, mut rest) = (None, Vec::new());
   let mut args = args.iter();
   while let Some(&arg) = args.next() {
     match arg {
       "--json" | "--srt" if format.is_none() => format = Some(arg),
+      "--model" if named.is_none() => named = Some(*args.next().context(USAGE)?),
       "--segment" if segment.is_none() => {
         let secs = args.next().and_then(|s| s.parse::<u32>().ok()).filter(|&s| s == 0 || s >= 5);
         let secs =
@@ -156,25 +164,38 @@ fn run(args: &[&str]) -> Result<()> {
       _ => rest.push(arg),
     }
   }
-  let (model, audio) = match *rest {
-    [arg] if hub::lookup(arg).is_ok() && !Path::new(arg).exists() => {
+  let (model, audio) = match (named, &rest[..]) {
+    (Some(model), [audio]) => (model, *audio),
+    (None, [arg]) if hub::lookup(arg).is_ok() && !Path::new(arg).exists() => {
       bail!("no audio file given: wavo run {arg} AUDIO")
     }
-    [audio] => (models::DEFAULT, audio),
-    [model, audio] => (model, audio),
+    (None, [audio]) => (models::DEFAULT, *audio),
+    (None, [model, audio]) => (*model, *audio),
     _ => bail!(USAGE),
   };
   // Before anything is asked or downloaded.
   let meta = std::fs::metadata(audio).with_context(|| format!("reading {audio}"))?;
   ensure!(!meta.is_dir(), "{audio}: a folder, not an audio file");
-  let path = model_path(model, download)?;
+  let auto = model == "auto";
+  let mut path = model_path(if auto { auto::DETECTOR } else { model }, download)?;
   let bar = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear); // on errors too
   bar.set_style(ProgressStyle::with_template("{spinner} {msg} {elapsed}")?);
   bar.enable_steady_tick(Duration::from_millis(100));
   bar.set_message("decoding the audio");
   let pcm = audio::read(audio)?;
   bar.set_message("loading the model");
-  let model = load(&path)?;
+  let mut model = load(&path)?;
+  if auto {
+    bar.set_message("detecting the language");
+    let ranked = model.languages(&pcm[..pcm.len().min(30 * 16_000)])?;
+    let lang = auto::choose(&ranked, &auto::system_languages()).context("no language detected")?;
+    let name = auto::model_for(&lang.code);
+    bar.suspend(|| eprintln!("detected {} ({:.2}) → {name}", lang.code, lang.probability));
+    path = bar.suspend(|| model_path(name, download))?;
+    bar.set_message("loading the model");
+    drop(model);
+    model = load(&path)?;
+  }
   let max_ms = segment.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
   let ranges = split::segments(&pcm, if max_ms == 0 { usize::MAX } else { max_ms as usize * 16 });
   let n = ranges.len();

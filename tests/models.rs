@@ -132,9 +132,28 @@ fn whisper_large_v3_turbo() {
   check("whisper-large-v3-turbo", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
 }
 
+/// The language `Model::languages` ranks first on each sample; none for models without language
+/// ID.
+fn languages(name: &str, expected: &[(&str, Option<&str>)]) {
+  let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
+  let model = wavo::Model::load(model_path(name)).unwrap();
+  for &(sample, code) in expected {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join(format!("3rd/transcribe.cpp/samples/{sample}.wav"));
+    let ranked = model.languages(&read_wav(&path)).unwrap();
+    let sum: f32 = ranked.iter().map(|l| l.probability).sum();
+    assert!(ranked.is_empty() || (sum - 1.0).abs() < 1e-3, "{name} {sample}: sum {sum}");
+    assert_eq!(ranked.first().map(|l| l.code.as_str()), code, "{name} {sample}");
+  }
+}
+
 #[test]
 fn whisper_tiny() {
   check("whisper-tiny", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
+  languages(
+    "whisper-tiny",
+    &[("jfk", Some("en")), ("zh-short", Some("zh")), ("ru-long", Some("ru"))],
+  );
 }
 
 #[test]
@@ -160,6 +179,7 @@ fn whisper_large_v3() {
 #[test]
 fn whisper_tiny_en() {
   check("whisper-tiny.en", &["jfk", "dots", "jobs-silence"]);
+  languages("whisper-tiny.en", &[("jfk", None)]);
 }
 
 #[test]
