@@ -275,6 +275,55 @@ tool at ~320% and a VM at ~155% of a core), so a sanity check only:
 - M1: the texts of tiny, base, small, tiny.en and base.en (18 clips, `wavo run --segment 0` with
   the M2's binary) equal the fixtures. N100 (mele): tiny and small fixtures pass.
 
+## Load time (2026-10-11)
+
+M2, load average 2–4, on `jfk`. Per model 7 rounds, each one fresh process of `wavo bench MODEL
+jfk.wav -n 1` for f663ede and for this state, and `transcribe-bench --warmup 0 --iters 1`,
+interleaved; medians. Cells are f663ede / now / reference, ms. The large-v3 row is a rerun: the
+first had a background burst (load 381 / 197 / 590).
+
+| Model | Load | First call | Load + first call |
+|---|---|---|---|
+| whisper-base | 67.5 / 33.0 / 71.3 | 126.5 / 131.6 / 176.5 | 195.1 / 166.3 / 246.7 |
+| whisper-small | 109.2 / 55.2 / 134.7 | 390.0 / 397.1 / 460.7 | 496.4 / 451.9 / 590.7 |
+| whisper-large-v3 | 334.1 / 168.0 / 532.8 | 1969 / 2037 / 2237 | 2304 / 2193 / 2763 |
+| whisper-large-v3-turbo | 217.4 / 104.7 / 297.5 | 1309 / 1331 / 1460 | 1524 / 1437 / 1756 |
+| GigaAM e2e-rnnt | 76.4 / 44.2 / 103.5 | 95.0 / 98.1 / 112.3 | 170.9 / 141.7 / 217.0 |
+| Parakeet TDT V3 | 166.1 / 89.0 / 244.9 | 148.3 / 166.5 / 223.3 | 314.4 / 255.6 / 467.9 |
+
+- The Whisper gap in the variants table above was the busy machine. Quiet, f663ede already
+  loaded faster than the reference except whisper-base (67–74 vs 65–71 ms). Memory pressure or
+  a cold page cache shows most on large-v3: single loads of ~750 ms, the upload 294 + 257 ms
+  instead of 64 + 94.
+- The reference's `load_ms` covers less than wavo's load: not its first GGUF parse
+  (`Loader::open` runs before the timer), and no Metal pipelines, which ggml compiles on first
+  use in the first call. wavo's load creates every pipeline and probes the fast ones.
+- Metal caches compiled pipelines across runs by shader source: the same binary at a new path
+  loads as fast (GigaAM 65.7 vs 65.4 ms). New shaders cost 0.2–0.4 s once (whisper-tiny's
+  386 ms above). The first run after boot also reads the GGUF from disk; not measured.
+
+Where the load goes, temporary timers, median of 5 runs, f663ede → now, ms:
+
+| Part | whisper-base | whisper-large-v3 |
+|---|---|---|
+| GGUF open | 8.4 → 1.3 | 8.7 → 1.4 |
+| Tokenizer | 0.9 → 1.9 | 1.0 → 2.0 |
+| Language tokens | 8.2 → 0.2 | 8.7 → 0.2 |
+| wgpu adapter and device | 10.2 → 10.0 | 10.8 → 10.3 |
+| Pipelines | 7.6 → 4.7 | 7.6 → 4.9 |
+| Fast-kernel probes | 4.9 → 2.5 | 5.5 → 2.4 |
+| Weight upload, encoder + decoder | 14.3 → 11.8 | 179.7 → 143.1 |
+| Decoder pipelines and warm-up window | 13.8 → 0 | 129.5 → 0 |
+| Total | 71.3 → 33.0 | 346.2 → 165.3 |
+
+- The adapter and device (7.4 + 2.6 ms) are Metal's device setup; the reference pays it inside
+  its `load_ms` too. The decoder pipelines (1.7 ms) are now compiled in the first call.
+- The upload is the floor for large models: ~10 GB/s, from one thread per block, through a
+  `read` from the page cache, after wgpu zeroes each buffer it maps at creation (`map_buffer` in
+  wgpu-core). The reference reads each tensor on one thread and copies it: ~3 GB/s.
+- Not done: compiling the pipelines while the weights upload (~7 ms, but every kernel lookup
+  would wait on a thread); starting the device while the GGUF header is read (≤ 3 ms left).
+
 ## Other engines (2026-10-10)
 
 ### Whisper large-v3-turbo vs whisper.cpp
