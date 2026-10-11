@@ -20,14 +20,17 @@ the first call matter as much as warm speed.
 - Keep the library pure Rust: no C/C++, ONNX, BLAS or Python in it or its build. Its
   dependencies: `wgpu`, `bytemuck`, `half`, `thiserror`, `pollster`; tests may also use `hound`
   (dev-dependency).
+- Features: `cli` (default) and `hub`. `hub` adds `wavo::hub`, model downloads into the Hugging
+  Face cache, and its one dependency, `ureq` (rustls with ring and webpki roots).
 - Keep the build fast, also for crates that depend on wavo: prefer a small own routine to a
   generic dependency that compiles far more code than wavo uses. Measure with `cargo build
   --timings`.
 - The CLI sits behind the default `cli` feature (binary `wavo` in `src/cli/`, `required-features
-  = ["cli"]`), so `cargo add wavo --no-default-features` gets only the library. The CLI's own
-  dependencies are optional and enabled by `cli`: `anyhow`, `ureq` (rustls with ring and webpki
-  roots), `symphonia`, `rubato`, `indicatif` (no default features). ring compiles some C and
-  assembly: the one accepted exception to pure Rust, and only in the CLI.
+  = ["cli"]`), so `cargo add wavo --no-default-features` gets only the library. `cli` enables
+  `hub`, and its own dependencies are optional and enabled by `cli`: `anyhow`, `symphonia`,
+  `rubato`, `indicatif` (no default features). ring compiles some C and assembly: the one accepted
+  exception to pure Rust, accepted in the CLI and in the optional `hub` feature, never in the
+  default library.
 - Add, remove or upgrade dependencies only with `cargo add` / `cargo remove` / `cargo upgrade`
   (e.g. `cargo add wgpu@=30.0.1 --no-default-features --features std,wgsl,metal,vulkan`, or
   `cargo add ureq --optional` for the CLI). Never edit `[dependencies]` or `Cargo.lock` by hand.
@@ -38,13 +41,16 @@ the first call matter as much as warm speed.
   subgroup width). Keep a fast kernel only with a measured gain on its hardware class.
 - Keep the public API to `Model::load(path)`, `model.transcribe(&pcm)` → `Transcript { text,
   tokens }` and `model.max_audio_ms()` (the window a model was trained for, `None` without one),
-  where pcm is 16 kHz mono `f32` and tokens carry id, piece and start time in ms. The CLI is
+  where pcm is 16 kHz mono `f32` and tokens carry id, piece and start time in ms, plus
+  `wavo::hub` behind the `hub` feature: `MODELS`, `lookup(name)` and `Hub::new()` / `Hub::at(dir)`
+  with `find`, `pull` (blocking, with a progress callback that can cancel) and `remove`. The CLI is
   `wavo pull MODEL...`, `wavo list`, `wavo rm MODEL`, `wavo run [MODEL] AUDIO [--json | --srt]
   [--segment SECS]` (default model `parakeet-v3`) and `wavo bench MODEL AUDIO [-n N]`, where
   MODEL is a short name, a full published name or a path to a `.gguf`. Change either only with
   the user's approval.
-- Only `wavo pull` uses the network. `run` and `bench` never download; a missing model fails with
-  the `wavo pull` command to run.
+- Only `wavo pull` and `hub::Hub::pull` use the network. `run` and `bench` never download; a
+  missing model fails with the `wavo pull` command to run. The library starts no threads for
+  downloads: `pull` blocks, and the caller runs it on a thread.
 - The library leaves resampling, VAD, chunking and streaming to the caller (Whisper's own 30 s
   windows, as transcribe.cpp runs them, aside). The CLI decodes
   common formats (wav, mp3, m4a/aac, flac, ogg/vorbis), downmixes to mono and resamples to 16 kHz;
@@ -67,8 +73,13 @@ the first call matter as much as warm speed.
   guard against crafted or corrupted files.
 - Keep core plus one family (GGUF, GPU, kernels, frontend, encoder, decoder) within ~3k lines of
   Rust and WGSL, tests excluded. The CLI (`src/cli/`) is counted separately and stays lean,
-  roughly ≤ 900 lines: hand-rolled argument parsing, JSON and SRT, no clap or serde. Simplify
-  before growing past either budget.
+  roughly ≤ 900 lines: hand-rolled argument parsing, JSON and SRT, no clap or serde. `src/hub/`
+  is counted separately as well and stays roughly ≤ 600 lines with its docs. Simplify before
+  growing past any budget.
+- Every public item has a doc comment with its units and failure cases (`#![warn(missing_docs)]`);
+  the crate docs are the user guide on docs.rs. Examples are doctests (`no_run` when they need a
+  model, a GPU or the network), compiled by `make test-unit`; `make check` builds the docs with
+  warnings denied.
 - The library returns its own `Error` enum built with `thiserror`; only the CLI uses `anyhow`.
   Comment only non-obvious data layouts, numeric tricks and model quirks that differ from what the
   reference docs say.
@@ -93,9 +104,10 @@ the first call matter as much as warm speed.
   the root resolved as Python huggingface_hub does: `HF_HUB_CACHE`, else `$HF_HOME/hub`, else
   `${XDG_CACHE_HOME:-~/.cache}/huggingface/hub`; a model is at
   `models--handy-computer--<name>-gguf/snapshots/<refs/main>/<name>-Q8_0.gguf`, a symlink into
-  `blobs/`. `wavo pull` writes exactly that layout (lock in `.locks/`, `blobs/<etag>.incomplete`
-  while downloading), so `hf` and `wavo` each find what the other downloaded. `wavo rm` deletes
-  only inside the repo folder and leaves `hf`'s shared blob store to `hf cache rm`.
+  `blobs/`. `wavo pull` (through `wavo::hub`) writes exactly that layout (lock in `.locks/`,
+  `blobs/<etag>.incomplete` while downloading), so `hf` and `wavo` each find what the other
+  downloaded. `wavo rm` deletes only inside the repo folder and leaves `hf`'s shared blob store to
+  `hf cache rm`.
 - Keep third-party checkouts in `3rd/` (gitignored) and never modify them. The reference is
   transcribe.cpp at commit `5bb2deb2a4afb1fd50534ecb51cfcb521ef94944`; `make reference` clones and
   builds it in `3rd/transcribe.cpp` (cmake and a C++ toolchain; on Linux its Vulkan build,
@@ -115,8 +127,9 @@ the first call matter as much as warm speed.
 ## Adding a model
 
 1. Find the variant in `3rd/transcribe.cpp/catalog/<variant>.json` (published repo, files and
-   sizes). Add its name to `MODELS` in the `Makefile` and to the CLI registry in `src/cli/` (short
-   name, Q8_0 size), and run `make models`.
+   sizes). Add its name to `MODELS` in the `Makefile`, to `MODELS` in `src/hub/mod.rs` (short and
+   full name, Q8_0 size, languages, punctuation) and to the model table in the crate docs
+   (`src/lib.rs`; a unit test keeps the two equal), and run `make models`.
 2. Read `scripts/convert-<family>.py`, `src/arch/<family>/` and `docs/models/<variant>.md` in the
    reference.
 3. Generate fixtures with `make fixtures MODEL=<name> SAMPLES="..."`: 2–4 clips from
@@ -146,8 +159,9 @@ the first call matter as much as warm speed.
   build in `3rd/`). Don't commit dumps or tensor-level oracle tests, and don't chase bit-exact
   intermediates.
 - Unit-test only logic that can break silently: GGUF parsing, tokenizer, decoder loops, kernels
-  against a CPU loop on small shapes; in the CLI, model names, the cache layout, audio decoding (a
-  16 kHz mono WAV gives exactly the samples the fixtures use), the long-audio split and SRT cues.
+  against a CPU loop on small shapes; in `hub`, model names, the cache layout and retries; in the
+  CLI, audio decoding (a 16 kHz mono WAV gives exactly the samples the fixtures use), the
+  long-audio split and SRT cues.
   Unit tests run in CI (`make test-unit`) without models or `3rd/`: synthesize their inputs.
 
 ## Performance
@@ -167,8 +181,8 @@ the first call matter as much as warm speed.
 ## Workflow
 
 - Before committing, run `make check` (it also checks the library alone, with
-  `--no-default-features`) and `make test`. `make prepare` rewrites files, so don't use it as a
-  check.
+  `--no-default-features` and with `hub`, and builds the docs) and `make test`. `make prepare`
+  rewrites files, so don't use it as a check.
 - Every change reaches `main` through a pull request, one per feature or roadmap phase:
   1. Agree the plan with the person. For multi-step work keep a checklist in
      `docs/plans/yyyymmdd-<name>.md`; in it, only tick checkboxes: no evidence, progress or status

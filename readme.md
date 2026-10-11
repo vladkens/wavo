@@ -139,11 +139,22 @@ is about a quarter to a third shorter. More numbers in [docs/perf.md](docs/perf.
 ## 📚 Library usage
 
 ```sh
-cargo add wavo --no-default-features
+cargo add wavo --no-default-features --features hub
 ```
 
 ```rust
-let model = wavo::Model::load("parakeet-tdt-0.6b-v3-Q8_0.gguf")?;
+use std::ops::ControlFlow;
+use wavo::hub::Hub;
+
+let hub = Hub::new(); // the Hugging Face cache, shared with `hf` and `wavo pull`
+let path = match hub.find("parakeet-v3") {
+  Some(path) => path,
+  None => hub.pull("parakeet-v3", |p| {
+    eprint!("\r{} / {} MB", p.done / 1_000_000, p.total / 1_000_000);
+    ControlFlow::Continue(()) // Break cancels; the next pull resumes
+  })?,
+};
+let model = wavo::Model::load(path)?;
 let transcript = model.transcribe(&pcm)?; // pcm: 16 kHz mono f32 in [-1, 1]
 println!("{}", transcript.text);
 for token in &transcript.tokens {
@@ -151,9 +162,11 @@ for token in &transcript.tokens {
 }
 ```
 
-Without default features you get only the engine: decoding and resampling audio, splitting long
-recordings and downloading models are up to you. `model.max_audio_ms()` tells how long a piece
-the model was trained on (25 s for GigaAM, 30 s for Whisper), so you know where to split.
+The `hub` feature downloads models by name (it adds an HTTP client); leave it out to load `.gguf`
+files you fetch yourself, with a pure Rust build. Decoding and resampling audio and splitting long
+recordings are up to you: `model.max_audio_ms()` tells how long a piece the model was trained on
+(25 s for GigaAM, 30 s for Whisper). The [API docs](https://docs.rs/wavo) have the details,
+including downloading on a thread with progress and cancel.
 
 ## 🤝 Contributing
 

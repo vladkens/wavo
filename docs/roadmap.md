@@ -53,6 +53,10 @@ Mac, not only transcribe.cpp. Plan: [docs/plans/20261010-other-engines.md](plans
 mostly the wgpu chain (naga → wgpu-core → wgpu), and the library rebuilds in ~2 s (from ~12).
 Left: wgpu features per target. Plan: [docs/plans/20261010-fast-build.md](plans/20261010-fast-build.md).
 
+**Model downloads in the library.** `wavo::hub` behind the `hub` feature: the model registry and
+`Hub::find/pull/remove` in the Hugging Face cache, which the CLI's `pull/list/rm` use; docs on
+docs.rs for every public item, with compiled examples.
+
 Later, only on request: streaming, slowing fast speech down before recognition
 (pitch-keeping time-stretch such as WSOLA; first measure WER on samples sped up with ffmpeg
 `atempo`, with and without slowing them back down).
