@@ -149,3 +149,8 @@ fn whisper_large_v3() {
 fn whisper_tiny_en() {
   check("whisper-tiny.en", &["jfk", "dots", "jobs-silence"]);
 }
+
+#[test]
+fn whisper_base_en() {
+  check("whisper-base.en", &["jfk", "dots", "jobs-silence"]);
+}
