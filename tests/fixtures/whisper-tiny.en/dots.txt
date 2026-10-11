@@ -1,0 +1,11 @@
+text: Of course, it was impossible to connect the dots looking forward when I was in college, but it was very, very clear looking backwards ten years later. Again, you can't connect the dots looking forward. You can only connect them looking backwards. So you have to trust that the dots will somehow connect in your future. You have to trust in something, your gut, destiny, life, karma, whatever. Because believing that the dots will connect down the road will give you the confidence to follow your heart even when it leads you off the well-worn path and that will make all the difference.
+segments: 9
+  [   0.00 ->    5.20] Of course, it was impossible to connect the dots looking forward when I was in college,
+  [   5.20 ->    8.96] but it was very, very clear looking backwards ten years later.
+  [   8.96 ->   12.24] Again, you can't connect the dots looking forward.
+  [  12.24 ->   15.00] You can only connect them looking backwards.
+  [  15.00 ->   18.76] So you have to trust that the dots will somehow connect in your future.
+  [  18.76 ->   23.96] You have to trust in something, your gut, destiny, life, karma, whatever.
+  [  23.96 ->   28.20] Because believing that the dots will connect down the road will give you the confidence
+  [  28.20 ->   33.40] to follow your heart even when it leads you off the well-worn path and that will make
+  [  33.40 ->   34.28] all the difference.
