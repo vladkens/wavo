@@ -13,6 +13,7 @@ check:
 	cargo clippy $(CARGO_FLAGS) --no-default-features --all-targets -- -D warnings
 	cargo clippy $(CARGO_FLAGS) --no-default-features --features hub --all-targets -- -D warnings
 	cargo check $(CARGO_FLAGS)
+	RUSTDOCFLAGS="-D warnings" cargo doc $(CARGO_FLAGS) --no-deps --no-default-features
 	RUSTDOCFLAGS="-D warnings" cargo doc $(CARGO_FLAGS) --no-deps --no-default-features --features hub
 
 test:

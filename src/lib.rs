@@ -1,4 +1,15 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
+// The hub links resolve to the module with the `hub` feature and to docs.rs without it; with the
+// feature they name what rustdoc would find anyway, hence the allow.
+#![allow(rustdoc::redundant_explicit_links)]
+#![cfg_attr(
+  feature = "hub",
+  doc = "[hub-mod]: crate::hub\n[hub-models]: crate::hub::MODELS\n[hub-hub]: crate::hub::Hub\n[hub-pull]: crate::hub::Hub::pull"
+)]
+#![cfg_attr(
+  not(feature = "hub"),
+  doc = "[hub-mod]: https://docs.rs/wavo/latest/wavo/hub/\n[hub-models]: https://docs.rs/wavo/latest/wavo/hub/static.MODELS.html\n[hub-hub]: https://docs.rs/wavo/latest/wavo/hub/struct.Hub.html\n[hub-pull]: https://docs.rs/wavo/latest/wavo/hub/struct.Hub.html#method.pull"
+)]
 //! Speech-to-text on the GPU, in pure Rust.
 //!
 //! wavo runs the open ASR models that [transcribe.cpp] publishes as GGUF files on Hugging Face:
@@ -14,14 +25,15 @@
 //!
 //! - `cli` (default): the `wavo` command-line tool. Leave it out when you use wavo as a library:
 //!   `cargo add wavo --no-default-features`.
-//! - `hub`: the [`hub`] module, which downloads and manages models in the Hugging Face cache. It
-//!   adds an HTTP client (`ureq` with rustls, whose `ring` compiles some C); without it the library
-//!   is pure Rust and never uses the network.
+//! - `hub`: the [`hub`][hub-mod] module, which downloads and manages models in the Hugging Face
+//!   cache. It adds an HTTP client (`ureq` with rustls, whose `ring` compiles some C); without it
+//!   the library is pure Rust and never uses the network.
 //!
 //! # Models
 //!
 //! [`Model::load`] takes the Q8_0 GGUF file of one of these models. With the `hub` feature,
-//! [`hub::MODELS`] lists them, and [`hub::Hub`] downloads them by short or full name.
+//! [`hub::MODELS`][hub-models] lists them, and [`hub::Hub`][hub-hub] downloads them by short or
+//! full name.
 //!
 //! | Name | Full name | Size | Languages | Output |
 //! |---|---|---|---|---|
@@ -71,8 +83,8 @@
 //!
 //! # Download a model
 //!
-//! With `cargo add wavo --no-default-features --features hub`, [`hub::Hub`] finds a model in the
-//! Hugging Face cache that `hf` and `huggingface_hub` share, and downloads it when missing:
+//! With `cargo add wavo --no-default-features --features hub`, [`hub::Hub`][hub-hub] finds a model
+//! in the Hugging Face cache that `hf` and `huggingface_hub` share, and downloads it when missing:
 //!
 //! ```no_run
 //! # #[cfg(feature = "hub")]
@@ -93,7 +105,7 @@
 //!
 //! # Download on a thread, with progress and cancel
 //!
-//! [`Hub::pull`](hub::Hub::pull) blocks until the file is complete, and the library starts no
+//! [`Hub::pull`][hub-pull] blocks until the file is complete, and the library starts no
 //! threads of its own: run it on a thread, with [`std::thread::spawn`] as here, or with tokio's
 //! `spawn_blocking`. Its callback sees the bytes done and the total, and returns
 //! [`ControlFlow::Break`](std::ops::ControlFlow::Break) to cancel; the partial file stays in the
