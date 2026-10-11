@@ -244,26 +244,46 @@ fn download(
 ) -> Result<()> {
   let mut out = OpenOptions::new().create(true).append(true).open(part)?;
   let have = out.metadata()?.len();
-  let mut done = if have < size { have } else { 0 };
+  let Some(mut done) = resume_at(have, size) else { return Ok(()) };
   let resp = ureq::get(url).header("Range", format!("bytes={done}-")).call();
   let resp = resp.map_err(|e| http(url, e))?;
   if resp.status() != 206 || done != have {
     out.set_len(0)?;
     done = 0;
   }
-  let (mut body, mut buf) = (resp.into_body().into_reader(), vec![0; 1 << 16]);
+  copy(resp.into_body().into_reader(), &mut out, done, size, url, progress)
+}
+
+/// Where a download continues a part of `have` bytes: `None` when it is complete (cancelled after
+/// its last chunk), from 0 when it is longer than the file.
+fn resume_at(have: u64, size: u64) -> Option<u64> {
+  (have != size).then_some(if have < size { have } else { 0 })
+}
+
+/// Copies `body` to `out` behind `done` bytes already there, until `size`. A body that ends early
+/// is an `Http` error without a status, so the retry resumes it.
+fn copy(
+  mut body: impl Read,
+  out: &mut impl Write,
+  mut done: u64,
+  size: u64,
+  url: &str,
+  progress: &mut impl FnMut(Progress<'_>) -> ControlFlow<()>,
+) -> Result<()> {
+  let mut buf = vec![0; 1 << 16];
+  let broke = |message| Error::Http { url: url.into(), status: None, message };
   loop {
     if progress(Progress { done, total: size, retrying: None }).is_break() {
       return Err(Error::Cancelled);
     }
     let n = match body.read(&mut buf) {
+      Ok(0) if done < size => {
+        return Err(broke(format!("download ended at {done} of {size} bytes")));
+      }
       Ok(0) => return Ok(()),
       Ok(n) => n,
       Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-      Err(e) => {
-        let message = format!("download interrupted: {e}");
-        return Err(Error::Http { url: url.into(), status: None, message });
-      }
+      Err(e) => return Err(broke(format!("download interrupted: {e}"))),
     };
     out.write_all(&buf[..n])?;
     done += n as u64;
@@ -346,6 +366,27 @@ mod tests {
     assert!(transient(&io::Error::from(io::ErrorKind::UnexpectedEof).into()));
     assert!(!transient(&io::Error::from(io::ErrorKind::StorageFull).into()));
     assert!(!transient(&Error::Cancelled) && !transient(&Error::Hub("size".into())));
+  }
+
+  #[test]
+  fn resumes_what_may_continue() {
+    assert_eq!(resume_at(0, 10), Some(0));
+    assert_eq!(resume_at(4, 10), Some(4));
+    assert_eq!(resume_at(10, 10), None, "complete: no new request");
+    assert_eq!(resume_at(12, 10), Some(0), "too long: start over");
+
+    let (mut out, mut seen) = (Vec::new(), Vec::new());
+    let mut progress = |p: Progress<'_>| {
+      seen.push(p.done);
+      ControlFlow::Continue(())
+    };
+    assert!(copy(&b"6789"[..], &mut out, 6, 10, "u", &mut progress).is_ok());
+    let early = copy(&b"67"[..], &mut out, 6, 10, "u", &mut progress).unwrap_err();
+    assert!(transient(&early), "an early end is retried: {early}");
+    assert_eq!((out, seen), (b"678967".to_vec(), vec![6, 10, 6, 8]));
+    let mut stop = |_: Progress<'_>| ControlFlow::Break(());
+    let cancelled = copy(&b"6789"[..], &mut Vec::new(), 6, 10, "u", &mut stop);
+    assert!(matches!(cancelled, Err(Error::Cancelled)));
   }
 
   #[cfg(unix)]

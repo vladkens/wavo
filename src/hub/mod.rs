@@ -168,6 +168,7 @@ pub struct Progress<'a> {
 /// symlink into the repository's `blobs/`. Several processes can pull and remove at once: they
 /// take turns through lock files in `<root>/.locks/`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Hub {
   root: PathBuf,
   /// The environment variable that set `root`, if any.
@@ -181,8 +182,10 @@ impl Default for Hub {
 }
 
 impl Hub {
-  /// The cache that `hf` and Python's `huggingface_hub` use: `$HF_HUB_CACHE`, else
-  /// `$HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub`.
+  /// The cache that `hf` and Python's `huggingface_hub` use: `$HF_HUB_CACHE`, else the legacy
+  /// `$HUGGINGFACE_HUB_CACHE`, else `$HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else
+  /// `~/.cache/huggingface/hub` (the home folder from `$HOME`, else `$USERPROFILE`). Empty
+  /// variables count as unset.
   pub fn new() -> Self {
     Self::from_env(|k| std::env::var_os(k).filter(|v| !v.is_empty()))
   }
