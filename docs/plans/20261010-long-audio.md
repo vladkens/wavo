@@ -1,5 +1,8 @@
 # Long audio
 
+Done: `wavo run` splits long audio at pauses into segments of the model's window, `--segment`
+overrides it, PR #3.
+
 Roadmap phase 9: `wavo run` transcribes recordings of any length by splitting them at pauses into
 segments each model handles well. Follow `agents.md`; log every measurement in `docs/perf.md`.
 
@@ -126,3 +129,27 @@ the fixture text on repeat; Parakeet against its own one-pass text, which matche
       next to the one-pass one in `docs/perf.md` → "Long audio", and a log entry.
 - [x] `readme.md`: long audio, each model's L and `--segment`; tick roadmap phase 9; `make check`;
       `make test`.
+
+## Result
+
+M2, `wavo run` with the default split (≤ 25 s for GigaAM, ≤ 60 s for Parakeet), the files of the
+one-pass measurement plus 60 minutes, under `/usr/bin/time -l`. Words in lowercase without
+punctuation; for Russian, in brackets, the fixture's words on repeat cut at the same length.
+
+| Model | Length | Time, s | Peak footprint, MiB | Words |
+|---|---|---|---|---|
+| `gigaam-v3` | 1 / 2 / 3 / 5 min | 0.75 / 1.12 / 1.64 / 2.69 | 313 / 315 / 323 / 327 | 91 (91) / 177 (178) / 263 (263) / 455 (455) |
+| `gigaam-v3` | 10 / 60 min | 5.23 / 31.0 | 349 / 529 | 905 (905) / 5417 (5418) |
+| `parakeet-v3` | 1 / 2 / 3 / 5 min | 1.34 / 1.87 / 3.17 / 4.57 | 822 / 825 / 830 / 844 | one segment / 305 / 492 (one pass 454) / 809 |
+| `parakeet-v3` | 10 / 60 min | 8.91 / 52.9 | 865 / 1052 | 1652 (one pass 1622) / 9820 |
+
+- GigaAM keeps every word; `gigaam-v3-rnnt` at 10 minutes 976 (977). Parakeet in one pass stops
+  38 words early at 3 minutes and skips a 29-word sentence at 10; the split keeps both, the other
+  differences are spelling or one word next to a cut (V2 the same).
+- At 10 minutes against one pass: GigaAM 5.2 vs 15.6 s, 349 vs 856 MiB (transcribe.cpp in one
+  pass 20.0 s, 529 MiB); Parakeet 8.9 vs 22.9–24.9 s, 865 vs 1513 MiB (43.9 s, 1293 MiB).
+- Time is linear: ~0.52 s (GigaAM) and ~0.88 s (Parakeet) per minute of audio. Peak is flat apart
+  from the decoded audio (~230 MB per hour).
+- Parakeet `--segment` 30 / 60 / 120 on 10 minutes: 8.57–8.75 / 8.85–9.03 / 9.81 s, 830 / 861–865
+  / 954–955 MiB; 120 s skips another sentence, 30 s twice inserts "that was a very good thing"
+  over 60 minutes. 60 s is the default.

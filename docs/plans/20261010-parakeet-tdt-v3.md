@@ -1,5 +1,8 @@
 # Parakeet TDT V3
 
+Done: Parakeet TDT V3 as config on the V2 code path, decoder weights Q8_0 on four threads, commit
+31bfebf (before pull requests).
+
 Roadmap phase 6: `parakeet-tdt-0.6b-v3` (25 European languages) as a variant of the Parakeet
 family. Follow `agents.md` → "Adding a model"; read `docs/perf.md` before speed work.
 
@@ -62,3 +65,22 @@ Sources in `3rd/transcribe.cpp`: `catalog/parakeet-tdt-0.6b-v3.json`
 - [x] `docs/perf.md`: V3 rows in "Benchmark", "Current state" note, Log entries.
 - [x] `readme.md`: model table, "Works now", speed table rows. Tick roadmap phase 6.
 - [x] Check: `make check`; `make test`.
+
+## Result
+
+M2, end of phase 6 (Q8_0 decoder weights), two rounds; wavo / `transcribe-bench` on Metal, ms
+(MiB for the peak). Decoder alone V3 21 / 31–36 / 29–31 ms, from 76 / 68 / 70 in F32.
+
+| Model | Clip | Warm median | First call | Load | Peak footprint |
+|---|---|---|---|---|---|
+| V2 | jfk | 142.2–142.9 / 198.1–200.3 | 147.1–150.0 / 204.7–259.0 | 158–159 / 272–276 | 740 / 820 |
+| V2 | dots | 459.7–461.5 / 691.8–706.9 | 467.8–483.6 / 675.3–857.7 | 158–175 / 270–280 | 766–768 / 833–834 |
+| V2 | jobs-silence | 83.4 / 95.4–98.9 | 87.3–88.0 / 115.7–115.8 | 168–181 / 274–285 | 734–736 / 816 |
+| V3 | jfk | 153.0–155.2 / 212.7–218.2 | 155.9–161.5 / 277.9–284.2 | 167–170 / 280–287 | 762–764 / 883–884 |
+| V3 | ru-short | 159.7–162.3 / 238.5–253.0 | 172.9 / 321.6–376.6 | 165–170 / 280–290 | 762–763 / 884 |
+| V3 | uk-short | 159.1–175.6 / 232.6–275.3 | 169.4–170.6 / 273.6–333.8 | 184–192 / 281–354 | 761–762 / 884 |
+
+Warm is 14–34% faster for V2 and 28–35% for V3 (uk-short's 175.6 was a background burst for both
+engines), load 35–45% below, peak 66–82 MiB (V2) and ~120 MiB (V3) below. The reference's decoder
+runs on CPU threads and gains most from a quiet machine (dots 671–690 ms here vs 799–821 at load
+average 3–5).

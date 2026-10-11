@@ -1,5 +1,8 @@
 # GigaAM v3 e2e-rnnt, fast
 
+Done: warm faster than the reference on all three clips, load and peak below it, commit 7b02350
+(before pull requests).
+
 Roadmap phase 2. Follow `agents.md`; read `docs/perf.md` first and log every attempt there.
 
 ## Goal
@@ -45,3 +48,14 @@ Baseline (phase 1): warm 45 / 102 / 340 ms vs 44 / 103 / 315 ms, first call 71�
 
 Decision point: if warm is still slower than the reference on any clip after these, stop and
 report to the user with the profile.
+
+## Result
+
+M2, measured at the end of phase 5 on the same GigaAM code, two rounds; wavo / `transcribe-bench`
+on Metal, ms (MiB for the peak):
+
+| Clip | Warm median | First call | Load | Peak footprint |
+|---|---|---|---|---|
+| ru | 43.5–44.1 / 43.7–45.4 | 46.6–47.0 / 46.5–48.7 | 76–78 / 122–124 | 294 / 323 |
+| ru-short | 95.8–96.4 / 99.2–101.0 | 99.2–101.4 / 101.1–103.4 | 76–78 / 122–125 | 302 / 325–326 |
+| ru-long | 299.3 / 310.4 | 301.4–302.9 / 310.5–334.7 | 76–77 / 122–128 | 321–322 / 334 |

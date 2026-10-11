@@ -1,5 +1,8 @@
 # Parakeet TDT V2, fast
 
+Done: warm, first call, load and peak below the reference on all three clips, commit 5c15289
+(before pull requests).
+
 Roadmap phase 5. Follow `agents.md`; read `docs/perf.md` first and log every attempt there.
 
 ## Goal
@@ -69,3 +72,24 @@ minimum 192 / 702–709 / 94 ms), first call 186–189 / 764–765 / 99 ms vs 26
 
 Decision point: if warm, first call or peak footprint is still behind the reference on any clip
 after these, stop and report to the user with the profile.
+
+## Result
+
+M2, end of phase 5: warm 149 / 503 / 83 ms (jfk / dots / jobs-silence), peak 765 / 790 / 757 MiB,
+from 181 / 756–763 / 94 ms and 810 / 877 / 800 MiB at the end of phase 4. The same session's
+GigaAM rows are in the GigaAM plans; the end-of-phase-6 table is in the Parakeet V3 plan.
+
+The same binaries on an Apple M1 (8 GPU cores, 16 GiB, macOS 15.8.1; its fan is broken, so it
+throttles under load: a sanity check, not a speed reference), two rounds, wavo / reference, ms.
+All 15 texts equal the fixtures.
+
+- Warm median: GigaAM e2e-rnnt 75.2–76.5 / 168.5–169.7 / 452.3–452.8 vs 74.9–75.4 / 175.3–176.1 /
+  461.8–463.7; Parakeet V2 254.5 / 719.5 / 129.7–130.6 vs 269.6–273.9 / 882.9–883.0 /
+  158.9–160.1. The CTC models are 6–21% faster, Parakeet 6–19%, the two RNN-T GigaAM models on
+  par (−1% to +4%).
+- Warm calls get slower than the first call for both engines, from the CPU side: on e2e-rnnt ru
+  the reference's `decode_ms` grows from 4.9 to ~16 over 20 calls and wavo's mel + decoder from
+  ~7 to ~24 ms while both GPU times stay flat. So the RNN-T warm medians mostly measure each CPU
+  decoder throttled.
+- First call below the reference except rnnt ru-short and ru-long (within 0.5%); load 35–45% and
+  peak footprint 14–40 MiB below.

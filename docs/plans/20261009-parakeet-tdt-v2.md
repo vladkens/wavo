@@ -1,5 +1,8 @@
 # Parakeet TDT V2
 
+Done: Parakeet TDT V2 on the shared core, fixtures exact on the first run, commit 9aae69c (before
+pull requests).
+
 Roadmap phase 4: `parakeet-tdt-0.6b-v2` as a second family on the shared core, matched exactly
 against the reference, plus a first benchmark. Follow `agents.md` → "Adding a model".
 
@@ -167,3 +170,10 @@ Sources in `3rd/transcribe.cpp`: `scripts/convert-parakeet.py`,
 - [x] Check: `make check`; `make test`.
 
 After this, write the phase-5 speed plan from a profile of the working V2.
+
+## Result
+
+M2, wavo / `transcribe-bench` on Metal, jfk / dots / jobs-silence: warm 181 / 756–763 / 94 vs
+209–213 / 799–821 / 95–97 ms (reference minimum 192 / 702–709 / 94); first call 186–189 / 764–765
+/ 99 vs 262–284 / 720–926 / 110 ms; peak footprint 810 / 877 / 800 vs 820 / 834 / 815 MiB; load
+0.16–0.19 vs 0.26 s. No reference roundings were needed for the fixtures.
