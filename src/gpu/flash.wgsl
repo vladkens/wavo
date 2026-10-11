@@ -1,6 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 // attention.wgsl's attention without relative positions (same Params and layouts) as a flash kernel
-// on 8×8 F32 cooperative matrices, heads of head_dim 32..64 (a multiple of 8). Each 32-lane
+// on 8×8 F32 cooperative matrices, heads of head_dim 32..64 (a multiple of 4: a last fragment of 4
+// columns takes q from a zero-padded copy, reads 4 floats past each v row and writes only its first
+// 4 output columns). Each 32-lane
 // subgroup owns 16 queries of one head and walks the keys in blocks of 32 on its own, loading q, k
 // and v fragments straight from memory; its output stays in registers. The softmax runs against a
 // reference maximum per row that moves (rescaling the output) only when a score passes it by more
@@ -34,6 +36,8 @@ alias CM = coop_mat8x8<f32, C>;
 var<workgroup> sc: array<f32, 2048>;
 // Per subgroup an 8×8 fragment, then per query the output's factor and the probabilities' sum.
 var<workgroup> xs: array<f32, 384>;
+// Per subgroup the q columns of a last partial fragment, zero-padded: [16 queries][8].
+var<workgroup> qt: array<f32, 512>;
 
 // Rows r..r + 8 of a subgroup's output fragment `f`, each times its factor.
 fn rescale(f: CM, x: u32, sl: u32, r: u32) -> CM {
@@ -46,12 +50,13 @@ fn rescale(f: CM, x: u32, sl: u32, r: u32) -> CM {
   return coopLoadT<CM>(&xs[x], 8u);
 }
 
-// Writes rows r..r + 8 of a subgroup's output fragment `f` over the sums to o[at..], rows below t.
-fn finish(f: CM, x: u32, sl: u32, r: u32, at: u32, q0: u32) {
+// Writes rows r..r + 8 of a subgroup's output fragment `f` (columns c..) over the sums to o[at..],
+// rows below t and columns below head_dim.
+fn finish(f: CM, x: u32, sl: u32, r: u32, at: u32, q0: u32, c: u32) {
   coopStoreT(f, &xs[x], 8u);
   subgroupBarrier();
   for (var e = sl; e < 64u; e += 32u) {
-    if (q0 + r + e / 8u < p.t) {
+    if (q0 + r + e / 8u < p.t && c + e % 8u < p.head_dim) {
       o[at + (r + e / 8u) * p.ch + e % 8u] = xs[x + e] / xs[x + 80u + r + e / 8u];
     }
   }
@@ -126,6 +131,17 @@ fn flash(
   var o15: CM;
   var o16: CM;
   var o17: CM;
+  let tail = hd & ~7u;
+  if (tail < hd) {
+    for (var e = sl; e < 128u; e += 32u) {
+      var y = 0.0;
+      if (e % 8u < hd - tail) {
+        y = qk[qa + e / 8u * qs + tail + e % 8u];
+      }
+      qt[sg * 128u + e] = y;
+    }
+    subgroupBarrier();
+  }
   var m = -3.0e38;
   var l = 0.0;
   for (var j0 = 0u; j0 < p.t; j0 += 32u) {
@@ -139,13 +155,29 @@ fn flash(
     var s30: CM;
     var s31: CM;
     let kb = j0 * qs + p.ch + wg.y * hd;
-    for (var d = 0u; d < hd; d += 8u) {
+    for (var d = 0u; d < tail; d += 8u) {
       let b0 = coopLoad<BM>(&qk[qa + d], qs);
       let b1 = coopLoad<BM>(&qk[qa + 8u * qs + d], qs);
       let k0 = coopLoadT<AM>(&qk[kb + d], qs);
       let k1 = coopLoadT<AM>(&qk[kb + 8u * qs + d], qs);
       let k2 = coopLoadT<AM>(&qk[kb + 16u * qs + d], qs);
       let k3 = coopLoadT<AM>(&qk[kb + 24u * qs + d], qs);
+      s00 = coopMultiplyAdd(k0, b0, s00);
+      s01 = coopMultiplyAdd(k0, b1, s01);
+      s10 = coopMultiplyAdd(k1, b0, s10);
+      s11 = coopMultiplyAdd(k1, b1, s11);
+      s20 = coopMultiplyAdd(k2, b0, s20);
+      s21 = coopMultiplyAdd(k2, b1, s21);
+      s30 = coopMultiplyAdd(k3, b0, s30);
+      s31 = coopMultiplyAdd(k3, b1, s31);
+    }
+    if (tail < hd) {
+      let b0 = coopLoad<BM>(&qt[sg * 128u], 8u);
+      let b1 = coopLoad<BM>(&qt[sg * 128u + 64u], 8u);
+      let k0 = coopLoadT<AM>(&qk[kb + tail], qs);
+      let k1 = coopLoadT<AM>(&qk[kb + 8u * qs + tail], qs);
+      let k2 = coopLoadT<AM>(&qk[kb + 16u * qs + tail], qs);
+      let k3 = coopLoadT<AM>(&qk[kb + 24u * qs + tail], qs);
       s00 = coopMultiplyAdd(k0, b0, s00);
       s01 = coopMultiplyAdd(k0, b1, s01);
       s10 = coopMultiplyAdd(k1, b0, s10);
@@ -248,28 +280,28 @@ fn flash(
     subgroupBarrier();
   }
   let ob = q0 * p.ch + wg.y * hd;
-  finish(o00, x, sl, 0u, ob, q0);
-  finish(o01, x, sl, 0u, ob + 8u, q0);
-  finish(o02, x, sl, 0u, ob + 16u, q0);
-  finish(o03, x, sl, 0u, ob + 24u, q0);
-  finish(o10, x, sl, 8u, ob, q0);
-  finish(o11, x, sl, 8u, ob + 8u, q0);
-  finish(o12, x, sl, 8u, ob + 16u, q0);
-  finish(o13, x, sl, 8u, ob + 24u, q0);
+  finish(o00, x, sl, 0u, ob, q0, 0u);
+  finish(o01, x, sl, 0u, ob + 8u, q0, 8u);
+  finish(o02, x, sl, 0u, ob + 16u, q0, 16u);
+  finish(o03, x, sl, 0u, ob + 24u, q0, 24u);
+  finish(o10, x, sl, 8u, ob, q0, 0u);
+  finish(o11, x, sl, 8u, ob + 8u, q0, 8u);
+  finish(o12, x, sl, 8u, ob + 16u, q0, 16u);
+  finish(o13, x, sl, 8u, ob + 24u, q0, 24u);
   if (hd > 32u) {
-    finish(o04, x, sl, 0u, ob + 32u, q0);
-    finish(o14, x, sl, 8u, ob + 32u, q0);
+    finish(o04, x, sl, 0u, ob + 32u, q0, 32u);
+    finish(o14, x, sl, 8u, ob + 32u, q0, 32u);
   }
   if (hd > 40u) {
-    finish(o05, x, sl, 0u, ob + 40u, q0);
-    finish(o15, x, sl, 8u, ob + 40u, q0);
+    finish(o05, x, sl, 0u, ob + 40u, q0, 40u);
+    finish(o15, x, sl, 8u, ob + 40u, q0, 40u);
   }
   if (hd > 48u) {
-    finish(o06, x, sl, 0u, ob + 48u, q0);
-    finish(o16, x, sl, 8u, ob + 48u, q0);
+    finish(o06, x, sl, 0u, ob + 48u, q0, 48u);
+    finish(o16, x, sl, 8u, ob + 48u, q0, 48u);
   }
   if (hd > 56u) {
-    finish(o07, x, sl, 0u, ob + 56u, q0);
-    finish(o17, x, sl, 8u, ob + 56u, q0);
+    finish(o07, x, sl, 0u, ob + 56u, q0, 56u);
+    finish(o17, x, sl, 8u, ob + 56u, q0, 56u);
   }
 }

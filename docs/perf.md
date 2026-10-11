@@ -54,7 +54,7 @@ no-speech run on the CPU, and windows advance as the reference's seek loop.
 (computed on the CPU) sized for the longest input so far. One submission (one per layer on the
 portable path) holds the conv stem over the raw samples (im2col and GEMM with tanh, a one-workgroup
 GroupNorm, two more convs with GELU), the shared pre-LN blocks of `src/transformer.rs` with rotary
-q and k and the portable flash attention (heads of 36 and 52 dims), the cross `[K | V]` packed into F16
+q and k and flash attention (heads of 36 and 52 dims), the cross `[K | V]` packed into F16
 caches, and the `<s>` step. The decoder is Whisper's step on the GPU with SwiGLU and rotary q and
 k, ending in an argmax, so a token reads back 4 bytes; EOS, the 194-position cap and the
 repetition guard run on the CPU.
@@ -232,6 +232,14 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### Attention
 
+- 2026-10-12, Moonshine, M2: Apple's 8×8 flash kernel for heads of a multiple of 4 (36, 52)
+  instead of the portable one: a last fragment of 4 columns takes q from a zero-padded copy in
+  shared memory (k's extra columns then add zeros), reads 4 floats past each v row and writes
+  only its first 4 output columns; Moonshine's qkv rows padded to 64 (+4 floats). A/B/A: `dots`
+  tiny 271 / 236 / 277, base 445 / 386 / 442 ms; fixtures exact. Kept. Staging that copy only
+  for such heads: GigaAM `ru` 41.1 / 41.9 / 41.2 with it always, within noise without.
+  - The partial fragment as a branch inside the d loop fails validation: Naga treats the loop
+    variable as non-uniform around cooperative-matrix loads, so the tail is its own block.
 - 2026-10-12, Whisper and Moonshine decoder: `attend` split over workgroups of 256 keys per head
   (each writes its maximum, sum and unnormalized output) and a `combine` dispatch per head that
   merges them, always both dispatches so a step's dispatch list (and its cached bind groups)
@@ -262,6 +270,8 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
   and 259 → 194 MiB (reference 138 / 236). Fixtures exact (all 21 models on the RTX 4060, M2).
   Kept. Turbo `jfk` on the RTX 4060 after it, GPU timestamps per call: attention 473 → 86 ms,
   GEMM 122, decoder gemv 23.5 and attend 13 ms.
+  - On the M2 in place of the 8×8 `flash.wgsl`: turbo `jfk` 1232 → 1926, GigaAM `ru-long` 248 →
+    333 ms. Not used there.
   - Writing a vector component by a runtime index (`a[i][r % 2u] = x` on a workgroup array of
     vectors) gave NaN on the M2: the staging writes whole vectors instead.
 - 2026-10-11, Whisper and Moonshine, decoder `attend` in blocks of 2048 keys with an online

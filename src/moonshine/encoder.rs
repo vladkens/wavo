@@ -72,7 +72,8 @@ impl Encoder {
       t: transformer::Buffers {
         x: gpu.buffer(t * b.d),
         y: gpu.buffer(t * b.d),
-        qkv: gpu.buffer(t * 3 * b.d),
+        // Apple's flash attention reads rows up to a multiple of 64, and 4 floats past the last.
+        qkv: gpu.buffer(t.next_multiple_of(64) * 3 * b.d + 4),
         // Also the decoder's cross K/V, t × 2·d.
         h: gpu.buffer(t * b.d_ff.max(2 * b.d)),
         s: gpu.buffer(gpu.scores_len(t, b.heads, b.head_dim(), false)),

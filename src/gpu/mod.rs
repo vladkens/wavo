@@ -531,7 +531,7 @@ impl Gpu {
   fn flash(&self, head_dim: usize, relative: bool) -> Option<&Pipeline> {
     let (k, min, max, step) = match (relative, self.fast.size) {
       (true, _) => (&self.fast.relative, 8, 128, 8),
-      (false, 8) => (&self.fast.attention, 32, 64, 8),
+      (false, 8) => (&self.fast.attention, 32, 64, 4),
       (false, _) => (&self.fast.attention, 4, 64, 4),
     };
     k.as_ref().filter(|_| (min..=max).contains(&head_dim) && head_dim.is_multiple_of(step))
@@ -923,8 +923,9 @@ impl<'a> Pass<'a> {
   /// without `v` over `qk` `[t][q | k | v]`. With relative positions `pos`, the projected positions
   /// `[pos_rows(t)][heads · head_dim]` (row r is position t + 15 − r), it is over `qk`
   /// `[t][q + u | k | v | q + v]` (no `v`): score (i, j) is then `((q + u)_i·k_j + (q + v)_i·pos[j
-  /// − i + t + 15]) / √head_dim`. `s` holds `scores_len` floats. The fast path reads rows of `qk`
-  /// and `v` up to `t` rounded up to 64, which must be finite.
+  /// − i + t + 15]) / √head_dim`. `s` holds `scores_len` floats. Apple's fast path reads rows of
+  /// `qk` and `v` up to `t` rounded up to 64, which must be finite, and with heads of 4·(2k + 1)
+  /// dims 4 floats past the last row of `v`.
   #[allow(clippy::too_many_arguments)]
   pub fn attention(
     &mut self,
@@ -1443,11 +1444,11 @@ mod tests {
     for (t, hd) in [(37usize, 48), (100, 48), (100, 56), (5, 36), (70, 52), (100, 64), (40, 80)] {
       let heads = 2;
       let d = heads * hd;
-      // The fast path reads rows up to t rounded up to 64. Values exact in f16, as the 16×16 tier
-      // rounds them (and the probabilities) to f16.
+      // The fast path reads rows up to t rounded up to 64 (8×8: and 4 floats past the last v row).
+      // Values exact in f16, as the 16×16 tier rounds them (and the probabilities) to f16.
       let half = |x: f32| f16::from_f32(x).to_f32();
       let qk: Vec<f32> = random(t.next_multiple_of(64) * 2 * d, 15).into_iter().map(half).collect();
-      let v: Vec<f32> = random(t.next_multiple_of(64) * d, 16).into_iter().map(half).collect();
+      let v: Vec<f32> = random(t.next_multiple_of(64) * d + 4, 16).into_iter().map(half).collect();
       let scale = 1.0 / (hd as f32).sqrt();
       let mut want = vec![0.0; t * d];
       for h in 0..heads {
