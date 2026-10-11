@@ -39,6 +39,7 @@ pub const MODELS: &[Model] = &[
   Model { name: "whisper-tiny", variant: "whisper-tiny", size: 45_981_088, about: "99 languages" },
   Model { name: "whisper-base", variant: "whisper-base", size: 84_962_880, about: "99 languages" },
   Model { name: "whisper-small", variant: "whisper-small", size: 269_751_136, about: "99 languages" },
+  Model { name: "whisper-medium", variant: "whisper-medium", size: 831_538_144, about: "99 languages" },
 ];
 
 /// What a MODEL argument names.
