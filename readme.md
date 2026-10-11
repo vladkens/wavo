@@ -166,7 +166,8 @@ The `hub` feature downloads models by name (it adds an HTTP client); leave it ou
 files you fetch yourself, with a pure Rust build. Decoding and resampling audio and splitting long
 recordings are up to you: `model.max_audio_ms()` tells how long a piece the model was trained on
 (25 s for GigaAM, 30 s for Whisper). The [API docs](https://docs.rs/wavo) have the details,
-including downloading on a thread with progress and cancel.
+including downloading on a thread with progress and cancel, as
+[examples/hub.rs](examples/hub.rs) does.
 
 ## 🤝 Contributing
 

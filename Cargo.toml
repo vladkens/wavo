@@ -23,6 +23,10 @@ name = "wavo"
 path = "src/cli/main.rs"
 required-features = ["cli"]
 
+[[example]]
+name = "hub"
+required-features = ["hub"]
+
 [features]
 default = ["cli"]
 cli = ["hub", "dep:anyhow", "dep:indicatif", "dep:rubato", "dep:symphonia"]
