@@ -1,89 +1,47 @@
 # wavo
 
-Speech-to-text library in pure Rust with an ollama-like CLI. It runs the GGUF ASR models that
-transcribe.cpp publishes as `handy-computer/*-gguf` on Hugging Face: encoder on the GPU through
-`wgpu` with our own WGSL kernels, frontend and decoder on the CPU. Plan:
-[docs/roadmap.md](docs/roadmap.md).
+Speech-to-text in pure Rust, a library and an ollama-like CLI that run transcribe.cpp's GGUF
+models with the encoder on the GPU. It must be at least as fast as transcribe.cpp, and faster on
+GigaAM v3 e2e-rnnt, the primary model; dictation loads a model per recording, so load time and
+the first call matter as much as warm speed. Agents carry out each change end to end by following
+this file; plan in [docs/roadmap.md](docs/roadmap.md).
 
-Coding agents operate this repository. A person asks for a change (for example "add model X" or
-"make GigaAM faster") and the agent carries it out end to end by following this file.
-
-Why it exists next to transcribe.cpp (C/C++ on ggml): a plain `cargo build` with no cmake, C++
-toolchain or Metal shader compilation, and a small engine for a few models that agents fully
-understand (transcribe.cpp has ~13k lines for GigaAM + Parakeet on top of ggml). It must be at
-least as fast as transcribe.cpp on the same files, and faster for GigaAM v3 e2e-rnnt, the
-primary model. Typical use is dictation, where a model is loaded per recording, so load time and
-the first call matter as much as warm speed.
+Each fact has one source, which this file points to: the public API is the rustdoc, the CLI
+`wavo --help`, the models `hub::MODELS`, features and dependencies `Cargo.toml`, checks and CI
+the `Makefile` and `.github/workflows/main.yml`.
 
 ## Scope
 
-- Keep the library pure Rust: no C/C++, ONNX, BLAS or Python in it or its build. Its
-  dependencies: `wgpu`, `bytemuck`, `half`, `thiserror`, `pollster`; tests may also use `hound`
-  (dev-dependency).
-- Features: `cli` (default) and `hub`. `hub` adds `wavo::hub`, model downloads into the Hugging
-  Face cache, and its one dependency, `ureq` (rustls with ring and webpki roots).
+- Keep the library pure Rust: no C/C++, ONNX, BLAS or Python in it or its build. The one
+  exception is `ring` (under `ureq`'s rustls), only in the CLI and the `hub` feature.
 - Keep the build fast, also for crates that depend on wavo: prefer a small own routine to a
-  generic dependency that compiles far more code than wavo uses. Measure with `cargo build
-  --timings`.
-- The CLI sits behind the default `cli` feature (binary `wavo` in `src/cli/`, `required-features
-  = ["cli"]`), so `cargo add wavo --no-default-features` gets only the library. `cli` enables
-  `hub`, and its own dependencies are optional and enabled by `cli`: `anyhow`, `symphonia`,
-  `rubato`, `indicatif` (no default features). ring compiles some C and assembly: the one accepted
-  exception to pure Rust, accepted in the CLI and in the optional `hub` feature, never in the
-  default library.
-- Add, remove or upgrade dependencies only with `cargo add` / `cargo remove` / `cargo upgrade`
-  (e.g. `cargo add wgpu@=30.0.1 --no-default-features --features std,wgsl,metal,vulkan`, or
-  `cargo add ureq --optional` for the CLI). Never edit `[dependencies]` or `Cargo.lock` by hand.
-- Target Apple Silicon / Metal; Linux runs through Vulkan. Every kernel has one simple portable
-  version that runs anywhere; keep it simple. Next to it, a fast tier may exist per hardware
-  class, chosen at load from adapter features: Apple GPUs (32-lane subgroups and
-  `EXPERIMENTAL_COOPERATIVE_MATRIX`), GPUs with subgroups but no cooperative matrices (any
-  subgroup width). Keep a fast kernel only with a measured gain on its hardware class.
-- Keep the public API to `Model::load(path)`, `model.transcribe(&pcm)` → `Transcript { text,
-  tokens }` and `model.max_audio_ms()` (the window a model was trained for, `None` without one),
-  where pcm is 16 kHz mono `f32` and tokens carry id, piece and start time in ms, plus
-  `wavo::hub` behind the `hub` feature: `MODELS`, `lookup(name)` and `Hub::new()` / `Hub::at(dir)`
-  with `find`, `pull` (blocking, with a progress callback that can cancel) and `remove`. The CLI is
-  `wavo pull MODEL...`, `wavo list`, `wavo rm MODEL`, `wavo run [MODEL] AUDIO [--json | --srt]
-  [--segment SECS]` (default model `parakeet-v3`) and `wavo bench MODEL AUDIO [-n N]`, where
-  MODEL is a short name, a full published name or a path to a `.gguf`. Change either only with
-  the user's approval. Mark every public struct and enum `#[non_exhaustive]`, so new fields and
-  variants don't break callers.
-- Only `wavo pull` and `hub::Hub::pull` use the network. `run` and `bench` never download; a
-  missing model fails with the `wavo pull` command to run. The library starts no threads for
-  downloads: `pull` blocks, and the caller runs it on a thread.
-- The library leaves resampling, VAD, chunking and streaming to the caller (Whisper's own 30 s
-  windows, as transcribe.cpp runs them, aside). The CLI decodes
-  common formats (wav, mp3, m4a/aac, flac, ogg/vorbis), downmixes to mono and resamples to 16 kHz;
-  a 16 kHz mono WAV passes through unchanged. `wavo run` splits audio longer than the model's
-  window (else a default for all models) at its quietest moments, by frame energy, and joins the
-  transcripts; `--segment` overrides the length, `0` is one pass. Neither does VAD or streaming.
-- Whisper: `whisper-large-v3-turbo` first, then its variants as config
-  ([docs/plans/20261010-whisper.md](docs/plans/20261010-whisper.md)). Greedy decoding with segment
-  timestamps as the reference's default, no temperature fallback; a token's start time is its
-  segment's start.
+  generic dependency that compiles far more code than wavo uses (`cargo build --timings`). Change
+  dependencies only with `cargo add` / `cargo remove` / `cargo upgrade`, never by hand.
+- Target Apple Silicon / Metal; Linux and Windows run through Vulkan. Every kernel has one simple
+  portable version; a fast tier per hardware class, chosen at load from adapter features, stays
+  only with a measured gain on that class.
+- The public API is what the rustdoc documents, and the CLI is what `wavo --help` shows: change
+  either only with the person's approval. Every public struct and enum is `#[non_exhaustive]`.
+- Only `wavo pull` and `Hub::pull` use the network; `run` and `bench` never download. `pull` blocks:
+  the library starts no download threads.
+- The library leaves resampling and splitting long audio to the caller; the CLI does both. VAD
+  and streaming are in neither.
 
 ## Code
 
 - Keep weights on the GPU in their GGUF type (Q8_0/F16/F32) and dequantize inside kernels. Expand
   to F32 at load only tiny tensors such as norms and biases. Accumulate in F32.
-- Give each model family one module under `src/<family>/`. A variant of a family is config + head,
-  not a copy. No generic graph runtime, plugin layers or disabled experiment code.
-- Validate GGUF metadata and tensor shapes once at load. Keep hot paths free of defensive checks.
-  Model files are trusted input: give clear errors for missing or mismatched tensors, and don't
-  guard against crafted or corrupted files.
+- One module per model family, `src/<family>/`; a variant is config + head, not a copy. No
+  generic graph runtime, plugin layers or disabled experiment code.
+- Validate GGUF metadata and tensor shapes once at load, with clear errors. Model files are
+  trusted: no guards against crafted files, no defensive checks in hot paths.
 - Keep core plus one family (GGUF, GPU, kernels, frontend, encoder, decoder) within ~3k lines of
-  Rust and WGSL, tests excluded. The CLI (`src/cli/`) is counted separately and stays lean,
-  roughly ≤ 900 lines: hand-rolled argument parsing, JSON and SRT, no clap or serde. `src/hub/`
-  is counted separately as well and stays roughly ≤ 600 lines with its docs. Simplify before
-  growing past any budget.
-- Every public item has a doc comment with its units and failure cases (`#![warn(missing_docs)]`);
-  the crate docs are the user guide on docs.rs. Examples are doctests (`no_run` when they need a
-  model, a GPU or the network), compiled by `make test-unit`; `make check` builds the docs with
-  warnings denied.
-- The library returns its own `Error` enum built with `thiserror`; only the CLI uses `anyhow`.
-  Comment only non-obvious data layouts, numeric tricks and model quirks that differ from what the
-  reference docs say.
+  Rust and WGSL, tests excluded. The CLI (`src/cli/`) stays roughly ≤ 900 lines: hand-rolled
+  argument parsing, JSON and SRT, no clap or serde. `src/hub/` stays roughly ≤ 600 lines with its
+  docs. Simplify before growing past any budget.
+- Every public item has a doc comment with its units and failure cases; examples are doctests.
+- The library returns its own `thiserror` `Error`; only the CLI uses `anyhow`. Comment only
+  non-obvious data layouts, numeric tricks and model quirks that differ from the reference docs.
 - An encoder records its layers through `Pass::layers`, which submits each layer on its own on the
   portable path. Some drivers (i915 on Linux) cancel GPU work that runs over ~20 s and still report
   success, and a slow GPU takes that long for one long call. With the fast kernels (Apple) the
@@ -91,83 +49,61 @@ the first call matter as much as warm speed.
   it.
 - Start every `.rs` and `.wgsl` file with the line
   `// Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo`.
-- Put helper scripts in `scripts/`, named in kebab-case (`compare.sh`, `make-fixtures.py`):
-  `sh`, or Python run with `uv run`. A Makefile target that needs more than a line or two calls a
-  script instead of holding it.
+- Put helper scripts in `scripts/`, named in kebab-case (`compare.sh`, `make-fixtures.py`): `sh`,
+  or Python run with `uv run`. A Makefile target longer than a line or two calls a script.
 
 ## External sources
 
-- Download models only into the shared Hugging Face cache, with `wavo pull <name>` or
-  `hf download handy-computer/<name>-gguf <name>-Q8_0.gguf` (install with `brew install hf`);
-  `make models` runs `wavo pull` for every supported model, in parallel, and `make samples`
-  fetches only the reference's `samples/`. Never copy model files into the repository.
-  The cache follows the Hub local cache spec (https://huggingface.co/docs/hub/local-cache), with
-  the root resolved as Python huggingface_hub does: `HF_HUB_CACHE`, else `$HF_HOME/hub`, else
-  `${XDG_CACHE_HOME:-~/.cache}/huggingface/hub`; a model is at
-  `models--handy-computer--<name>-gguf/snapshots/<refs/main>/<name>-Q8_0.gguf`, a symlink into
-  `blobs/`. `wavo pull` (through `wavo::hub`) writes exactly that layout (lock in `.locks/`,
-  `blobs/<etag>.incomplete` while downloading), so `hf` and `wavo` each find what the other
-  downloaded. `wavo rm` deletes only inside the repo folder and leaves `hf`'s shared blob store to
-  `hf cache rm`.
+- Keep models only in the shared Hugging Face cache (`make models`), never in the repository.
+  Follow the Hub cache spec as `src/hub/cache.rs` documents it; `rm` never touches `hf`'s shared
+  blob store.
 - Keep third-party checkouts in `3rd/` (gitignored) and never modify them. The reference is
-  transcribe.cpp at commit `5bb2deb2a4afb1fd50534ecb51cfcb521ef94944`; `make reference` clones and
-  builds it in `3rd/transcribe.cpp` (cmake and a C++ toolchain; on Linux its Vulkan build,
-  `-DTRANSCRIBE_VULKAN=ON`, also needs `libvulkan-dev glslc spirv-headers`). Use it to read
+  transcribe.cpp at the Makefile's `REFERENCE_REV`, built by `make reference`; use it to read
   source, generate fixtures and benchmark, never as a dependency.
-- The GGUF container is standard (written with llama.cpp's `gguf-py`; `general.*` and
-  `tokenizer.ggml.*` keys), but the `stt.*` keys, the tensor names and the bundled frontend
-  tensors (window, mel filterbank) are transcribe.cpp's own schema. Its
-  `scripts/convert-<family>.py` is the spec. The published Q8_0 files are the converter's F32
-  output passed through `tools/transcribe-quantize`.
-- When adapting code from `3rd/` (ggml and transcribe.cpp are MIT), name the source file in a
-  comment next to the adapted code and add the upstream copyright line to `LICENSE` once.
-- Take test audio from `3rd/transcribe.cpp/samples/`. Don't copy audio into the repository.
-- If a `research` branch exists, treat it as read-only reference from an earlier, bloated attempt:
-  read code with `git show research:<path>` and port ideas and kernels. Never merge it.
+- The `stt.*` GGUF keys, tensor names and bundled frontend tensors are transcribe.cpp's own
+  schema: its `scripts/convert-<family>.py` is the spec.
+- When adapting code from `3rd/` (MIT), name the source file in a comment next to it and add the
+  upstream copyright line to `LICENSE` once.
+- Take test audio from `3rd/transcribe.cpp/samples/`; never copy audio into the repository.
+- The `research` branch is read-only reference from an earlier, bloated attempt: read it with
+  `git show research:<path>` and port ideas. Never merge it.
 
 ## Adding a model
 
-1. Find the variant in `3rd/transcribe.cpp/catalog/<variant>.json` (published repo, files and
-   sizes). Add its name to `MODELS` in the `Makefile`, to `MODELS` in `src/hub/mod.rs` (short and
-   full name, Q8_0 size, languages, punctuation) and to the model table in the crate docs
-   (`src/lib.rs`; a unit test keeps the two equal), and run `make models`.
+1. Find the variant in `3rd/transcribe.cpp/catalog/<variant>.json` and add it to `hub::MODELS`;
+   `make test-unit` then names every other list to update. Run `make models`.
 2. Read `scripts/convert-<family>.py`, `src/arch/<family>/` and `docs/models/<variant>.md` in the
    reference.
-3. Generate fixtures with `make fixtures MODEL=<name> SAMPLES="..."`: 2–4 clips from
-   `3rd/transcribe.cpp/samples/` in the model's language (short, ~11 s, long, plus silence where
-   relevant). It writes those clips' blocks in `tests/fixtures/<name>.txt` and keeps the others.
-4. Implement it: config + head inside an existing family, or a new `src/<family>/` that reuses
-   the GGUF reader, GPU core and kernels.
+3. Generate fixtures with `make fixtures MODEL=<name> SAMPLES="..."`: 2–4 clips in the model's
+   language (short, ~11 s, long, plus silence where relevant).
+4. Implement it: config + head in an existing family, or a new `src/<family>/`.
 5. Pass the fixtures exactly, then benchmark against the reference. If wavo is slower, work
-   through `docs/perf.md`, or report the gap to the user.
-6. Log the baseline in `docs/perf.md`, add the model to `readme.md`, and update
-   `docs/roadmap.md`.
+   through `docs/perf.md`, or report the gap to the person.
+6. Put the baseline in the plan's Result and the PR body, and update `docs/roadmap.md`.
 
 ## Correctness
 
-- Give every supported model fixtures in `tests/fixtures/<model>.txt`, generated by `make
-  fixtures` (`scripts/fixtures.sh`) from the reference CLI: one block per clip, opened by `## <clip>`
-  and sorted by clip, with text plus every token with its start time (for Whisper, which has only
-  segment timestamps, text plus every segment with `TIMESTAMPS=segment`; a block with only `text:`
-  checks text alone). `make test` must reproduce text, tokens and start times exactly, and must
-  fail (not skip) when a model, sample or block is missing.
+- Every model has fixtures in `tests/fixtures/<model>.txt`, one block per clip, written from the
+  reference CLI by `make fixtures` (`scripts/fixtures.sh` is the format's spec). `make test` must
+  reproduce text, tokens and start times exactly, and must fail (not skip) when a model, sample
+  or block is missing.
 - Treat any fixture change as a bug. Changing arithmetic (e.g. F16 operands) is fine while the
-  fixtures stay exact. If a speed or memory gain changes a fixture, show the user the fixture diff
-  and the gain before committing. A PR may add blocks but must not change an existing block without
-  the person's approval, so reviewers check the diff of `tests/fixtures/`.
+  fixtures stay exact. If a speed or memory gain changes a fixture, show the person the fixture
+  diff and the gain before committing. A PR may add blocks but must not change an existing one
+  without the person's approval.
 - Debug mismatches by comparing intermediate tensors with the reference's own dumps
   (`TRANSCRIBE_DUMP_DIR=<dir>`; per-block dumps need a `-DTRANSCRIBE_ENABLE_VALIDATION_HOOKS=ON`
-  build in `3rd/`). Don't commit dumps or tensor-level oracle tests, and don't chase bit-exact
+  build). Don't commit dumps or tensor-level oracle tests, and don't chase bit-exact
   intermediates.
-- Unit-test only logic that can break silently: GGUF parsing, tokenizer, decoder loops, kernels
-  against a CPU loop on small shapes; in `hub`, model names, the cache layout and retries; in the
-  CLI, audio decoding (a 16 kHz mono WAV gives exactly the samples the fixtures use), the
-  long-audio split and SRT cues.
-  Unit tests run in CI (`make test-unit`) without models or `3rd/`: synthesize their inputs.
+- Unit-test only logic that can break silently (parsing, tokenizer, decoder loops, kernels against
+  a CPU loop on small shapes, model names, the cache layout, audio decoding, the long-audio split,
+  SRT cues). Unit tests run in CI without models or `3rd/`: synthesize their inputs.
 
 ## Performance
 
-- Read [docs/perf.md](docs/perf.md) before speed work. Log every attempt there, kept or rejected.
+- Read [docs/perf.md](docs/perf.md) before speed work and log every attempt there: what was
+  tried, the result, kept or reverted and why. No benchmark tables: a task's numbers go in its
+  plan's Result and the PR body, and the readme's Speed table holds the current ones for users.
 - Profile with GPU timestamp queries in a temporary local tool. Never run Instruments or `xcrun
   xctrace` (Metal System Trace): on this Mac it froze the window server twice and needed a hard
   reset.
@@ -175,49 +111,40 @@ the first call matter as much as warm speed.
   warm calls, median and min. Measure a change A/B/A back to back. When the two A runs differ by
   more than 3%, rerun later instead of concluding. Run one GPU job at a time.
 - Keep a speed change only when fixtures still match and the gain is clear. Delete rejected code.
-- On many recordings (text agreement and speed at scale, e.g. real dictation), use `make compare
-  MODEL=<name> LIST=<file of WAV paths> OUT=<dir>`: `examples/batch.rs` and the reference's
-  `--batch` mode, one model load each.
+- For text agreement and speed on many recordings, use `make compare`.
 
 ## Workflow
 
-- Before committing, run `make check` (it also checks the library alone, with
-  `--no-default-features` and with `hub`, and builds the docs) and `make test`. `make prepare`
-  rewrites files, so don't use it as a check.
+- Before committing, run `make check` and `make test`. `make prepare` rewrites files: not a check.
 - Every change reaches `main` through a pull request, one per feature or roadmap phase:
   1. Agree the plan with the person. For multi-step work keep a checklist in
-     `docs/plans/yyyymmdd-<name>.md`; in it, only tick checkboxes: no evidence, progress or status
-     prose.
-  2. Branch from `main` as `feat/<name>`, whatever the change. Each agent works in its own git
-     worktree, so parallel tasks don't touch each other's files.
-  3. Commit on the branch every step that passes `make check` and `make test`: one short lowercase
-     line, no body, roadmap/docs updated in the same commit. Any agent on the task may commit;
-     fix-ups are fine, the branch is squashed.
-  4. Push the branch and open the PR with `gh pr create`. The title is the squash commit: one short
-     lowercase line. The body is short: what changed, the checks run, numbers for speed work.
-  5. Whoever delegated the work (the orchestrating agent) reviews the diff, reruns the checks and
-     sends findings back to the implementing agent until the PR is clean, then hands it to the
-     person. CI runs `make check`, `make models-ci samples` and `make test-ci` (the smallest
-     model of each family) and, when a PR changes `src/`, `Cargo.toml` or `Cargo.lock`,
-     `make bench-compare`: `wavo bench` of GigaAM v3 and Parakeet v3 against main's `dev` build,
-     warning at over 25% slower; then run the full benchmarks locally. Copilot reviews every PR
-     automatically: fix what is right, answer the rest in the thread. Once the orchestrator accepts
-     the solution, the implementing agent runs `codex -C <worktree> review --base origin/main -c
-     model_reasoning_effort=xhigh` if available and fixes or rejects each finding with a reason;
-     the orchestrator checks that last diff before handing the PR over.
-  6. The person does the final review and merges: squash, one commit on `main`, the branch is
-     deleted. Never commit or push to `main` directly.
-  7. On conflicts, the orchestrator (or an agent it asks) rebases the branch onto `main`, reruns the
-     checks and pushes with `--force-with-lease`.
+     `docs/plans/yyyymmdd-<name>.md` and during the work only tick its checkboxes, with no
+     progress prose. When finished, add a first line `Done: yyyy-mm-dd, PR #N` and a short final
+     `## Result` section with the key numbers. Plans stay; never delete them.
+  2. Branch from `main` as `feat/<name>`, in the agent's own git worktree. A small change that
+     fits an open PR's topic goes into that PR instead of a new one: docs-only edits join the open
+     docs PR.
+  3. Commit every step that passes `make check` and `make test`: one short lowercase line, no
+     body, docs updated in the same commit. The branch is squashed.
+  4. Push and open the PR with `gh pr create`. The title is the squash commit, one short
+     lowercase line; the body says what changed, the checks run and numbers for speed work.
+  5. The orchestrating agent reviews the diff, reruns the checks and sends findings back until
+     the PR is clean, then hands it to the person. CI runs only the smallest model of each family,
+     so `make test` and benchmarks stay local. Copilot reviews every PR: fix what is right, answer
+     the rest in the thread. Once the orchestrator accepts the solution, the implementing agent
+     runs `codex -C <worktree> review --base origin/main -c model_reasoning_effort=xhigh` if
+     available and fixes or rejects each finding with a reason; the orchestrator checks that last
+     diff before handing the PR over.
+  6. The person does the final review and squash-merges. Never commit or push to `main` directly.
+  7. On conflicts, rebase onto `main`, rerun the checks and push with `--force-with-lease`.
 - A release is the one exception: a single `release: vX.Y.Z` commit on `main` with only
   `changelog.md` and the version bump, without a branch or pull request.
 - An orchestrating agent writes each task, verifies every report itself (`make check`, `make test`,
   the diff, benchmarks) instead of trusting it, and keeps the person informed.
-- Build in vertical slices: the first commit for a model already produces a transcript; speed
-  and polish come after.
-- Ask the user only when output must change, the public API must break, a heavy dependency is
+- Build in vertical slices: a model's first commit already produces a transcript.
+- Ask the person only when output must change, the public API must break, a heavy dependency is
   needed, or the request is ambiguous. Otherwise decide and say so in your report.
-- Keep docs to `readme.md` (for users), `docs/perf.md`, `docs/roadmap.md` and `docs/plans/`. No
-  progress journals, hash receipts, run logs or disclaimer paragraphs. `changelog.md` is written
-  only in a release commit, by the person's changelog skill from the git history: don't edit it
-  in feature work.
+- Keep docs to `readme.md` (users), the rustdoc (the library's user guide), `docs/perf.md`,
+  `docs/roadmap.md` and `docs/plans/`. No progress journals, hash receipts, run logs or
+  disclaimer paragraphs. `changelog.md` is written only in a release commit, by the person's
+  changelog skill from the git history: don't edit it in feature work.

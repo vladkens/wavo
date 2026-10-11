@@ -284,6 +284,8 @@ impl fmt::Display for Hub {
 
 #[cfg(test)]
 mod tests {
+  use std::fs;
+
   use super::*;
 
   fn name(arg: &str) -> &'static str {
@@ -339,18 +341,49 @@ mod tests {
     assert!(matches!(hub.remove("whisper"), Err(Error::UnknownModel { .. })));
   }
 
-  /// The crate docs' model table lists exactly `MODELS`, in order.
+  /// Every other list of the models names exactly `MODELS`: the model tables of the crate docs
+  /// and the readme (in order), `MODELS` in the Makefile and the tests in `tests/models.rs`.
   #[test]
-  fn docs_list_the_models() {
-    let rows: Vec<&str> =
+  fn model_lists_match() {
+    let read = |path: &str| fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path));
+    let row = |m: &ModelInfo| {
+      let output = if m.punctuated { "cased, punctuated" } else { "lowercase, no punctuation" };
+      format!("{:.2} GB | {} | {output} |", m.size as f64 / 1e9, m.languages)
+    };
+
+    let docs: Vec<&str> =
       (include_str!("../lib.rs").lines()).filter_map(|l| l.strip_prefix("//! | `")).collect();
-    let expected: Vec<String> = (MODELS.iter())
-      .map(|m| {
-        let output = if m.punctuated { "cased, punctuated" } else { "lowercase, no punctuation" };
-        let (size, langs) = (m.size as f64 / 1e9, m.languages);
-        format!("{}` | `{}` | {size:.2} GB | {langs} | {output} |", m.name, m.full_name)
-      })
+    let expected: Vec<String> =
+      MODELS.iter().map(|m| format!("{}` | `{}` | {}", m.name, m.full_name, row(m))).collect();
+    assert_eq!(docs, expected, "model table in src/lib.rs");
+
+    let readme = read("readme.md").unwrap();
+    let section = readme.split("\n## ").find(|s| s.lines().next().unwrap().ends_with(" Models"));
+    let readme: Vec<String> = (section.expect("## Models in readme.md").lines())
+      .filter_map(|l| l.strip_prefix("| `"))
+      .map(|l| l.replacen(" (default)", "", 1))
       .collect();
-    assert_eq!(rows, expected);
+    let expected: Vec<String> =
+      MODELS.iter().map(|m| format!("{}` | {}", m.name, row(m))).collect();
+    assert_eq!(readme, expected, "model table in readme.md");
+
+    let mut full: Vec<&str> = MODELS.iter().map(|m| m.full_name).collect();
+    full.sort();
+    let makefile = read("Makefile").unwrap();
+    let mut make = Vec::new();
+    for line in makefile.lines().skip_while(|l| !l.starts_with("MODELS := ")) {
+      make.extend(line.trim_start_matches("MODELS := ").split_whitespace().filter(|w| *w != "\\"));
+      if !line.ends_with('\\') {
+        break;
+      }
+    }
+    make.sort();
+    assert_eq!(make, full, "MODELS in the Makefile");
+
+    let tests = read("tests/models.rs").unwrap();
+    let mut tested: Vec<&str> =
+      tests.split("check(\"").skip(1).map(|s| s.split('"').next().unwrap()).collect();
+    tested.sort();
+    assert_eq!(tested, full, "tests in tests/models.rs");
   }
 }
