@@ -17,19 +17,25 @@ use models::Source;
 use wavo::hub::{self, Hub, MODELS};
 
 const USAGE: &str = "\
-Usage:
-  wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS] [-y]
-                                 transcribe AUDIO, with parakeet-v3 unless MODEL is given;
-                                 --json adds tokens with start times, --srt prints subtitles;
-                                 longer audio is split at pauses into segments of up to SECS
-                                 (25 for GigaAM, 30 for Whisper, else 60; 0 for one pass);
-                                 a missing model is downloaded after asking on a terminal,
-                                 or without asking with -y (--yes)
-  wavo AUDIO ...                 the same as wavo run AUDIO ...
-  wavo pull MODEL...             download models, several at once
-  wavo list                      list downloaded models
-  wavo rm MODEL                  delete a downloaded model
-  wavo bench MODEL AUDIO [-n N]  time the model load, the first call and N more (10)
+Usage: wavo COMMAND ...
+
+Commands:
+  run [MODEL] AUDIO [OPTIONS]  transcribe AUDIO with MODEL (parakeet-v3 by default)
+  pull MODEL...                download models
+  list                         list downloaded models
+  rm MODEL                     delete a downloaded model
+  bench MODEL AUDIO [-n N]     time the model load, the first call and N more calls (10)
+
+Quick start:
+  wavo AUDIO [OPTIONS]         the same as wavo run AUDIO: transcribe with parakeet-v3,
+                               offering to download it first if it is missing
+
+Run options:
+  --json                       print the text and its tokens with start times as JSON
+  --srt                        print subtitles
+  --segment SECS               split longer audio at pauses into parts of up to SECS
+                               (25 for GigaAM, 30 for Whisper, else 60; 0 for one pass)
+  -y, --yes                    download a missing model without asking
 
 MODEL is a name below, its full name or a path to a .gguf file. AUDIO is wav, mp3, m4a, flac
 or ogg (Vorbis), downmixed to mono and resampled to 16 kHz.
