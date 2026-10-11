@@ -5,52 +5,41 @@
 
 /// When a block repeating at the tail counts as a loop: `copies` copies spanning at least
 /// `min_tokens`, but once that span passes `max_tokens` it only has to cover `max_tokens`, with at
-/// least `min_copies` copies.
-struct Bar {
-  max_block: usize,
-  copies: usize,
-  min_tokens: usize,
-  max_tokens: usize,
-  min_copies: usize,
-}
+/// least `min_copies` copies. As `[max_block, copies, min_tokens, max_tokens, min_copies]`: on
+/// every token (a 1-token block needs 64 copies, an 8-token block 8), and once at a stop on the
+/// token budget (3 copies spanning at least 32 tokens).
+const STOP: [usize; 5] = [128, 8, 64, 192, 4];
+const TRIM: [usize; 5] = [256, 3, 32, 768, 3];
 
-/// Stop mid-decode: a 1-token block needs 64 copies, an 8-token block 8.
-const STOP: Bar = Bar { max_block: 128, copies: 8, min_tokens: 64, max_tokens: 192, min_copies: 4 };
-/// Trim at a stop on the token budget: 3 copies spanning at least 32 tokens.
-const TRIM: Bar = Bar { max_block: 256, copies: 3, min_tokens: 32, max_tokens: 768, min_copies: 3 };
-
-/// The length of the block repeating at the end of `ids` under `bar`, or 0.
-fn tail_block(ids: &[usize], bar: &Bar) -> usize {
+/// Drops every copy but the first of a block repeating at the end of `ids` under `bar`; whether
+/// there was one.
+fn trim(
+  ids: &mut Vec<usize>,
+  [max_block, copies, min_tokens, max_tokens, min_copies]: [usize; 5],
+) -> bool {
   let n = ids.len();
-  (1..=bar.max_block)
-    .find(|&block| {
-      let span = (bar.copies * block).clamp(bar.min_tokens, bar.max_tokens);
-      let span = block * bar.min_copies.max(span.div_ceil(block));
-      span <= n && (n - span + block..n).all(|i| ids[i] == ids[i - block])
-    })
-    .unwrap_or(0)
-}
-
-/// Drops every copy of the tail block but the first; whether there was one.
-fn trim(ids: &mut Vec<usize>, bar: &Bar) -> bool {
-  let block = tail_block(ids, bar);
-  while block > 0
-    && ids.len() >= 2 * block
+  let looped = (1..=max_block).find(|&block| {
+    let span = (copies * block).clamp(min_tokens, max_tokens);
+    let span = block * min_copies.max(span.div_ceil(block));
+    span <= n && (n - span + block..n).all(|i| ids[i] == ids[i - block])
+  });
+  let Some(block) = looped else { return false };
+  while ids.len() >= 2 * block
     && ids[ids.len() - block..] == ids[ids.len() - 2 * block..ids.len() - block]
   {
     ids.truncate(ids.len() - block);
   }
-  block > 0
+  true
 }
 
 /// After each token: on a loop, trims `ids` to one copy and returns true, so decoding stops.
 pub fn stop(ids: &mut Vec<usize>) -> bool {
-  trim(ids, &STOP)
+  trim(ids, STOP)
 }
 
 /// Once, when decoding reached the token budget before the end: drops a repeating tail.
 pub fn trim_at_budget(ids: &mut Vec<usize>) {
-  trim(ids, &TRIM);
+  trim(ids, TRIM);
 }
 
 #[cfg(test)]

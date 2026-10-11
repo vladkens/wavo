@@ -162,9 +162,10 @@ impl Moonshine {
       let pos = ids.len();
       token = run(steps, &|p| self.decoder.record_step(p, dec, token, pos, t, Some(rope)))?;
     }
+    let pieces = self.tok.pieces(&ids);
+    let text = tokenizer::text(&pieces);
     let token = |(&id, piece): (&usize, String)| Token { id: id as u32, piece, start_ms: 0 };
-    let tokens = ids.iter().zip(self.tok.pieces(&ids)).map(token).collect();
-    Ok(Transcript { text: self.tok.text(&ids), tokens })
+    Ok(Transcript { text, tokens: ids.iter().zip(pieces).map(token).collect() })
   }
 
   /// Buffers for `n` samples, the rotary table for as many positions as they and the decoder need.

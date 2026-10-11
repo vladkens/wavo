@@ -34,25 +34,24 @@ pub struct Buffers {
 
 /// Rows after each conv of the stem for `n` samples; 0 when too short for one.
 pub fn frames(n: usize) -> [usize; 3] {
-  let mut rows = [0; 3];
   let mut t = n;
-  for (r, (kernel, stride)) in rows.iter_mut().zip(STEM) {
+  STEM.map(|(kernel, stride)| {
     t = if t < kernel { 0 } else { (t - kernel) / stride + 1 };
-    *r = t;
-  }
-  rows
+    t
+  })
 }
 
 impl Encoder {
   pub fn load(gpu: &Gpu, g: &Gguf, blocks: transformer::Config, eps: f32) -> Result<Self> {
     let d = blocks.d;
     let f32s = |name: &str, n: usize| g.tensor(name, &[n])?.to_f32();
+    // conv0 has no bias.
     let conv = |i: usize, ch: usize, out: usize| {
-      let bias = f32s(&format!("enc.conv.{i}.bias"), out)?;
+      let bias = if i == 0 { Vec::new() } else { f32s(&format!("enc.conv.{i}.bias"), out)? };
       gpu.conv(g.tensor(&format!("enc.conv.{i}.weight"), &[STEM[i].0, ch, out])?, &bias)
     };
     Ok(Self {
-      conv0: gpu.conv(g.tensor("enc.conv.0.weight", &[STEM[0].0, 1, d])?, &[])?,
+      conv0: conv(0, 1, d)?,
       norm: gpu.channels(&f32s("enc.conv.norm.weight", d)?, &f32s("enc.conv.norm.bias", d)?)?,
       eps,
       conv1: conv(1, d, 2 * d)?,
