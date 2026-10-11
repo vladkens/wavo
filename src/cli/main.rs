@@ -61,6 +61,9 @@ fn main() -> ExitCode {
   }
 }
 
+/// Win over a file of the same name in `wavo FILE`.
+const COMMANDS: &[&str] = &["help", "run", "pull", "list", "ls", "rm", "bench"];
+
 fn cli(args: &[&str]) -> Result<()> {
   let help = matches!(args, [] | ["help"]) || args.iter().any(|a| matches!(*a, "-h" | "--help"));
   match args {
@@ -72,7 +75,7 @@ fn cli(args: &[&str]) -> Result<()> {
     ["rm", name] => rm(name)?,
     ["bench", model, audio] => bench(model, audio, 10)?,
     ["bench", model, audio, "-n", n] => bench(model, audio, n.parse().context("-n")?)?,
-    [audio, ..] if Path::new(audio).is_file() => run(args)?,
+    [audio, ..] if !COMMANDS.contains(audio) && Path::new(audio).is_file() => run(args)?,
     _ => bail!("unknown command: wavo {}\n\n{}", args.join(" "), usage()),
   }
   Ok(())
@@ -152,7 +155,9 @@ fn run(args: &[&str]) -> Result<()> {
     [model, audio] => (model, audio),
     _ => bail!(USAGE),
   };
-  std::fs::metadata(audio).with_context(|| format!("reading {audio}"))?; // before a download
+  // Before anything is asked or downloaded.
+  let meta = std::fs::metadata(audio).with_context(|| format!("reading {audio}"))?;
+  ensure!(!meta.is_dir(), "{audio}: a folder, not an audio file");
   let path = model_path(model, download)?;
   let bar = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear); // on errors too
   bar.set_style(ProgressStyle::with_template("{spinner} {msg} {elapsed}")?);
