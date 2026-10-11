@@ -285,8 +285,7 @@ impl Model {
       Family::Gigaam(_) => Some(25_000),
       // Its window; `transcribe` still takes any length in 30 s windows, as transcribe.cpp does.
       Family::Whisper(_) => Some(30_000),
-      // transcribe.cpp advises 48.5 s (194 tokens at 4 per second); 30 s keeps a piece well under
-      // the 194-token cap at faster speech.
+      // transcribe.cpp advises 48.5 s; 30 s keeps fast speech under the 194-token cap.
       Family::Moonshine(_) => Some(30_000),
       Family::Parakeet(_) => None,
     }
