@@ -119,3 +119,8 @@ fn parakeet_tdt_v3() {
 fn whisper_large_v3_turbo() {
   check("whisper-large-v3-turbo", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
 }
+
+#[test]
+fn whisper_tiny() {
+  check("whisper-tiny", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
+}
