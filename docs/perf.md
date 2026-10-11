@@ -69,7 +69,7 @@ GigaAM:
 Parakeet: conv_glu's depthwise taps as [tap][ch] (≤ 2% of GPU time, shared with GigaAM); GEMM tile
 shapes at M = 138 (1.5 vs 1.8 TFLOP/s at M = 442 before the f16 64×64 GEMM; re-profile first).
 
-Whisper, open in [the Whisper plan](plans/20261010-whisper.md) (Task 6): decoder gemv bandwidth
+Whisper, open in [the Whisper plan](plans/completed/20261010-whisper.md) (Task 6): decoder gemv bandwidth
 against ~100 GB/s, LayerNorm folded into the next gemv, the two prompt tokens as one two-row step,
 cross attention split over key blocks.
 
@@ -81,7 +81,7 @@ Parakeet's fixed cost per call (`first_depthwise`, frames padded to 64); with th
 approval, since it changes arithmetic, an int8 GEMM (`dot4I8Packed`) on Q8_0 activations as the
 reference's CPU path does.
 
-GPUs with 16×16 F16 cooperative matrices ([plan](plans/20261011-nvidia-fast.md)): flash
+GPUs with 16×16 F16 cooperative matrices ([plan](plans/completed/20261011-nvidia-fast.md)): flash
 attention on them, the largest gain left (on an RTX 4060 the portable attention is 471 of 633 ms
 of kernels on Whisper turbo, the reference's whole encoder 160 ms; it would round q, k, v and the
 probabilities to f16, which the fixtures must survive); Whisper's decoder on large models (gemv
@@ -159,7 +159,7 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
   accumulators), gemm_fast.wgsl written in F and built with F = 8 or 16 (at 16: 64 or 128 rows ×
   128 columns). GEMMs on turbo `jfk` 536 → 119 ms; warm 10–40% faster on every model (turbo 1082
   → 646, Parakeet V3 `dots` 357 → 233 ms); fixtures exact. Kept.
-  [Plan](plans/20261011-nvidia-fast.md).
+  [Plan](plans/completed/20261011-nvidia-fast.md).
   - Under 16 workgroups the 128-wide tiles lose (GigaAM `ru`'s 768-wide layers get 12: FFN down
     6.96 → 10.54 ms, `ru` 23.5 → 25.4 ms), so those GEMMs stay portable: `ru` 20.2 ms. Kept.
   - Checking columns past n (W is padded to 64 rows) at F = 8 too cost the M2 8% on `ru-long`;
@@ -479,27 +479,27 @@ Numbers are in the plans' "## Result" sections.
 
 - 2026-10-11, Windows RTX 4060, GPU timestamps around the 16×16 GEMM: the portable GEMMs were 50%
   of the kernels on turbo `jfk` and 75% on Parakeet V3 `dots`; after it attention is 74% on turbo
-  (471 of 633 ms). [16×16 GEMM plan](plans/20261011-nvidia-fast.md).
+  (471 of 633 ms). [16×16 GEMM plan](plans/completed/20261011-nvidia-fast.md).
 
 - 2026-10-11, Whisper variants, baseline: on the M2 8–30% faster than the reference; on Windows
   the portable encoder is 1.5–3.4× behind the reference's cooperative matrices from base on.
-  [Whisper plan](plans/20261010-whisper.md).
+  [Whisper plan](plans/completed/20261010-whisper.md).
 - 2026-10-10, Whisper large-v3-turbo, end of phase 12: faster on all four clips (jfk 1239–1343 vs
   1375–1415 ms); one pass over all 32 samples gives the reference's text. [Whisper
-  plan](plans/20261010-whisper.md). Against whisper.cpp: a tie on one or two windows, 18% faster
+  plan](plans/completed/20261010-whisper.md). Against whisper.cpp: a tie on one or two windows, 18% faster
   on 306 s (not investigated). [Other engines](plans/20261010-other-engines.md).
 - 2026-10-10, Windows RTX 4060 and Linux N100, portable kernels against the reference's CPU and
-  Vulkan builds. [Windows plan](plans/20261010-windows.md), [Linux plan](plans/20261010-linux.md).
+  Vulkan builds. [Windows plan](plans/completed/20261010-windows.md), [Linux plan](plans/20261010-linux.md).
 - 2026-10-10, GigaAM e2e-rnnt and Parakeet V3, 2,923 dictation recordings (`make compare`): text
   the same in 99.86% / 98.9%, every difference from a near-tie; Parakeet V3 36% less compute,
   GigaAM on par (slower under 2 s, faster from 5 s). [Real recordings
-  plan](plans/20261010-real-recordings.md).
+  plan](plans/completed/20261010-real-recordings.md).
 - 2026-10-10, Parakeet V2 and V3, end of phase 6: warm 14–35% faster than the reference, load
-  ~40% below. [Parakeet V3 plan](plans/20261010-parakeet-tdt-v3.md).
+  ~40% below. [Parakeet V3 plan](plans/completed/20261010-parakeet-tdt-v3.md).
 - 2026-10-10, Parakeet V3, first run on the V2 code path: fixtures exact with no code change;
   warm 175 / 198 / 196 ms (reference ~216 / 251 / 240), peak 804 vs 884 MiB.
 - 2026-10-10, GigaAM and Parakeet V2, end of phase 5, and the same binaries on an M1.
-  [Parakeet speed plan](plans/20261010-parakeet-fast.md).
+  [Parakeet speed plan](plans/completed/20261010-parakeet-fast.md).
 - 2026-10-10, Parakeet V2, profile at the start of phase 5 (GPU timestamps per dispatch kind,
   temporary tool): attention 23% of GPU time on jfk and 45% on dots (~300 ms: scalar 16×16 tiles
   through memory, position scores over all 2T − 1 positions); GEMMs 1.5–1.9 TFLOP/s; the stacked
@@ -507,10 +507,10 @@ Numbers are in the plans' "## Result" sections.
   ~47 GB/s, memory-bound. Passes of independent dispatches overlap, so kernels sum to more than
   the span.
 - 2026-10-10, Parakeet V2, phase 4 baseline: fixtures exact on the first run, no reference
-  roundings needed. [Parakeet V2 plan](plans/20261009-parakeet-tdt-v2.md).
+  roundings needed. [Parakeet V2 plan](plans/completed/20261009-parakeet-tdt-v2.md).
 - 2026-10-09, GigaAM variants, e2e-ctc, rnnt and ctc as heads of the shared encoder: CTC logits
   as the last GEMM (rows padded to 64 at load), greedy collapse on the CPU, the charwise RNN-T on
-  the same decoder. [GigaAM variants plan](plans/20261009-gigaam-variants.md).
+  the same decoder. [GigaAM variants plan](plans/completed/20261009-gigaam-variants.md).
 - 2026-10-09, GigaAM, state after the memory and first-call task: warm on par (ru 43.7 vs 43.7,
   ru-long 317.9 vs 310.4 ms), the first call 25–37 ms over warm (arena allocation, bind groups,
   buffer zero-init) against the reference's 10–15.
@@ -521,7 +521,7 @@ Numbers are in the plans' "## Result" sections.
   The first call's extra ~40 ms was wgpu running the weight uploads with the first submit.
 - 2026-10-09, GigaAM, phase 1 baseline: warm on par, peak 878 / 880 / 925 vs 322 / 324 / 333 MiB.
   Portable kernels only: 85.1 / 203.1 / 808.4 vs 46.4 / 99.6 / 311.2 ms (ru-long attention 370 ms
-  with the scores in memory, GEMM 425 ms). [GigaAM plan](plans/20261009-gigaam-e2e-rnnt.md).
+  with the scores in memory, GEMM 425 ms). [GigaAM plan](plans/completed/20261009-gigaam-e2e-rnnt.md).
 
 ### Research branch (all weights expanded to F32)
 

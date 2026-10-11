@@ -120,7 +120,8 @@ the `Makefile` and `.github/workflows/main.yml`.
   1. Agree the plan with the person. For multi-step work keep a checklist in
      `docs/plans/yyyymmdd-<name>.md` and during the work only tick its checkboxes, with no
      progress prose. When finished, add a first line `Done: yyyy-mm-dd, PR #N` and a short final
-     `## Result` section with the key numbers. Plans stay; never delete them.
+     `## Result` section with the key numbers, and move it to `docs/plans/completed/` (fixing
+     links to it). Plans stay; never delete them.
   2. Branch from `main` as `feat/<name>`, in the agent's own git worktree. A small change that
      fits an open PR's topic goes into that PR instead of a new one: docs-only edits join the open
      docs PR.
