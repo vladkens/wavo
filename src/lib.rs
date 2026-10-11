@@ -75,9 +75,10 @@
 //! Hugging Face cache that `hf` and `huggingface_hub` share, and downloads it when missing:
 //!
 //! ```no_run
+//! # #[cfg(feature = "hub")]
+//! # fn main() -> wavo::Result<()> {
 //! use std::ops::ControlFlow;
 //!
-//! # fn main() -> wavo::Result<()> {
 //! let hub = wavo::hub::Hub::new(); // or Hub::at(dir) for a folder of your app's own
 //! let path = match hub.find("gigaam-v3") {
 //!   Some(path) => path, // no network
@@ -86,6 +87,8 @@
 //! let model = wavo::Model::load(path)?;
 //! # Ok(())
 //! # }
+//! # #[cfg(not(feature = "hub"))]
+//! # fn main() {}
 //! ```
 //!
 //! # Download on a thread, with progress and cancel
@@ -97,6 +100,8 @@
 //! cache, and the next pull resumes it.
 //!
 //! ```no_run
+//! # #[cfg(feature = "hub")]
+//! # fn main() {
 //! use std::ops::ControlFlow;
 //! use std::sync::Arc;
 //! use std::sync::atomic::{AtomicBool, Ordering};
@@ -118,6 +123,9 @@
 //!   Err(wavo::Error::Cancelled) => println!("\ncancelled; the next pull resumes"),
 //!   Err(e) => eprintln!("\ndownload failed: {e}"),
 //! }
+//! # }
+//! # #[cfg(not(feature = "hub"))]
+//! # fn main() {}
 //! ```
 //!
 //! # Left to the caller

@@ -65,6 +65,7 @@ TIMESTAMPS := token
 # Unit tests and doc examples only: no models or 3rd/ needed.
 test-unit:
 	cargo test $(CARGO_FLAGS) --lib --bins
+	cargo test $(CARGO_FLAGS) --doc --no-default-features
 	cargo test $(CARGO_FLAGS) --doc --no-default-features --features hub
 
 test-ci: test-unit
