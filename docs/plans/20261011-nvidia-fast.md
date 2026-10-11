@@ -4,8 +4,8 @@ PR #28
 
 wavo was 1.1–3.4× slower than transcribe.cpp's Vulkan build on the Windows RTX 4060 (see the
 [Windows plan](20261010-windows.md)): its fast kernels need Apple's 8×8 F32 cooperative matrices,
-so every kernel there was the portable one. NVIDIA, AMD and Intel Arc drivers offer 16×16 F16
-matrices with F32 accumulators instead. Everything stays in our WGSL through wgpu: a fast tier
+so every kernel there was the portable one. NVIDIA's driver offers 16×16 F16 matrices with F32
+accumulators instead (AMD's and Intel Arc's report them too). Everything stays in our WGSL through wgpu: a fast tier
 chosen at load from adapter features, as Apple's is.
 
 - [x] Profile the RTX 4060 with GPU timestamps (Whisper turbo and large-v3 on `jfk`, Parakeet V3
@@ -15,12 +15,16 @@ chosen at load from adapter features, as Apple's is.
 - [x] gemm_fast.wgsl in the fragment size F, built with F = 8 (Apple) or 16; A/B/A against the
       portable GEMM and main; fixtures on NVIDIA.
 - [x] Apple's path unchanged (A/B/A on the M2, fixtures); the N100 keeps the portable kernels.
+- [x] The laptop's AMD iGPU, which reports 16×16 matrices too: its driver crashes compiling them,
+      so the tier is NVIDIA's only.
 
 ## Result
 
 RTX 4060 Laptop, Windows 11, NVIDIA 610.62, wgpu's Vulkan backend. The driver reports 16×16×16,
-16×8×16 and 16×8×8 matrices of F16 into F16 or F32, and 32-lane subgroups; no F32 operands. Only
-the GEMM runs on 16×16 matrices: the subgroup LayerNorm and conv_glu were slower there, and the
+16×8×16 and 16×8×8 matrices of F16 into F16 or F32, and 32-lane subgroups; no F32 operands. The
+laptop's Radeon 610M (AMD 25.10.30.02) reports 16×16×16 F16 → F32 as well, but its driver kills
+the process compiling any shader that uses them, so the tier checks NVIDIA's vendor id. Only the
+GEMM runs on 16×16 matrices: the subgroup LayerNorm and conv_glu were slower there, and the
 flash kernels need 8×8 F32 matrices. Warm median, `wavo bench -n 20` (`-n 10` for Whisper), main
 → this, two A/B rounds each; transcribe.cpp's Vulkan build (`transcribe-bench --warmup 1 --iters
 10`, median `wall_ms`) in the same session, ms:

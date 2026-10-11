@@ -21,9 +21,9 @@ bind groups cached per dispatch: one submission with the fast kernels, one per l
 portable path (`Pass::layers`). The fast kernels (cooperative-matrix GEMM on f16 operands with
 Q8_0/F16 dequantized while staging and W rounded to f16 as the reference does, barrier-free flash
 attention with the output in registers, one subgroup per row for LayerNorm and the conv module)
-each turn on after a probe dispatch. On GPUs with 16×16 F16 matrices instead of 8×8 F32 ones
-(NVIDIA, AMD and Intel Arc on Vulkan) only the GEMM is fast, on 16×16 fragments, and a GEMM of
-fewer than 16 such workgroups runs the portable one. The head's linear layer is the last GEMM: the joint's encoder
+each turn on after a probe dispatch. On NVIDIA GPUs, which have 16×16 F16 matrices instead of
+8×8 F32 ones, only the GEMM is fast, on 16×16 fragments, and a GEMM of fewer than 16 such
+workgroups runs the portable one. The head's linear layer is the last GEMM: the joint's encoder
 projection for RNN-T, the logits (rows padded to 64) for CTC. The RNN-T loop (LSTM, joint, argmax)
 runs on one CPU thread with NEON (AVX2 + FMA on x86) tiles that score two frames per pass over the
 joint weights; CTC is an argmax and collapse per frame.
@@ -81,8 +81,10 @@ Parakeet's fixed cost per call (`first_depthwise`, frames padded to 64); with th
 approval, since it changes arithmetic, an int8 GEMM (`dot4I8Packed`) on Q8_0 activations as the
 reference's CPU path does.
 
-GPUs with 16×16 F16 cooperative matrices (NVIDIA, AMD and Intel Arc on Vulkan), from the RTX 4060
-profile in [the 16×16 GEMM plan](plans/20261011-nvidia-fast.md): flash attention on 16×16 F16
+GPUs with 16×16 F16 cooperative matrices, from the RTX 4060 profile in [the 16×16 GEMM
+plan](plans/20261011-nvidia-fast.md): the 16×16 GEMM on AMD and Intel Arc (AMD's Windows driver
+25.10 crashed compiling any 16×16 shader on a Radeon 610M; a discrete RDNA3 card, newer drivers
+and Arc are untested); flash attention on 16×16 F16
 matrices, the largest gain left there and the most new code (the portable attention is 471 of 633
 ms of kernels on Whisper turbo, against the reference's whole encoder at 160 ms; Parakeet's
 relative scores 49 of 120 ms; it would round q, k, v and the probabilities to f16, which the
@@ -168,6 +170,11 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
     too cost the M2 8% on GigaAM `ru-long` (251 → 280 ms), so only F = 16 checks. Staging in
     loops of one or two steps cost the M2 3% on `ru` (41.0 → 42.5 ms), so the first step stays
     out of the loops. After both the M2 is at main's speed.
+  - The Radeon 610M in the same laptop (AMD driver 25.10.30.02, Vulkan) reports 16×16×16 F16 →
+    F32 and subgroups of 32–64, but the process dies while the driver compiles the first 16×16
+    GEMM pipeline, and also a 10-line shader with one 16×16 load, multiply-add and store (f32 or
+    f16 accumulator, 32 or 128 threads, either layout); NVIDIA compiles the same. A probe can't
+    catch a crash, so the 16×16 tier is limited to NVIDIA's vendor id.
 
 - 2026-10-10, all models, Windows RTX 4060: NVIDIA's Vulkan driver folds the portable GEMM's
   `pack2x16float` round trip into a no-op (AMD's truncates), so W was not rounded to f16 and

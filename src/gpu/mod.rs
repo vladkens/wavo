@@ -600,7 +600,9 @@ fn adapter() -> Result<wgpu::Adapter> {
 
 /// F of the F×F cooperative matrices the fast kernels use on `adapter`, which needs 32-lane
 /// subgroups: 8 with 8×8 matrices of F32 and of F16 into F32 (Apple GPUs; all fast kernels), else
-/// 16 with 16×16 F16 into F32 (Vulkan drivers of NVIDIA, AMD and Intel Arc; only the GEMM).
+/// 16 with 16×16 F16 into F32 (only the GEMM), on NVIDIA only so far. AMD's Windows driver
+/// (25.10, Radeon 610M) reports the same 16×16 shape but crashes the process while compiling any
+/// shader that uses it, which no probe can catch; other drivers are untested.
 fn fast_size(adapter: &wgpu::Adapter) -> Option<usize> {
   use wgpu::CooperativeScalarType::{F16, F32};
   let info = adapter.get_info();
@@ -614,7 +616,12 @@ fn fast_size(adapter: &wgpu::Adapter) -> Option<usize> {
   {
     return None;
   }
-  if has(8, F32) && has(8, F16) { Some(8) } else { has(16, F16).then_some(16) }
+  const NVIDIA: u32 = 0x10de;
+  if has(8, F32) && has(8, F16) {
+    Some(8)
+  } else {
+    (has(16, F16) && info.vendor == NVIDIA).then_some(16)
+  }
 }
 
 fn module(device: &wgpu::Device, source: &str) -> wgpu::ShaderModule {
