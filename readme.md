@@ -70,12 +70,26 @@ is `parakeet-tdt-0.6b-v2`, `gigaam-v3` is `gigaam-v3-e2e-rnnt`, `whisper-turbo` 
 
 ## 📥 Installation
 
+A prebuilt binary for macOS (Apple Silicon) or Linux, into `~/.local/bin`, in a few seconds:
+
 ```sh
-cargo install wavo
+curl -fsSL https://raw.githubusercontent.com/vladkens/wavo/main/scripts/install.sh | sh
 ```
 
-Or take prebuilt dev binaries for macOS, Linux and Windows from the
-[dev release](https://github.com/vladkens/wavo/releases/tag/dev).
+On Windows, take `wavo-*-x86_64-pc-windows-gnu.zip` from the
+[latest release](https://github.com/vladkens/wavo/releases/latest) and put `wavo.exe` on your
+`PATH`.
+
+Or build it with Rust, which takes a few minutes:
+
+```sh
+cargo install wavo                                    # the latest release
+cargo install --git https://github.com/vladkens/wavo  # the newest code from main
+```
+
+This readme follows main, which may be ahead of the latest release. The newest main is also
+prebuilt in the [dev release](https://github.com/vladkens/wavo/releases/tag/dev), and
+`curl ... | sh -s dev` installs it.
 
 <details>
 <summary>Linux</summary>
