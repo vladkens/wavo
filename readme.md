@@ -5,7 +5,9 @@
 **Local speech-to-text at GPU speed**
 
 [<img src="https://badges.ws/crates/v/wavo" alt="version" />](https://crates.io/crates/wavo)
+[<img src="https://badges.ws/crates/docs/wavo" alt="docs" />](https://docs.rs/wavo)
 [<img src="https://badges.ws/github/license/vladkens/wavo" alt="license" />](https://github.com/vladkens/wavo/blob/main/LICENSE)
+[<img src="https://badges.ws/badge/follow-@uid127-black" alt="follow @uid127" />](https://x.com/uid127)
 
 </div>
 
