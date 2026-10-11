@@ -105,17 +105,18 @@ mod tests {
   use super::*;
 
   fn tokens(pieces: &[(&str, u32)]) -> Vec<Token> {
-    let token = |(i, &(piece, start_ms)): (usize, &(&str, u32))| Token {
-      id: i as u32,
-      piece: piece.to_string(),
-      start_ms,
+    let token = |(i, &(piece, start_ms)): (usize, &(&str, u32))| {
+      let mut t = Token::default();
+      (t.id, t.piece, t.start_ms) = (i as u32, piece.to_string(), start_ms);
+      t
     };
     pieces.iter().enumerate().map(token).collect()
   }
 
   #[test]
   fn json_escapes() {
-    let t = Transcript { text: "a \"b\"\\\n\u{1}é".into(), tokens: tokens(&[("▁a", 40)]) };
+    let mut t = Transcript::default();
+    (t.text, t.tokens) = ("a \"b\"\\\n\u{1}é".into(), tokens(&[("▁a", 40)]));
     let expected = "{\"text\": \"a \\\"b\\\"\\\\\\n\\u0001é\", \"tokens\": [\n  {\"id\": 0, \"piece\": \"▁a\", \"start_ms\": 40}\n]}";
     assert_eq!(json(&t), expected);
     assert_eq!(json(&Transcript::default()), "{\"text\": \"\", \"tokens\": []}");

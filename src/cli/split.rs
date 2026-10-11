@@ -52,7 +52,10 @@ pub fn join(parts: impl IntoIterator<Item = (usize, Transcript)>) -> (Transcript
       out.text += &part.text;
     }
     let offset = (start / 16) as u32; // a multiple of 160 samples: whole ms
-    let shift = |t: Token| Token { start_ms: t.start_ms + offset, ..t };
+    let shift = |mut t: Token| {
+      t.start_ms += offset;
+      t
+    };
     out.tokens.extend(part.tokens.into_iter().map(shift));
   }
   (out, starts)
@@ -143,8 +146,16 @@ mod tests {
 
   #[test]
   fn join_shifts_tokens_and_skips_empty_texts() {
-    let token = |id, start_ms| Token { id, piece: format!("▁{id}"), start_ms };
-    let part = |text: &str, tokens| Transcript { text: text.into(), tokens };
+    let token = |id, start_ms| {
+      let mut t = Token::default();
+      (t.id, t.piece, t.start_ms) = (id, format!("▁{id}"), start_ms);
+      t
+    };
+    let part = |text: &str, tokens| {
+      let mut t = Transcript::default();
+      (t.text, t.tokens) = (text.into(), tokens);
+      t
+    };
     let (t, starts) = join([
       (0, part("a b", vec![token(1, 40), token(2, 80)])),
       (16 * 20_000, part("", vec![])),

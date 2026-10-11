@@ -167,6 +167,7 @@ enum Family {
 
 /// The text of a recording and the tokens it is made of.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Transcript {
   /// The whole text; empty when nothing was recognized.
   pub text: String,
@@ -175,7 +176,8 @@ pub struct Transcript {
 }
 
 /// One token of a [`Transcript`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Token {
   /// Id in the model's vocabulary.
   pub id: u32,

@@ -47,7 +47,8 @@ the first call matter as much as warm speed.
   `wavo pull MODEL...`, `wavo list`, `wavo rm MODEL`, `wavo run [MODEL] AUDIO [--json | --srt]
   [--segment SECS]` (default model `parakeet-v3`) and `wavo bench MODEL AUDIO [-n N]`, where
   MODEL is a short name, a full published name or a path to a `.gguf`. Change either only with
-  the user's approval.
+  the user's approval. Mark every public struct and enum `#[non_exhaustive]`, so new fields and
+  variants don't break callers.
 - Only `wavo pull` and `hub::Hub::pull` use the network. `run` and `bench` never download; a
   missing model fails with the `wavo pull` command to run. The library starts no threads for
   downloads: `pull` blocks, and the caller runs it on a thread.
