@@ -10,8 +10,7 @@ on:
 permissions:
   contents: read
 
-# Main runs queue instead, so a dev release is never cut off halfway. A newer run replaces a
-# queued one, so a release commit runs in a group of its own and is never dropped.
+# Main runs queue instead, so a dev release is never cut off; a release commit gets its own group.
 concurrency:
   group: ${{ github.workflow }}-${{ startsWith(github.event.head_commit.message, 'release:') && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -65,10 +64,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  # Main only: `dev` builds the archives next to `test`, `dev-release` publishes them as the `dev`
-  # pre-release once both pass. Two jobs, so the token that can write to the repo never sits on
-  # the machine that runs the build scripts of every dependency. A manual run on a branch builds
-  # the archives and publishes nothing.
+  # `dev` builds the archives next to `test` (main and manual runs); on main `dev-release` publishes
+  # them as the `dev` pre-release. Two jobs, so the token that can write to the repo never sits on
+  # the machine that runs the build scripts of every dependency.
   dev:
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest # the macOS binary needs a Mac; Linux and Windows cross-compile
@@ -126,11 +124,7 @@ jobs:
             gh release create dev target/distrib/* --prerelease --title "Dev build" --notes "$NOTES"
           fi
 
-  # A `release: vX.Y.Z` commit on main (a release PR's squash, so with ` (#N)`) is released by
-  # two jobs, split like `dev` and `dev-release`. `release-check` builds the crate as
-  # `cargo publish` would, with the read-only token. `release` holds the write rights and builds
-  # nothing: it publishes with `--no-verify` (that build is `release-check`'s) and ships `dev`'s
-  # archives. A rerun skips what an earlier attempt already did.
+  # Split like `dev`: `release-check` builds without write rights, `release` only publishes.
   release-check:
     if: github.event_name == 'push' && startsWith(github.event.head_commit.message, 'release:')
     runs-on: ubuntu-latest
@@ -156,7 +150,7 @@ jobs:
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          awk -v tag="$TAG" '/^## / { found = ($2 == tag); next } found' changelog.md > notes.md
+          awk -v tag="$TAG" '/^## / { found = ($2 == tag); next } found && $0 != "---"' changelog.md > notes.md
           if ! grep -q '^- [^[:space:]]' notes.md; then
             echo "::error::changelog.md has no '## $TAG' section with changes"
             exit 1
@@ -217,7 +211,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NOTES: ${{ needs.release-check.outputs.notes }}
         run: |
-          # A rerun of all jobs rebuilds the archives: keep the ones already released.
           if have=$(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null); then
             for f in target/distrib/*; do
               grep -qxF "${f##*/}" <<< "$have" || gh release upload "$TAG" "$f"
