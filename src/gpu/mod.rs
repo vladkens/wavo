@@ -307,11 +307,14 @@ impl Gpu {
       && self.failure.lock().unwrap_or_else(PoisonError::into_inner).take().is_none();
     let range = mapped.then(|| read.slice(..).get_mapped_range().ok()).flatten();
     let got: Vec<f32> = range.map(|r| bytemuck::cast_slice(&r).to_vec()).unwrap_or_default();
-    let mut kept = (probes.into_iter().zip(got.chunks(2)))
-      .map(|((k, .., subgroups), got)| (got == [32.0, subgroups]).then_some(k));
+    let mut kept = (probes.into_iter().enumerate()).map(|(i, (k, .., subgroups))| {
+      (got.get(2 * i..2 * i + 2) == Some(&[32.0, subgroups][..])).then_some(k)
+    });
     let mut next = || kept.next().flatten();
+    // All six GEMMs are taken before any is checked, so the kernels after them stay in place.
+    let gemm: Vec<_> = (0..6).map(|_| next()).collect();
     Fast {
-      gemm: (0..6).map(|_| next()).collect(),
+      gemm: gemm.into_iter().collect(),
       layer_norm: next(),
       conv_glu: next(),
       attention: next(),
