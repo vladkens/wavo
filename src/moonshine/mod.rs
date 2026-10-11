@@ -84,17 +84,20 @@ impl Moonshine {
     };
     let (enc, dec) = (config("encoder")?, config("decoder")?);
     let channels = g.array::<u32>("stt.moonshine.conv_stem.channels")?;
-    if dec.d != enc.d
-      || dec.rot != enc.rot
-      || channels != [enc.d, 2 * enc.d, enc.d].map(|c| c as u32)
-    {
-      bail!("encoder and decoder of different widths");
+    if dec.d != enc.d || dec.rot != enc.rot {
+      bail!("encoder and decoder of different widths or rotary dims");
+    }
+    if channels != [enc.d, 2 * enc.d, enc.d].map(|c| c as u32) {
+      bail!("conv stem channels {channels:?}, expected [d, 2·d, d] for d_model {}", enc.d);
     }
     let (vocab, context) = (u("decoder.vocab_size")?, u("decoder.max_position_embeddings")?);
     let tok = Tokenizer::new(g)?;
     let (bos, eos) = (u("decoder_start_token_id")?, u("eos_token_id")?);
-    if tok.len() != vocab || bos >= vocab || eos >= vocab {
+    if tok.len() != vocab {
       bail!("vocabulary of {} tokens, decoder.vocab_size {vocab}", tok.len());
+    }
+    if bos >= vocab || eos >= vocab {
+      bail!("special token ids {bos} and {eos} out of the vocabulary of {vocab}");
     }
     let eps = g.get::<f32>("stt.moonshine.conv_stem.groupnorm_eps")?;
     let rot = enc.rot;
