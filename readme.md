@@ -99,9 +99,10 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait
 ```
 
 wavo uses the GPU through its Vulkan driver (NVIDIA, AMD and Intel ship one); on a laptop with
-two GPUs it takes the discrete one. GPUs other than Apple's use simpler kernels for now: an
-RTX 4060 laptop transcribes 11 s of audio in 64 ms (`gigaam-v3`), 102 ms (`parakeet-v3`) or
-1.1 s (`whisper-turbo`).
+two GPUs it takes the discrete one. GPUs other than Apple's use simpler kernels for now, apart
+from matrix multiplication on the GPU's matrix units where the driver offers them: an RTX 4060
+laptop transcribes 11 s of audio in 42 ms (`gigaam-v3`), 79 ms (`parakeet-v3`) or 0.65 s
+(`whisper-turbo`).
 
 </details>
 
