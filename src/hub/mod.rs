@@ -381,8 +381,9 @@ mod tests {
     assert_eq!(make, full, "MODELS in the Makefile");
 
     let tests = read("tests/models.rs").unwrap();
-    let mut tested: Vec<&str> =
-      tests.split("check(\"").skip(1).map(|s| s.split('"').next().unwrap()).collect();
+    let mut tested: Vec<&str> = (tests.lines())
+      .filter_map(|l| l.trim_start().strip_prefix("check(\"")?.split('"').next())
+      .collect();
     tested.sort();
     assert_eq!(tested, full, "tests in tests/models.rs");
   }
