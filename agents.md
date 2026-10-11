@@ -22,7 +22,8 @@ the `Makefile` and `.github/workflows/main.yml`.
   only with a measured gain on that class.
 - The public API is what the rustdoc documents, and the CLI is what `wavo --help` shows: change
   either only with the person's approval. Every public struct and enum is `#[non_exhaustive]`.
-- Only `wavo pull` and `Hub::pull` use the network; `run` and `bench` never download. `pull` blocks:
+- Only `wavo pull`, `wavo run` and `Hub::pull` use the network: `run` downloads a missing model
+  only after the person confirms on a terminal, or with `-y`; `bench` never does. `pull` blocks:
   the library starts no download threads.
 - The library leaves resampling and splitting long audio at pauses to the caller (Whisper's own
   30 s windows aside); the CLI does both. VAD and streaming are in neither.

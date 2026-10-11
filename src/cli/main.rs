@@ -11,18 +11,21 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
 use models::Source;
 use wavo::hub::{self, Hub, MODELS};
 
 const USAGE: &str = "\
 Usage:
-  wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS]
+  wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS] [-y]
                                  transcribe AUDIO, with parakeet-v3 unless MODEL is given;
                                  --json adds tokens with start times, --srt prints subtitles;
                                  longer audio is split at pauses into segments of up to SECS
-                                 (25 for GigaAM, 30 for Whisper, else 60; 0 for one pass)
+                                 (25 for GigaAM, 30 for Whisper, else 60; 0 for one pass);
+                                 a missing model is downloaded after asking on a terminal,
+                                 or without asking with -y (--yes)
+  wavo AUDIO ...                 the same as wavo run AUDIO ...
   wavo pull MODEL...             download models, several at once
   wavo list                      list downloaded models
   wavo rm MODEL                  delete a downloaded model
@@ -31,7 +34,7 @@ Usage:
 MODEL is a name below, its full name or a path to a .gguf file. AUDIO is wav, mp3, m4a, flac
 or ogg (Vorbis), downmixed to mono and resampled to 16 kHz.
 Models live in the Hugging Face cache (HF_HUB_CACHE or HF_HOME), shared with the hf CLI;
-only `wavo pull` uses the network.
+only `wavo pull` and `wavo run` (after asking, or with -y) use the network.
 
 Models:";
 
@@ -69,24 +72,54 @@ fn cli(args: &[&str]) -> Result<()> {
     ["rm", name] => rm(name)?,
     ["bench", model, audio] => bench(model, audio, 10)?,
     ["bench", model, audio, "-n", n] => bench(model, audio, n.parse().context("-n")?)?,
+    [audio, ..] if Path::new(audio).is_file() => run(args)?,
     _ => bail!("unknown command: wavo {}\n\n{}", args.join(" "), usage()),
   }
   Ok(())
 }
 
-/// A downloaded model by name, or a `.gguf` path. Never touches the network.
-fn model_path(arg: &str) -> Result<PathBuf> {
-  match models::resolve(arg)? {
-    Source::Path(path) if path.is_file() => Ok(path),
+/// Whether a command may download a model that isn't in the cache.
+#[derive(Clone, Copy, PartialEq)]
+enum Download {
+  Never,
+  /// After the person agrees at a prompt, when stdin and stderr are terminals.
+  Ask,
+  Yes,
+}
+
+/// A model by name, downloaded when `download` allows, or a `.gguf` path.
+fn model_path(arg: &str, download: Download) -> Result<PathBuf> {
+  let m = match models::resolve(arg)? {
+    Source::Path(path) if path.is_file() => return Ok(path),
     Source::Path(path) => bail!("{}: no such file", path.display()),
-    Source::Model(m) => {
-      let hub = Hub::new();
-      hub.find(m.name).ok_or_else(|| {
-        let (name, size) = (m.name, models::gb(m.size));
-        anyhow!("{name} is not in {hub}; run: wavo pull {name} ({size})")
-      })
-    }
+    Source::Model(m) => m,
+  };
+  let hub = Hub::new();
+  if let Some(path) = hub.find(m.name) {
+    return Ok(path);
   }
+  let (name, size) = (m.name, models::gb(m.size));
+  let question = format!("{name} is not downloaded ({size}). Download it now?");
+  if download == Download::Yes || download == Download::Ask && ask(&question) {
+    return pull_one(&hub, m, &MultiProgress::new()).with_context(|| format!("pulling {name}"));
+  }
+  bail!("{name} is not in {hub}; run: wavo pull {name} ({size})")
+}
+
+/// Asks on stderr, yes by default. No without a terminal on stdin and stderr, so a script never
+/// waits on it, and on EOF (Ctrl-D).
+fn ask(question: &str) -> bool {
+  use std::io::{IsTerminal, stdin};
+  if !(stdin().is_terminal() && std::io::stderr().is_terminal()) {
+    return false;
+  }
+  eprint!("{question} [Y/n] ");
+  let mut answer = String::new();
+  if !matches!(stdin().read_line(&mut answer), Ok(1..)) {
+    eprintln!();
+    return false;
+  }
+  matches!(answer.trim().to_lowercase().as_str(), "" | "y" | "yes")
 }
 
 fn load(path: &Path) -> Result<wavo::Model> {
@@ -94,8 +127,8 @@ fn load(path: &Path) -> Result<wavo::Model> {
 }
 
 fn run(args: &[&str]) -> Result<()> {
-  const USAGE: &str = "usage: wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS]";
-  let (mut format, mut segment, mut rest) = (None, None, Vec::new());
+  const USAGE: &str = "usage: wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS] [-y]";
+  let (mut format, mut segment, mut download, mut rest) = (None, None, Download::Ask, Vec::new());
   let mut args = args.iter();
   while let Some(&arg) = args.next() {
     match arg {
@@ -106,6 +139,7 @@ fn run(args: &[&str]) -> Result<()> {
           secs.context("--segment takes whole seconds: 0 for one pass, else at least 5")?;
         segment = Some(secs.saturating_mul(1000));
       }
+      "-y" | "--yes" => download = Download::Yes,
       _ if arg.starts_with("--") => bail!(USAGE),
       _ => rest.push(arg),
     }
@@ -118,7 +152,8 @@ fn run(args: &[&str]) -> Result<()> {
     [model, audio] => (model, audio),
     _ => bail!(USAGE),
   };
-  let path = model_path(model)?;
+  std::fs::metadata(audio).with_context(|| format!("reading {audio}"))?; // before a download
+  let path = model_path(model, download)?;
   let bar = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear); // on errors too
   bar.set_style(ProgressStyle::with_template("{spinner} {msg} {elapsed}")?);
   bar.enable_steady_tick(Duration::from_millis(100));
@@ -246,7 +281,7 @@ fn rm(arg: &str) -> Result<()> {
 /// Load time, first call and warm median/min over `n` calls, in milliseconds.
 fn bench(model: &str, audio: &str, n: usize) -> Result<()> {
   ensure!(n > 0, "-n must be at least 1");
-  let (pcm, path) = (audio::read(audio)?, model_path(model)?);
+  let (pcm, path) = (audio::read(audio)?, model_path(model, Download::Never)?);
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
   let t = Instant::now();
   let model = load(&path)?;

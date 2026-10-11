@@ -108,10 +108,11 @@ RTX 4060 laptop transcribes 11 s of audio in 64 ms (`gigaam-v3`), 102 ms (`parak
 ## 🚀 Usage
 
 ```sh
+wavo talk.m4a                         # transcribe with parakeet-v3, the same as wavo run talk.m4a
+wavo run gigaam-v3 talk.mp3           # or with another model
+wavo run whisper-turbo talk.mp3 -y    # download a missing model without asking
 wavo pull parakeet-v3                 # download a model
 wavo pull gigaam-v3 whisper-turbo     # or several at once
-wavo run talk.m4a                     # transcribe with parakeet-v3
-wavo run gigaam-v3 talk.mp3           # or with another model
 wavo run talk.wav --json              # text and every token with its start time
 wavo run talk.wav --srt > talk.srt    # subtitles
 wavo list                             # downloaded models
@@ -119,10 +120,13 @@ wavo rm parakeet-v3                   # delete one
 wavo bench gigaam-v3 talk.wav         # load time and speed on your machine
 ```
 
-Long recordings are split at their quietest moments and transcribed piece by piece, so an hour of
-audio works as well as a minute; `--segment SECS` sets the piece length, `--segment 0` runs one
-pass. Models are stored in the Hugging Face cache (`~/.cache/huggingface/hub`), so a model fetched
-with `hf download` is found by `wavo` and the other way round. Only `wavo pull` uses the network.
+When the model isn't downloaded yet, `wavo run` asks before downloading it, in a terminal; `-y`
+downloads without asking, for scripts. Without a terminal and `-y` it fails with the `wavo pull`
+command to run, and `wavo bench` never downloads. Long recordings are split at their quietest
+moments and transcribed piece by piece, so an hour of audio works as well as a minute;
+`--segment SECS` sets the piece length, `--segment 0` runs one pass. Models are stored in the
+Hugging Face cache (`~/.cache/huggingface/hub`), so a model fetched with `hf download` is found by
+`wavo` and the other way round.
 
 ## ⚡ Speed
 
