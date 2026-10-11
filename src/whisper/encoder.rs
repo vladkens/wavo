@@ -102,8 +102,8 @@ impl Encoder {
       mel: gpu.buffer(2 * c.frames * c.mels),
       x: gpu.buffer(rows * c.d),
       y: gpu.buffer(rows * c.d),
-      // Also the columns of conv0 (2·frames × 3·mels) and conv1 (frames × 3·d).
-      qkv: gpu.buffer((rows * 3 * c.d).max(6 * c.frames * c.mels)),
+      // Also the columns of conv0 (2·frames × 3·mels, rows padded to 32) and conv1 (frames × 3·d).
+      qkv: gpu.buffer((rows * 3 * c.d).max(2 * c.frames * (3 * c.mels).next_multiple_of(32))),
       // Also conv0's output, 2·frames × d.
       h: gpu.buffer(c.frames * c.d_ff.max(2 * c.d)),
       s: gpu.buffer(gpu.scores_len(c.frames, c.heads, c.d / c.heads, false)),

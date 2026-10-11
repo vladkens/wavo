@@ -338,14 +338,26 @@ impl Gpu {
     if weights.iter().any(|w| w.ty != w0.ty || w.len() / w.dims.last().unwrap() != k) {
       bail!("stacked weights differ in type or shape");
     }
-    if !k.is_multiple_of(32) {
-      bail!("linear layer {k}→{rows}: needs k % 32 == 0");
-    }
     // Buffers start zeroed, so the padding rows only need the space.
     let n = rows.next_multiple_of(64);
+    // The GEMM steps over k by 32. Another k (an 80-mel conv: 240) gets zero columns up to a
+    // multiple of 32 in F32, which is exact as the GEMM rounds W to f16 either way; its inputs are
+    // padded to match (`Pass::im2col`).
+    let kp = k.next_multiple_of(32);
     // The file is streamed in pieces of 8192 Q8_0 blocks straight into the mapped buffers.
     const PIECE: usize = 34 << 13;
     let (ty, weight, scales) = match w0.ty {
+      _ if kp != k => {
+        let weight = self.mapped(n * kp * 4);
+        let mut view = weight.get_mapped_range_mut(..)?;
+        let rows = weights.iter().map(|w| w.to_f32()).collect::<Result<Vec<_>>>()?;
+        for (i, row) in rows.iter().flat_map(|w| w.chunks(k)).enumerate() {
+          view.slice(i * kp * 4..(i * kp + k) * 4).copy_from_slice(bytemuck::cast_slice(row));
+        }
+        drop(view);
+        weight.unmap();
+        (0, weight, None)
+      }
       Type::F32 | Type::F16 => {
         let (ty, width) = if w0.ty == Type::F32 { (0, 4) } else { (1, 2) };
         let weight = self.mapped(n * k * width);
@@ -395,7 +407,7 @@ impl Gpu {
     let mut padded = vec![0.0; n + dual];
     padded[..own.len()].copy_from_slice(own);
     padded[n..].copy_from_slice(second);
-    Ok(Linear { n, k, dual, ty, weight, scales, bias: self.upload(&padded)? })
+    Ok(Linear { n, k: kp, dual, ty, weight, scales, bias: self.upload(&padded)? })
   }
 
   pub fn channels(&self, w: &[f32], b: &[f32]) -> Result<Channels> {
@@ -733,12 +745,14 @@ impl<'a> Pass<'a> {
     self.run(&self.gpu.decoder().pack, &[x, y], &params, [pairs.div_ceil(256), 1, 1]);
   }
 
-  /// Columns for a conv1d with `[kernel, stride, pad]` over `x` `[t][ch]`.
+  /// Columns for a conv1d with `[kernel, stride, pad]` over `x` `[t][ch]`, rows of `ch · kernel`
+  /// padded with zeros to a multiple of 32.
   pub fn im2col(&mut self, x: &Buffer, col: &Buffer, t: usize, ch: usize, conv: [usize; 3]) {
     let [kernel, stride, pad] = conv;
     let rows = (t + 2 * pad - kernel) / stride + 1;
     let params = [t, ch, 0, 0, kernel, 0, stride, pad].map(|v| v as u32);
-    self.run(&self.gpu.kernels.im2col, &[x, col], &params, [(ch * kernel).div_ceil(256), rows, 1]);
+    let width = (ch * kernel).next_multiple_of(32);
+    self.run(&self.gpu.kernels.im2col, &[x, col], &params, [width.div_ceil(256), rows, 1]);
   }
 
   /// Conformer conv module between the pointwise convs: GLU, depthwise conv (odd `kernel`,
@@ -1050,17 +1064,44 @@ mod tests {
     let x = random(t_in * ch, 9);
     for [kernel, stride, pad] in [[5, 2, 2], [3, 1, 1], [3, 2, 1]] {
       let t_out = (t_in + 2 * pad - kernel) / stride + 1;
-      let want: Vec<f32> = (0..t_out * ch * kernel)
+      // Rows of 100 or 60 columns, padded with zeros to 128 or 64.
+      let width = (ch * kernel).next_multiple_of(32);
+      let want: Vec<f32> = (0..t_out * width)
         .map(|i| {
-          let (t, c, k) = (i / (ch * kernel), i % (ch * kernel) / kernel, i % kernel);
+          let (t, c, k) = (i / width, i % width / kernel, i % width % kernel);
           let s = (stride * t + k).wrapping_sub(pad);
-          if s < t_in { x[s * ch + c] } else { 0.0 }
+          if s < t_in && c < ch { x[s * ch + c] } else { 0.0 }
         })
         .collect();
       for gpu in gpus() {
         let xb = up(gpu, &x);
         let shape = [kernel, stride, pad];
         let got = run(gpu, &vec![0.0; want.len()], |p, col| p.im2col(&xb, col, t_in, ch, shape));
+        assert_close(&got, &want);
+      }
+    }
+  }
+
+  #[test]
+  fn gemm_padded_k() {
+    // k = 40 is padded to 64 at load; input rows are 64 wide with zeros after 40, as from im2col.
+    let (n, k, m) = (64, 40, 37);
+    let half = |x: &f32| f16::from_f32(*x).to_f32();
+    let mut a = random(m * 64, 3);
+    a.chunks_mut(64).for_each(|row| row[k..].fill(0.0));
+    for (ty, bytes) in weights(n, k).into_iter().take(2) {
+      let file = Gguf::with_tensors(&[("w", &[k, n], ty, &bytes)]);
+      let t = file.tensor("w", &[k, n]).unwrap();
+      let wf: Vec<f32> = t.to_f32().unwrap().iter().map(half).collect();
+      for gpu in gpus() {
+        let l = gpu.linear(std::slice::from_ref(&t), &[]).unwrap();
+        let ar: Vec<f32> =
+          if gpu.fast.gemm.is_some() { a.iter().map(half).collect() } else { a.clone() };
+        let want: Vec<f32> = (0..m * n)
+          .map(|i| (0..k).map(|x| ar[i / n * 64 + x] * wf[i % n * k + x]).sum())
+          .collect();
+        let ab = up(gpu, &a);
+        let got = run(gpu, &vec![0.0; m * n], |p, c| p.gemm(&ab, &l, c, m, Epilogue::Bias));
         assert_close(&got, &want);
       }
     }

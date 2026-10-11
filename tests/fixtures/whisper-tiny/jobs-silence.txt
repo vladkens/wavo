@@ -1,0 +1,3 @@
+text: See you next time!
+segments: 1
+  [   0.00 ->    2.00] See you next time!

@@ -100,9 +100,6 @@ impl Whisper {
         bail!("unsupported shape: d_model {d}, {heads} heads, {} positions", dec.context);
       }
     }
-    if !(3 * enc.mels).is_multiple_of(32) {
-      bail!("{} mels: conv0's 3·mels inputs must be a multiple of 32", enc.mels);
-    }
     let tok = Tokenizer::new(g)?;
     if tok.len() != dec.vocab {
       bail!("vocabulary of {} tokens, decoder.vocab_size {}", tok.len(), dec.vocab);
@@ -116,9 +113,13 @@ impl Whisper {
       suppress: list("stt.whisper.suppress_tokens")?,
       begin_suppress: list("stt.whisper.begin_suppress_tokens")?,
     };
-    let languages = (g.array::<&str>("general.languages")?.iter())
-      .map(|code| tok.find(&format!("<|{code}|>")))
-      .collect::<Option<Vec<_>>>();
+    // English-only (`.en`) models have no language or task tokens: they prompt with SOT alone.
+    let languages = match g.get::<bool>("stt.capability.lang_detect")? {
+      true => (g.array::<&str>("general.languages")?.iter())
+        .map(|code| tok.find(&format!("<|{code}|>")))
+        .collect::<Option<Vec<_>>>(),
+      false => Some(Vec::new()),
+    };
     let Some(languages) = languages else { bail!("a language of general.languages has no token") };
     let all = [&ids.suppress[..], &ids.begin_suppress, &languages, &[ids.eot, no_timestamps]];
     if all.iter().flat_map(|v| v.iter()).any(|&i| i >= dec.vocab) {
@@ -175,14 +176,17 @@ impl Whisper {
       let mut chunk = mel[seek * mels..(seek + frames) * mels].to_vec();
       chunk.resize(window * mels, 0.0);
       let sot = self.window(&mut a, Some(&chunk), window / 2)?;
-      // The first of the highest.
-      let first = self.languages[0];
-      let language = *language.get_or_insert_with(|| {
-        self.languages.iter().fold(first, |best, &id| if sot[id] > sot[best] { id } else { best })
-      });
       let no_speech = search::probability(&sot, self.no_speech);
-      let prompt = [self.sot, language, self.transcribe];
-      let logits = self.steps(&mut a, &prompt[1..], 1)?;
+      let prompt = match self.languages.first() {
+        Some(&first) => {
+          // Detected on the first window: the first of the highest.
+          let best = |best: usize, &id: &usize| if sot[id] > sot[best] { id } else { best };
+          let language = *language.get_or_insert_with(|| self.languages.iter().fold(first, best));
+          vec![self.sot, language, self.transcribe]
+        }
+        None => vec![self.sot],
+      };
+      let logits = if prompt.len() > 1 { self.steps(&mut a, &prompt[1..], 1)? } else { sot };
       let (generated, logprob) =
         search::decode(&self.ids, logits, prompt.len(), no_speech > NO_SPEECH, |token, pos| {
           self.steps(&mut a, &[token], pos)
