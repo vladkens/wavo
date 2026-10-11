@@ -52,6 +52,7 @@ MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
 	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 whisper-large-v3-turbo
 # CI downloads and tests (by these names in tests/models.rs) only the smallest model of each
 # family; switch when a smaller one is added (e.g. whisper-small). `make test` covers them all.
+# CI caches the downloads under a key made from this line, so keep it on one line.
 CI_MODELS := gigaam-v3-e2e-rnnt parakeet-tdt-0.6b-v3 whisper-large-v3-turbo
 CI_TESTS := gigaam_v3_e2e_rnnt parakeet_tdt_v3 whisper_large_v3_turbo
 REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944

@@ -61,10 +61,8 @@ pub fn resolve(arg: &str) -> Result<Source> {
     .map(|n| (distance(arg, n), n))
     .min()
     .filter(|&(d, n)| d <= (n.len() / 3).max(2));
-  match closest {
-    Some((_, n)) => bail!("unknown model {arg:?}, did you mean {n}? Known models: {names}"),
-    None => bail!("unknown model {arg:?}. Known models: {names}"),
-  }
+  let hint = closest.map_or(".".into(), |(_, n)| format!(", did you mean {n}?"));
+  bail!("unknown model {arg:?}{hint} Known models: {names}")
 }
 
 /// Levenshtein distance.
@@ -83,52 +81,18 @@ fn distance(a: &str, b: &str) -> usize {
   row[b.len()]
 }
 
-/// The model file's `general.architecture` (`whisper`, `gigaam`, …), from its GGUF metadata:
-/// the key-value pairs are read in order, skipping other values, until the key turns up.
+/// The model file's `general.architecture` (`whisper`, `gigaam`, …). The published files have it
+/// first, as gguf-py writes it: after the magic, version and two counts (24 bytes) come the key's
+/// length, the key, its type (8, a string) and the value's length.
 pub fn architecture(path: &Path) -> Option<String> {
-  let mut f = std::io::BufReader::new(std::fs::File::open(path).ok()?);
-  let mut magic = [0; 4];
-  f.read_exact(&mut magic).ok()?;
-  (magic == *b"GGUF").then_some(())?;
-  let (_version, _tensors, kvs) = (int::<4>(&mut f)?, int::<8>(&mut f)?, int::<8>(&mut f)?);
-  for _ in 0..kvs {
-    let key = string(&mut f)?;
-    let ty = int::<4>(&mut f)?;
-    if key == b"general.architecture" && ty == 8 {
-      return String::from_utf8(string(&mut f)?).ok();
-    }
-    skip(&mut f, ty)?;
-  }
-  None
-}
-
-/// A little-endian unsigned integer of `N` bytes.
-fn int<const N: usize>(f: &mut impl Read) -> Option<u64> {
-  let mut b = [0; 8];
-  f.read_exact(&mut b[..N]).ok()?;
-  Some(u64::from_le_bytes(b))
-}
-
-fn string(f: &mut impl Read) -> Option<Vec<u8>> {
-  let mut s = vec![0; int::<8>(f)? as usize];
-  f.read_exact(&mut s).ok()?;
-  Some(s)
-}
-
-/// Skips one GGUF value of type `ty`: scalars 0–7 and 10–12, a string 8, an array 9.
-fn skip(f: &mut impl Read, ty: u64) -> Option<()> {
-  match ty {
-    0 | 1 | 7 => int::<1>(f).map(drop),
-    2 | 3 => int::<2>(f).map(drop),
-    4..=6 => int::<4>(f).map(drop),
-    10..=12 => int::<8>(f).map(drop),
-    8 => string(f).map(drop),
-    9 => {
-      let (ty, n) = (int::<4>(f)?, int::<8>(f)?);
-      (0..n).try_for_each(|_| skip(f, ty))
-    }
-    _ => None,
-  }
+  let mut f = std::fs::File::open(path).ok()?;
+  let mut head = [0; 64];
+  f.read_exact(&mut head).ok()?;
+  let key = [&20u64.to_le_bytes(), &b"general.architecture"[..], &8u32.to_le_bytes()].concat();
+  (head[..4] == *b"GGUF" && head[24..56] == key).then_some(())?;
+  let mut name = vec![0; u64::from_le_bytes(head[56..].try_into().ok()?) as usize];
+  f.read_exact(&mut name).ok()?;
+  String::from_utf8(name).ok()
 }
 
 pub fn gb(bytes: u64) -> String {
@@ -154,25 +118,31 @@ mod tests {
 
   #[test]
   fn architecture_from_the_header() {
-    let mut gguf = b"GGUF\x03\0\0\0".to_vec();
-    gguf.extend(0u64.to_le_bytes()); // tensors
-    gguf.extend(2u64.to_le_bytes()); // keys
-    // A description that mentions the key comes first and must not match.
-    gguf.extend(19u64.to_le_bytes());
-    gguf.extend(b"general.description");
-    gguf.extend(8u32.to_le_bytes());
-    gguf.extend(27u64.to_le_bytes());
-    gguf.extend(b"has a general.architecture!");
-    gguf.extend(20u64.to_le_bytes());
-    gguf.extend(b"general.architecture");
-    gguf.extend(8u32.to_le_bytes());
-    gguf.extend(7u64.to_le_bytes());
-    gguf.extend(b"whisper");
+    let gguf = |keys: &[(&str, &str)]| {
+      let mut gguf = b"GGUF\x03\0\0\0".to_vec();
+      gguf.extend(0u64.to_le_bytes()); // tensors
+      gguf.extend((keys.len() as u64).to_le_bytes());
+      for (key, value) in keys {
+        gguf.extend((key.len() as u64).to_le_bytes());
+        gguf.extend(key.as_bytes());
+        gguf.extend(8u32.to_le_bytes());
+        gguf.extend((value.len() as u64).to_le_bytes());
+        gguf.extend(value.as_bytes());
+      }
+      gguf
+    };
     let path = std::env::temp_dir().join(format!("wavo-arch-{}.gguf", std::process::id()));
-    std::fs::write(&path, &gguf).unwrap();
-    assert_eq!(architecture(&path).as_deref(), Some("whisper"));
-    std::fs::write(&path, b"GGUF").unwrap();
-    assert_eq!(architecture(&path), None);
+    let arch = |bytes: &[u8]| {
+      std::fs::write(&path, bytes).unwrap();
+      architecture(&path)
+    };
+    let description = ("general.description", "has a general.architecture!");
+    let whisper = ("general.architecture", "whisper");
+    assert_eq!(arch(&gguf(&[whisper])).as_deref(), Some("whisper"));
+    assert_eq!(arch(&gguf(&[whisper, description])).as_deref(), Some("whisper"));
+    // Only the first key counts, as gguf-py writes it.
+    assert_eq!(arch(&gguf(&[description, whisper])), None);
+    assert_eq!(arch(b"GGUF"), None);
     std::fs::remove_file(path).unwrap();
   }
 

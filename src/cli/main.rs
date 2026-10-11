@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
 use models::{MODELS, Source};
 
@@ -58,9 +58,8 @@ fn main() -> ExitCode {
 }
 
 fn cli(args: &[&str]) -> Result<()> {
-  let help = args.iter().any(|a| matches!(*a, "-h" | "--help"));
+  let help = matches!(args, [] | ["help"]) || args.iter().any(|a| matches!(*a, "-h" | "--help"));
   match args {
-    [] | ["help"] => println!("{}", usage()),
     _ if help => println!("{}", usage()),
     ["-V" | "--version"] => println!("wavo {}", env!("CARGO_PKG_VERSION")),
     ["run", args @ ..] => run(args)?,
@@ -101,10 +100,9 @@ fn run(args: &[&str]) -> Result<()> {
     match arg {
       "--json" | "--srt" if format.is_none() => format = Some(arg),
       "--segment" if segment.is_none() => {
-        let secs = args.next().and_then(|s| s.parse::<u32>().ok());
-        let secs = secs.filter(|&s| s == 0 || s >= 5).ok_or_else(|| {
-          anyhow!("--segment takes whole seconds: 0 for one pass, else at least 5")
-        })?;
+        let secs = args.next().and_then(|s| s.parse::<u32>().ok()).filter(|&s| s == 0 || s >= 5);
+        let secs =
+          secs.context("--segment takes whole seconds: 0 for one pass, else at least 5")?;
         segment = Some(secs.saturating_mul(1000));
       }
       _ if arg.starts_with("--") => bail!(USAGE),
@@ -128,8 +126,7 @@ fn run(args: &[&str]) -> Result<()> {
   bar.set_message("loading the model");
   let model = load(&path)?;
   let max_ms = segment.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
-  let max = if max_ms == 0 { usize::MAX } else { max_ms as usize * 16 };
-  let ranges = split::segments(&pcm, max);
+  let ranges = split::segments(&pcm, if max_ms == 0 { usize::MAX } else { max_ms as usize * 16 });
   let n = ranges.len();
   let parts = ranges.into_iter().enumerate().map(|(i, r)| {
     bar.set_message(format!("transcribing {}/{n}", i + 1));
@@ -137,13 +134,14 @@ fn run(args: &[&str]) -> Result<()> {
   });
   let (transcript, starts) = split::join(parts.collect::<Result<Vec<_>>>()?);
   bar.finish_and_clear();
+  let (tokens, ms) = (&transcript.tokens, (pcm.len() / 16) as u32);
   match format {
     Some("--json") => println!("{}", output::json(&transcript)),
     // Whisper times segments, not tokens.
     Some(_) if models::architecture(&path).as_deref() == Some("whisper") => {
-      print!("{}", output::srt_segments(&transcript.tokens, (pcm.len() / 16) as u32))
+      print!("{}", output::srt_segments(tokens, ms))
     }
-    Some(_) => print!("{}", output::srt(&transcript.tokens, &starts, (pcm.len() / 16) as u32)),
+    Some(_) => print!("{}", output::srt(tokens, &starts, ms)),
     None => println!("{}", transcript.text),
   }
   Ok(())
@@ -176,9 +174,7 @@ fn pull(args: &[&str]) -> Result<()> {
     }
   }
   let failed = results.iter().filter(|r| r.is_err()).count();
-  if failed > 0 {
-    bail!("{failed} of {} pulls failed", models.len());
-  }
+  ensure!(failed == 0, "{failed} of {} pulls failed", models.len());
   Ok(())
 }
 
@@ -200,33 +196,26 @@ fn list() -> Result<()> {
 fn rm(arg: &str) -> Result<()> {
   let m = named(arg)?;
   let freed = hfs::Cache::new().remove(&m.repo(), &m.file());
-  match freed.with_context(|| format!("removing {}", m.name))? {
-    Some(freed) => eprintln!("removed {} ({} freed)", m.name, models::gb(freed)),
-    None => bail!("{} is not downloaded", m.name),
-  }
+  let freed = freed.with_context(|| format!("removing {}", m.name))?;
+  let freed = freed.with_context(|| format!("{} is not downloaded", m.name))?;
+  eprintln!("removed {} ({} freed)", m.name, models::gb(freed));
   Ok(())
 }
 
 /// Load time, first call and warm median/min over `n` calls, in milliseconds.
 fn bench(model: &str, audio: &str, n: usize) -> Result<()> {
-  if n == 0 {
-    bail!("-n must be at least 1");
-  }
-  let pcm = audio::read(audio)?;
-  let path = model_path(model)?;
+  ensure!(n > 0, "-n must be at least 1");
+  let (pcm, path) = (audio::read(audio)?, model_path(model)?);
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
   let t = Instant::now();
   let model = load(&path)?;
   let load = ms(t);
-  let t = Instant::now();
-  model.transcribe(&pcm)?;
-  let first = ms(t);
-  let mut warm = (0..n)
-    .map(|_| {
-      let t = Instant::now();
-      model.transcribe(&pcm).map(|_| ms(t))
-    })
-    .collect::<Result<Vec<_>, _>>()?;
+  let mut calls = (0..=n).map(|_| {
+    let t = Instant::now();
+    model.transcribe(&pcm).map(|_| ms(t))
+  });
+  let first = calls.next().unwrap()?;
+  let mut warm = calls.collect::<Result<Vec<_>, _>>()?;
   warm.sort_by(f64::total_cmp);
   let median = (warm[(n - 1) / 2] + warm[n / 2]) / 2.0;
   println!(
