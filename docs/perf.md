@@ -68,9 +68,10 @@ GigaAM:
 
 Parakeet: conv_glu's depthwise taps as [tap][ch] (≤ 2% of GPU time, shared with GigaAM); GEMM tile
 shapes at M = 138 (1.5 vs 1.8 TFLOP/s at M = 442 before the f16 64×64 GEMM; re-profile first).
-Core ML's GPU path runs FluidAudio's V3 encoder (F16 activations, 6-bit weights) on a 15 s
-window in 103 ms, wavo's whole call on 15 s takes 168: profile where the gap is. An opt-in ANE
-backend for the Conformer families (31 ms per window, a third of the energy) is costed in [Other
+FluidAudio on Core ML's GPU path (F16 activations, 6-bit weights) runs V3 end to end 8–15% faster
+than wavo (jfk 134 vs 145, dots 372 vs 437 ms); its encoder alone takes 103 ms per 15 s window:
+time wavo's encoder on the same window to find the gap. An opt-in ANE backend for the Conformer
+families (31 ms per window, a third of the energy) is costed in [Other
 engines](plans/20261010-other-engines.md).
 
 Whisper, open in [the Whisper plan](plans/completed/20261010-whisper.md) (Task 6): decoder gemv bandwidth

@@ -104,9 +104,11 @@ decoder 2.1 s.
 - Whisper on the ANE is no win on the M2: WhisperKit is 1.4–1.8× slower than wavo and uses
   ~15% more energy. The ANE runs Whisper's encoder (1280 wide, 1500 frames) at ~1.6 TFLOP/s,
   slower than the GPU, and its decoder step is 4× wavo's; the CPU draws 7–8 W driving it.
-- Both Core ML engines keep a CPU busy at 5–8 W around the ANE's 2–4 W, so the ANE's saving is
-  only as large as the speedup. The process footprint leaves out what Core ML maps from the model
-  files and the ANE's own memory (RSS 1.5–2.6 GB for WhisperKit), so peaks don't compare.
+- Both Core ML engines keep a CPU busy at 5–8 W around the ANE's 2–4 W, so their total draw
+  (9.3–9.9 W) is only somewhat below wavo's (10.5–15 W): most of the saving comes from the
+  speedup, and WhisperKit's lower draw doesn't make up for being slower. The process footprint
+  leaves out what Core ML maps from the model files and the ANE's own memory (RSS 1.5–2.6 GB for
+  WhisperKit), so peaks don't compare.
 - Load: the first Core ML load compiles for the ANE (6.9 s Whisper, 16.4 s Parakeet); the OS
   caches the result by model path and configuration, so a moved or updated model compiles again.
   Cached loads are 0.1–0.8 s, but WhisperKit's first ANE call still costs up to 2 s more than a
