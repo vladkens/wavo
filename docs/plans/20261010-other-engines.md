@@ -85,6 +85,9 @@ discarded) subtracted, times the median call; two to four clean rounds. W are th
 | | WhisperKit ANE | 7.3–8.0 / 0.2 / 1.7–1.9 | 38–41 |
 | | WhisperKit GPU | 1.0–1.7 / 9.7–10.2 / 0 | 58–62 |
 
+In battery terms: 5 min of audio costs ~70 J with wavo and ~14 J on the ANE, against the ~190 kJ
+(52.6 Wh) of an M2 MacBook Air's battery: 0.04% against 0.007% of a charge.
+
 One Core ML model at a time on zero inputs (`MLModel` from Swift, median of 20, ms): Parakeet
 encoder per 15 s window ANE 31, GPU 103 (wavo's whole call on the 15 s `noise.wav`: 168); its
 decoder and joint steps 0.19 and 0.23 on either. Whisper encoder per 30 s window ANE 1434 (the
