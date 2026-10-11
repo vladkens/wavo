@@ -334,7 +334,7 @@ Decided with the person:
       (`enc.conv1.out`, `enc.groupnorm.out`, `enc.conv2.out`, `enc.conv3.out`,
       `enc.block.N.out`, `enc.final`, `dec.block.N.out`, `dec.logits_raw`), then try the
       reference's precision: F32 caches without q rounding, then the encoder GEMMs' `a` to f16.
-- [ ] Line count of core + Moonshine; above ~3.2k, simplify first.
+- [x] Line count of core + Moonshine; above ~3.2k, simplify first.
 
 ### Task 5: first benchmark
 
@@ -372,9 +372,9 @@ Decided with the person:
 ## Result
 
 Phase 15 (#30): fixtures exact on the M2 (8×8 tier), the RTX 4060 (16×16 GEMM tier of #28,
-Vulkan), the N100 (portable, Vulkan) and the M1. Core + Moonshine is 3.71k non-test lines (core
-3.02k, shared transformer 0.28k, `src/moonshine/` 0.41k): the Task 4 simplification is still
-open.
+Vulkan), the N100 (portable, Vulkan) and the M1. Non-test lines after the simplification: the
+core Moonshine runs 2.60k (all of the core 3.05k, against 2.89k on main), the shared transformer
+0.28k and `src/moonshine/` 0.38k, so core + Moonshine is 3.26k (3.71k counting all of the core).
 
 Baseline, warm median of 20 calls (reference: 10), ms. The M2 was busy with another job (load
 average 2–3), so its numbers are rough: the reference ran 2.8× slower there than its M4 Max
