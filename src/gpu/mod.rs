@@ -332,17 +332,29 @@ impl Gpu {
   /// bias with `dual` more values has the first `dual` outputs written again after the others
   /// with those biases (one q with two position biases).
   pub fn linear(&self, weights: &[Tensor], bias: &[f32]) -> Result<Linear> {
+    self.upload_linear(weights, bias, false)
+  }
+
+  /// A conv1d weight `[kernel, ch, out]` as a linear layer over the columns of `Pass::im2col`,
+  /// whose rows are padded with zeros to a multiple of 32, the GEMM's k step. W's rows get the
+  /// same zero columns (an 80-mel conv: 240 → 256) in F32, which is exact as the GEMM rounds W to
+  /// f16 either way.
+  pub fn conv(&self, weight: Tensor, bias: &[f32]) -> Result<Linear> {
+    self.upload_linear(&[weight], bias, true)
+  }
+
+  fn upload_linear(&self, weights: &[Tensor], bias: &[f32], pad: bool) -> Result<Linear> {
     let w0 = &weights[0];
     let k = w0.len() / w0.dims.last().unwrap();
     let rows = weights.iter().map(|w| w.dims.last().unwrap()).sum::<usize>();
     if weights.iter().any(|w| w.ty != w0.ty || w.len() / w.dims.last().unwrap() != k) {
       bail!("stacked weights differ in type or shape");
     }
+    if !pad && !k.is_multiple_of(32) {
+      bail!("linear layer {k}→{rows}: needs k % 32 == 0");
+    }
     // Buffers start zeroed, so the padding rows only need the space.
     let n = rows.next_multiple_of(64);
-    // The GEMM steps over k by 32. Another k (an 80-mel conv: 240) gets zero columns up to a
-    // multiple of 32 in F32, which is exact as the GEMM rounds W to f16 either way; its inputs are
-    // padded to match (`Pass::im2col`).
     let kp = k.next_multiple_of(32);
     // The file is streamed in pieces of 8192 Q8_0 blocks straight into the mapped buffers.
     const PIECE: usize = 34 << 13;
@@ -1085,6 +1097,7 @@ mod tests {
   #[test]
   fn gemm_padded_k() {
     // k = 40 is padded to 64 at load; input rows are 64 wide with zeros after 40, as from im2col.
+    // A linear layer refuses it: its inputs are not padded.
     let (n, k, m) = (64, 40, 37);
     let half = |x: &f32| f16::from_f32(*x).to_f32();
     let mut a = random(m * 64, 3);
@@ -1094,7 +1107,8 @@ mod tests {
       let t = file.tensor("w", &[k, n]).unwrap();
       let wf: Vec<f32> = t.to_f32().unwrap().iter().map(half).collect();
       for gpu in gpus() {
-        let l = gpu.linear(std::slice::from_ref(&t), &[]).unwrap();
+        assert!(gpu.linear(std::slice::from_ref(&t), &[]).is_err());
+        let l = gpu.conv(file.tensor("w", &[k, n]).unwrap(), &[]).unwrap();
         let ar: Vec<f32> =
           if gpu.fast.gemm.is_some() { a.iter().map(half).collect() } else { a.clone() };
         let want: Vec<f32> = (0..m * n)

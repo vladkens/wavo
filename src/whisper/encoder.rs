@@ -84,9 +84,13 @@ impl Encoder {
       let threads: Vec<_> = (0..cfg.layers).map(|i| s.spawn(move || block(i))).collect();
       threads.into_iter().map(|t| t.join().unwrap()).collect::<Result<Vec<_>>>()
     })?;
+    let conv = |name: &str, ch: usize| {
+      let bias = g.tensor(&format!("{name}.bias"), &[d])?.to_f32()?;
+      gpu.conv(g.tensor(&format!("{name}.weight"), &[3, ch, d])?, &bias)
+    };
     Ok(Self {
-      conv0: linear("enc.conv.0".into(), &[3, cfg.mels, d])?,
-      conv1: linear("enc.conv.1".into(), &[3, d, d])?,
+      conv0: conv("enc.conv.0", cfg.mels)?,
+      conv1: conv("enc.conv.1", d)?,
       positions: g.tensor("enc.pos_emb.weight", &[d, cfg.frames])?.to_f32()?,
       blocks,
       norm: norm(gpu, g, "enc.final_norm", d)?,
