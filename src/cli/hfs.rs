@@ -17,9 +17,13 @@ use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
+
+/// Downloads that fail on the network resume this many more times.
+const RETRIES: u32 = 3;
 
 pub struct Cache {
   root: PathBuf,
@@ -78,10 +82,23 @@ impl Cache {
     main.into_iter().chain(self.snapshots(repo)).map(|s| s.join(file)).find(|p| p.exists())
   }
 
-  /// Downloads the file at `main` unless that revision is cached, as huggingface_hub does.
+  /// Downloads the file at `main` unless that revision is cached, as huggingface_hub does. A
+  /// dropped download resumes up to `RETRIES` more times, after 1, 2 and 4 s.
   pub fn pull(&self, repo: &str, file: &str, bars: &MultiProgress) -> Result<PathBuf> {
     let remote = head(repo, file)?;
-    self.install(repo, file, &remote, |part| download(&remote.url, part, remote.size, file, bars))
+    let fetch = |part: &Path| download(&remote.url, part, remote.size, file, bars);
+    self.install(repo, file, &remote, |part| {
+      for retry in 1..=RETRIES {
+        match fetch(part) {
+          Err(e) if transient(&e) => {
+            bars.suspend(|| eprintln!("retrying {file} ({retry}/{RETRIES}) after: {e:#}"));
+            std::thread::sleep(Duration::from_secs(1 << (retry - 1)));
+          }
+          result => return result,
+        }
+      }
+      fetch(part)
+    })
   }
 
   /// Holds `<root>/.locks/<repo folder>/<name>.lock` until the file is dropped.
@@ -237,11 +254,11 @@ fn download(url: &str, part: &Path, size: u64, file: &str, bars: &MultiProgress)
   let style =
     "{msg}: {percent:>3}% {decimal_bytes} / {decimal_total_bytes}, {decimal_bytes_per_sec}";
   let bar = ProgressBar::new(size).with_style(ProgressStyle::with_template(style)?);
-  let bar = bars.add(bar.with_message(file.to_string()));
+  let bar = bars.add(bar.with_message(file.to_string()).with_finish(ProgressFinish::AndClear));
   bar.set_position(done);
   bar.reset_eta(); // a resumed part doesn't count toward the speed
   let mut body = bar.wrap_read(resp.into_body().into_reader());
-  let got = io::copy(&mut body, &mut out).context("download interrupted, pull again to resume")?;
+  let got = io::copy(&mut body, &mut out).context("download interrupted")?;
   bar.finish();
   if plain {
     let (done, speed) = (done + got, mb(got) / bar.elapsed().as_secs_f64());
@@ -249,6 +266,18 @@ fn download(url: &str, part: &Path, size: u64, file: &str, bars: &MultiProgress)
     eprintln!("{file}: {pct:3}% {:.0} / {:.0} MB, {speed:.1} MB/s", mb(done), mb(size));
   }
   Ok(())
+}
+
+/// Whether a failed download may get further on another try: not after an HTTP 4xx or a disk
+/// error.
+fn transient(e: &anyhow::Error) -> bool {
+  use io::ErrorKind::{PermissionDenied, ReadOnlyFilesystem, StorageFull};
+  match e.downcast_ref() {
+    Some(ureq::Error::StatusCode(code)) => *code >= 500,
+    Some(_) => true,
+    None => (e.downcast_ref::<io::Error>())
+      .is_some_and(|e| !matches!(e.kind(), PermissionDenied | ReadOnlyFilesystem | StorageFull)),
+  }
 }
 
 /// The relative symlink the spec asks for. Where symlinks are unavailable (Windows without
@@ -265,8 +294,6 @@ fn link(blob: &Path, pointer: &Path, etag: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-  use std::time::Duration;
-
   use super::*;
 
   fn temp(name: &str) -> Cache {
@@ -305,6 +332,16 @@ mod tests {
     }
     let cache = Cache { root: PathBuf::from("/c"), from: Some("HF_HUB_CACHE") };
     assert_eq!(cache.describe(), "/c (set by HF_HUB_CACHE)");
+  }
+
+  #[test]
+  fn retries_only_what_may_pass() {
+    let status = |code| anyhow::Error::from(ureq::Error::StatusCode(code)).context("download");
+    assert!(transient(&status(503)) && !transient(&status(404)));
+    let io = |kind| anyhow::Error::from(io::Error::from(kind)).context("download interrupted");
+    assert!(transient(&io(io::ErrorKind::UnexpectedEof)));
+    assert!(!transient(&io(io::ErrorKind::StorageFull)));
+    assert!(transient(&ureq::Error::Io(io::ErrorKind::ConnectionReset.into()).into()));
   }
 
   #[cfg(unix)]
