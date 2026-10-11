@@ -190,7 +190,9 @@ mod tests {
       for block in fixture.strip_prefix("## ").unwrap().split("\n## ") {
         let mut lines = block.lines().skip(1).filter(|l| !l.is_empty());
         let text = lines.next().unwrap().strip_prefix("text: ").unwrap().replace("(empty)", "");
-        let segments = lines.next().is_some_and(|l| l.starts_with("segments: "));
+        // A block of text alone has no pieces to check.
+        let Some(head) = lines.next() else { continue };
+        let segments = head.starts_with("segments: ");
         // `  [   0.96 ->    1.00] p=0.000 ▁В`, with `▁` sometimes printed as a space, or a
         // Whisper segment `  [   0.00 ->   10.40] text`, one piece here.
         let pieces: Vec<String> = (lines.map(|l| l.split_once("] ").unwrap().1))

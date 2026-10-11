@@ -25,8 +25,15 @@ fi
 for s in "$@"; do
   "$cli" -m "$model" --timestamps "$timestamps" "3rd/transcribe.cpp/samples/$s.wav" \
     > "$tmp/raw" 2> /dev/null || { echo "$s: transcribe-cli failed" >&2; exit 1; }
-  awk '/^text: /{print} /^(tokens|segments): /{t=1; print; next} t && /^  \[/{print}' "$tmp/raw" \
-    > "$tmp/block"
+  # From `text:` to `realtime:` every line must be known, so the filter below drops no part of
+  # the transcript, such as a second line of text.
+  awk '/^text: /{r=1; next} /^  realtime: /{r=0}
+    r && !/^(detected-language|words|tokens|segments): |^  \[/{print "unexpected: " $0; exit 1}' \
+    "$tmp/raw" >&2 || { echo "$s: unexpected output from transcribe-cli" >&2; exit 1; }
+  # The text and the one list TIMESTAMPS asks for: with `token` the reference also prints segments
+  # and words for some models (Parakeet on jfk).
+  awk -v list="${timestamps}s: " '/^text: /{print} /^[^ ]/{t=0} t && /^  \[/{print}
+    index($0, list) == 1{t=1; print}' "$tmp/raw" > "$tmp/block"
   if ! head -n 1 "$tmp/block" | grep -q '^text: ' \
     || grep -v -e '^text: ' -e '^tokens: ' -e '^segments: ' -e '^  ' "$tmp/block" > /dev/null; then
     echo "$s: unexpected output from transcribe-cli" >&2
