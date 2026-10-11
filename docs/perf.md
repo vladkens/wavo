@@ -251,8 +251,8 @@ poll. One round; first call and load from the fresh process of each.
   reference's encoder 160–167 ms, its decoder 228–253 ms of a 400–435 ms call). Load is on par
   for tiny and base, 18–50% below from small on; the working set is 112–529 MiB against
   130–1129, the weights sitting in VRAM.
-- All 13 Whisper models' fixtures pass there (one test at a time: 13 models loading at once
-  overrun the 8 GB of VRAM). whisper-base's `ru-long` was replaced by `dots`: on Windows the
+- All 13 Whisper models' fixtures pass there. Loaded all at once they overran the 8 GB of VRAM,
+  so the model tests now take turns. whisper-base's `ru-long` was replaced by `dots`: on Windows the
   reference's Vulkan and CPU builds and wavo all give "внутренне конвертов" where Metal gives
   "внутри нет конвертов", a near-tie off Metal.
 

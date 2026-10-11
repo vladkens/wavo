@@ -4,6 +4,11 @@
 //! the test.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
+
+/// One model at a time: they share the GPU anyway, and several large ones at once overrun the
+/// memory of an 8 GB card.
+static GPU: Mutex<()> = Mutex::new(());
 
 /// The Q8_0 GGUF of `name` in the Hugging Face cache (`make models`), with the root resolved as
 /// the CLI does (`src/cli/hfs.rs`).
@@ -57,6 +62,7 @@ fn read_fixture(path: &Path) -> (String, Vec<(String, u32)>, bool) {
 }
 
 fn check(name: &str, samples: &[&str]) {
+  let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
   let root = Path::new(env!("CARGO_MANIFEST_DIR"));
   let model = wavo::Model::load(model_path(name)).unwrap();
   for sample in samples {
