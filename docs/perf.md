@@ -22,8 +22,9 @@ portable path (`Pass::layers`). The fast kernels (cooperative-matrix GEMM on f16
 Q8_0/F16 dequantized while staging and W rounded to f16 as the reference does, barrier-free flash
 attention with the output in registers, one subgroup per row for LayerNorm and the conv module)
 each turn on after a probe dispatch. On NVIDIA GPUs, which have 16×16 F16 matrices instead of
-8×8 F32 ones, only the GEMM is fast, on 16×16 fragments, and a GEMM of fewer than 16 such
-workgroups runs the portable one. The head's linear layer is the last GEMM: the joint's encoder
+8×8 F32 ones, the GEMM (a GEMM of fewer than 16 such workgroups runs the portable one) and flash
+attention (its own kernel, `flash_f16.wgsl`, on f16 operands) are fast; without cooperative
+matrices attention is the portable flash kernel. The head's linear layer is the last GEMM: the joint's encoder
 projection for RNN-T, the logits (rows padded to 64) for CTC. The RNN-T loop (LSTM, joint, argmax)
 runs on one CPU thread with NEON (AVX2 + FMA on x86) tiles that score two frames per pass over the
 joint weights; CTC is an argmax and collapse per frame.
@@ -95,10 +96,7 @@ Parakeet's fixed cost per call (`first_depthwise`, frames padded to 64); with th
 approval, since it changes arithmetic, an int8 GEMM (`dot4I8Packed`) on Q8_0 activations as the
 reference's CPU path does.
 
-GPUs with 16×16 F16 cooperative matrices ([plan](plans/completed/20261011-nvidia-fast.md)): flash
-attention on them, the largest gain left (on an RTX 4060 the portable attention is 471 of 633 ms
-of kernels on Whisper turbo, the reference's whole encoder 160 ms; it would round q, k, v and the
-probabilities to f16, which the fixtures must survive); Whisper's decoder on large models (gemv
+GPUs with 16×16 F16 cooperative matrices ([plan](plans/completed/20261011-nvidia-fast.md)): Whisper's decoder on large models (gemv
 140 + attend 115 ms on large-v3 `jfk`, the reference's whole decoder 249 ms); the GEMM under 16
 workgroups (split-K or a 64-wide tile); the tier on AMD (a Radeon 610M's driver crashed, see the
 Log; RDNA3 and newer drivers untested) and Intel Arc.
@@ -235,6 +233,17 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### Attention
 
+- 2026-10-12, Whisper, Moonshine and GigaAM, RTX 4060: flash attention on 16×16 F16 cooperative
+  matrices (`flash_f16.wgsl`, after ggml's `flash_attn_cm1.comp`): four subgroups take 64
+  queries, k and v staged as f16 per 64-key block, q and output fragments in registers, the
+  scores and f16 probabilities through shared memory (45 KB). A/B/A against the portable flash
+  kernel: whisper-turbo `jfk` 260 / 207 / 260, `ru-long` 602 / 495 / 603, large-v3 `jfk` 528 /
+  471 / 528, tiny 31.2 / 29.2 / 30.1, GigaAM `ru-long` 75.2 / 70.4 / 75.0, Moonshine `dots` tiny
+  114.9 / 112.2 / 114.7, base 194.5 / 190.3 / 194.4 ms; fixtures exact. Kept. Turbo `jfk` per
+  call: attention 86 → 39 ms (~9.5 TFLOP/s).
+  - A row maximum that moves only when passed by more than 8 (flash.wgsl's, fewer rescales):
+    the same speed, but GigaAM e2e-ctc `ru-short` emitted a token a frame late. Rejected for the
+    exact maximum.
 - 2026-10-12, Whisper, Moonshine and GigaAM, portable flash attention for heads of ≤ 64 dims (a
   multiple of 4) without relative positions: a workgroup of 128 threads takes 32 queries of one
   head and walks the keys in blocks of 32 (q, k transposed and v in shared memory, 21 KB), each

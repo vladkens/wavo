@@ -93,8 +93,9 @@ impl Kernels {
 }
 
 /// The fast GEMMs (per weight type 4F- and 8F-row tiles), LayerNorm, conv_glu, flash attention and
-/// relative attention, before their probes. Only the GEMM runs with F = 16: the flash kernels need
-/// 8×8 F32 matrices, and on an RTX 4060 the fast LayerNorm and conv_glu were slower.
+/// relative attention, before their probes. With F = 16 only the GEMM and flash attention (its own
+/// kernel on f16 operands): relative attention needs 8×8 F32 matrices, and on an RTX 4060 the fast
+/// LayerNorm and conv_glu were slower.
 type FastPipelines = (Vec<Pipeline>, [Option<Pipeline>; 4]);
 
 /// Compiles the fast kernels for F×F cooperative matrices; `None` if any fails.
@@ -123,7 +124,10 @@ fn compile_fast(device: &wgpu::Device, f: usize) -> Option<FastPipelines> {
       pipeline(device, &relative, "attention", &[]),
     ]
   });
-  let kernels = kernels.map(|k| k.map(Some)).unwrap_or_default();
+  let kernels = kernels.map(|k| k.map(Some)).unwrap_or_else(|| {
+    let flash = module(device, include_str!("flash_f16.wgsl"));
+    [None, None, Some(pipeline(device, &flash, "flash", &[])), None]
+  });
   let errors = scopes.into_iter().rev().filter_map(|s| pollster::block_on(s.pop())).count();
   (errors == 0).then_some((gemm, kernels))
 }
@@ -522,9 +526,12 @@ impl Gpu {
   }
 
   fn flash(&self, head_dim: usize, relative: bool) -> Option<&Pipeline> {
-    let (k, min, max) =
-      if relative { (&self.fast.relative, 8, 128) } else { (&self.fast.attention, 32, 64) };
-    k.as_ref().filter(|_| (min..=max).contains(&head_dim) && head_dim.is_multiple_of(8))
+    let (k, min, max, step) = match (relative, self.fast.size) {
+      (true, _) => (&self.fast.relative, 8, 128, 8),
+      (false, 8) => (&self.fast.attention, 32, 64, 8),
+      (false, _) => (&self.fast.attention, 4, 64, 4),
+    };
+    k.as_ref().filter(|_| (min..=max).contains(&head_dim) && head_dim.is_multiple_of(step))
   }
 
   /// Whether the portable path has a flash kernel for heads of `head_dim`.
@@ -628,9 +635,9 @@ fn adapter() -> Result<wgpu::Adapter> {
 
 /// F of the F×F cooperative matrices the fast kernels use on `adapter`, which needs 32-lane
 /// subgroups: 8 with 8×8 matrices of F32 and of F16 into F32 (Apple GPUs; all fast kernels), else
-/// 16 with 16×16 F16 into F32 (only the GEMM), on NVIDIA only so far. AMD's Windows driver
-/// (25.10, Radeon 610M) reports the same 16×16 shape but crashes the process while compiling any
-/// shader that uses it, which no probe can catch; other drivers are untested.
+/// 16 with 16×16 F16 into F32 (the GEMM and flash attention), on NVIDIA only so far. AMD's Windows
+/// driver (25.10, Radeon 610M) reports the same 16×16 shape but crashes the process while compiling
+/// any shader that uses it, which no probe can catch; other drivers are untested.
 fn fast_size(adapter: &wgpu::Adapter) -> Option<usize> {
   use wgpu::CooperativeScalarType::{F16, F32};
   let info = adapter.get_info();
@@ -1013,10 +1020,11 @@ mod tests {
       let fast = Gpu::new(true).unwrap();
       let f = &fast.fast;
       let ops = [&f.layer_norm, &f.conv_glu, &f.attention, &f.relative];
-      // With 16×16 matrices only the GEMM.
+      // With 16×16 matrices only the GEMM and flash attention.
       if let Some(size) = fast_size(&adapter().unwrap()) {
+        let want = [size == 8, size == 8, true, size == 8];
         assert!(
-          f.gemm.is_some() && ops.iter().all(|k| k.is_some() == (size == 8)),
+          f.gemm.is_some() && ops.iter().zip(want).all(|(k, w)| k.is_some() == w),
           "a fast kernel failed its probe"
         );
       }
@@ -1049,10 +1057,14 @@ mod tests {
   }
 
   fn assert_close(got: &[f32], want: &[f32]) {
+    assert_near(got, want, 2e-5);
+  }
+
+  fn assert_near(got: &[f32], want: &[f32], tolerance: f32) {
     assert_eq!(got.len(), want.len());
     let scale = want.iter().fold(1f32, |m, x| m.max(x.abs()));
     for (i, (g, w)) in got.iter().zip(want).enumerate() {
-      assert!((g - w).abs() <= 2e-5 * scale, "[{i}]: {g} vs {w}");
+      assert!((g - w).abs() <= tolerance * scale, "[{i}]: {g} vs {w}");
     }
   }
 
@@ -1411,9 +1423,11 @@ mod tests {
     for (t, hd) in [(37usize, 48), (100, 48), (100, 56), (5, 36), (70, 52), (100, 64), (40, 80)] {
       let heads = 2;
       let d = heads * hd;
-      // The fast path reads rows up to t rounded up to 64.
-      let qk = random(t.next_multiple_of(64) * 2 * d, 15);
-      let v = random(t.next_multiple_of(64) * d, 16);
+      // The fast path reads rows up to t rounded up to 64. Values exact in f16, as the 16×16 tier
+      // rounds them (and the probabilities) to f16.
+      let half = |x: f32| f16::from_f32(x).to_f32();
+      let qk: Vec<f32> = random(t.next_multiple_of(64) * 2 * d, 15).into_iter().map(half).collect();
+      let v: Vec<f32> = random(t.next_multiple_of(64) * d, 16).into_iter().map(half).collect();
       let scale = 1.0 / (hd as f32).sqrt();
       let mut want = vec![0.0; t * d];
       for h in 0..heads {
@@ -1438,7 +1452,7 @@ mod tests {
         let got = run(gpu, &vec![0.0; t * d], |p, o| {
           p.attention(&qb, Some(&vb), None, &s, o, t, heads, hd)
         });
-        assert_close(&got, &want);
+        assert_near(&got, &want, if gpu.fast.size == 16 { 1e-3 } else { 2e-5 });
       }
     }
   }

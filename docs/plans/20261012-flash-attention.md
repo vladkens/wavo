@@ -11,7 +11,7 @@ kernel for any GPU, then fast tiers on cooperative matrices where they measure f
 - [x] Portable flash kernel (no scores in memory) for attention without relative positions:
       Whisper and Moonshine encoders, GigaAM without the fast tier; fixtures on the M2, the RTX
       4060 and the N100.
-- [ ] Fast tier on 16×16 F16 cooperative matrices (NVIDIA); A/B/A against the portable kernel.
+- [x] Fast tier on 16×16 F16 cooperative matrices (NVIDIA); A/B/A against the portable kernel.
 - [ ] Apple's 8×8 tier: the same kernel against `flash.wgsl`, kept where faster.
 - [ ] Decoder attention (self and cross) over key blocks, if the profile asks for it.
 - [ ] Parakeet's relative attention: measured or reasoned out.
