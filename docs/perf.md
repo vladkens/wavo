@@ -270,7 +270,8 @@ tool at ~320% and a VM at ~155% of a core), so a sanity check only:
 
 - Warm and first call are 8–30% faster on all five. Load is slower for the small models (base
   103 vs 62 ms: wavo's fixed GPU setup and warm-up window) and for large-v3 (1009 vs 829 ms,
-  1.67 GB of weights); on par for medium. Not measured again on a quiet machine.
+  1.67 GB of weights); on par for medium. On a quiet machine only base was slower, by 9 ms; see
+  "Load time".
 - M1: the texts of tiny, base, small, tiny.en and base.en (18 clips, `wavo run --segment 0` with
   the M2's binary) equal the fixtures. N100 (mele): tiny and small fixtures pass.
 
@@ -420,8 +421,8 @@ in 0.2–0.4 s while Metal compiles and caches the new shaders.
 
 How it runs: the GGUF header is read at load and each tensor is streamed from the file straight
 into weight buffers that are mapped on unified memory (no staging copy); weights stay Q8_0/F16
-on the GPU. With the fast kernels, load ends with an encoder run on 8 silent frames to pay the
-GPU's first use of pipelines and weights (the portable path skips it). Per call: CPU log-mel
+on the GPU. Load runs nothing on the GPU but the kernel probes: an encoder run on silent frames
+at load cost more than it saved in the first call (see "Load time"). Per call: CPU log-mel
 (own FFT, one frame at a time), then the encoder over an arena sized for the longest input so
 far, with bind groups cached per dispatch: one submission with the fast kernels, one per layer on
 the portable path (`Pass::layers`). Fast kernels (cooperative-matrix GEMM with Q8_0/F16 dequantized while
@@ -669,6 +670,19 @@ skip, NEON decoder) and the research list are done or rejected; see the Log.
 ## Log
 
 Add entries here, newest first: date, model, idea, before → after (median, A/B/A), verdict, why.
+
+- 2026-10-11, all models, no warm-up at load (an encoder run on 8 silent frames, for Whisper a
+  64-frame window and a decoder step). M2, load average 2–3, the previous entry (A) and this
+  (B), A/B/A interleaved per round, 7 rounds, `jfk`; load / first call / load + first, ms:
+  whisper-base 44.6 / 121.7 / 165.8 → 32.0 / 128.5 / 160.5 (second A 45.0 / 121.6 / 166.6),
+  small 76.1 / 368.6 / 444.7 → 49.1 / 381.9 / 431.6, large-v3 278.6 / 1976 / 2255 → 163.5 /
+  2016 / 2180, turbo 179.2 / 1309 / 1486 → 101.1 / 1328 / 1430, GigaAM e2e-rnnt 67.8 / 94.4 /
+  162.1 → 43.8 / 98.1 / 142.8, Parakeet V3 147.8 / 148.6 / 298.4 → 88.4 / 164.9 / 253.3; on `ru`
+  (4.5 s) GigaAM 70.1 / 44.5 / 114.5 → 46.5 / 50.1 / 96.5, Parakeet V3 150.1 / 72.0 / 222.8 →
+  95.8 / 83.9 / 179.9. Kept: load + first call is 5–89 ms lower on every model, the first call
+  4–40 ms higher. The warm-up cost 12–115 ms at load and saved the first call only 4–40: its
+  arena, sized for 8 frames, is allocated again by the first call, and since the 2026-10-09 entry
+  below (first call −41 ms for +12 ms of load) the weights are mapped and the kernels changed.
 
 - 2026-10-11, all models, load: four fixed costs and a copy (see "Load time"). M2, load average
   3–6, `wavo bench -n 1` in a fresh process per sample, f663ede (A) and this (B) interleaved A/B/A

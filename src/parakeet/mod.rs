@@ -87,11 +87,6 @@ impl Parakeet {
     let joint = g.get::<u32>("stt.parakeet.joint.hidden")? as usize;
     let encoder = Encoder::new(&gpu, g, cfg, ch, joint)?;
     let decoder = Decoder::new(g, vocab.len(), blank)?;
-    // The GPU's first use of the pipelines and the weight memory: pay it here on 8 silent mel
-    // frames instead of in the first call (see `Gpu::warm_up`).
-    if gpu.warm_up() {
-      encoder.run(&gpu, &vec![0.0; 8 * MELS])?;
-    }
     Ok(Self { gpu, frontend: Frontend::new(), encoder, decoder, vocab, special })
   }
 

@@ -319,13 +319,6 @@ impl Gpu {
     }
   }
 
-  /// Whether a model should run once at load. The fast kernels save 20–40 ms on the first call
-  /// that way. The portable GEMM computes 64 rows even for one frame, so on an Intel N100 the
-  /// warm-up took 0.4 s (GigaAM) and 1 s (Parakeet) to save 10–20 ms.
-  pub fn warm_up(&self) -> bool {
-    self.fast.gemm.is_some()
-  }
-
   /// An uninitialized storage buffer of `len` f32s.
   pub fn buffer(&self, len: usize) -> Buffer {
     self.device.create_buffer(&wgpu::BufferDescriptor {

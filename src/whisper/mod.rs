@@ -138,7 +138,7 @@ impl Whisper {
       window: Vec::new(),
       steps: Vec::new(),
     };
-    let model = Self {
+    Ok(Self {
       sot: u("sot_token_id")?,
       transcribe: u("transcribe_token_id")?,
       no_speech: no_timestamps - 1,
@@ -150,13 +150,7 @@ impl Whisper {
       encoder,
       decoder,
       arena: Mutex::new(arena),
-    };
-    // The GPU's first use of the pipelines and the weight memory: pay it here on a short window
-    // instead of in the first call (see `Gpu::warm_up`).
-    if model.gpu.warm_up() {
-      model.window(&mut model.lock(), None, 64)?;
-    }
-    Ok(model)
+    })
   }
 
   fn lock(&self) -> std::sync::MutexGuard<'_, Arena> {
@@ -175,7 +169,7 @@ impl Whisper {
       let frames = (total - seek).min(window);
       let mut chunk = mel[seek * mels..(seek + frames) * mels].to_vec();
       chunk.resize(window * mels, 0.0);
-      let sot = self.window(&mut a, Some(&chunk), window / 2)?;
+      let sot = self.window(&mut a, &chunk)?;
       let no_speech = search::probability(&sot, self.no_speech);
       let prompt = match self.languages.first() {
         Some(&first) => {
@@ -215,14 +209,13 @@ impl Whisper {
     Ok(Transcript { text, tokens })
   }
 
-  /// Encodes a window of mel frames (or none: a warm-up over `t` frames), computes the cross K/V
-  /// and runs the decoder on SOT; returns its logits.
-  fn window(&self, a: &mut Arena, mel: Option<&[f32]>, t: usize) -> Result<Vec<f32>> {
+  /// Encodes a window of mel frames, computes the cross K/V and runs the decoder on SOT; returns
+  /// its logits.
+  fn window(&self, a: &mut Arena, mel: &[f32]) -> Result<Vec<f32>> {
     let Arena { enc, dec, read, window, .. } = a;
-    if let Some(mel) = mel {
-      self.gpu.write(&enc.mel, mel);
-    }
-    self.gpu.write(&enc.x, &self.encoder.positions[..t * self.encoder.cfg.d]);
+    let t = self.encoder.cfg.frames;
+    self.gpu.write(&enc.mel, mel);
+    self.gpu.write(&enc.x, &self.encoder.positions);
     self.gpu.run(window, &dec.logits, read, self.decoder.cfg.vocab, |p| {
       self.encoder.record(p, enc, t);
       self.decoder.record_cross(p, dec, &enc.y, &enc.h, t);
