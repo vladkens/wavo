@@ -29,9 +29,9 @@ Open:
   [Plan](plans/20261010-fast-build.md)
 - **Other engines.** Measure wavo against the other ways to run the same models on a Mac, not
   only transcribe.cpp. [Plan](plans/20261010-other-engines.md)
-- **GPU headroom on Parakeet.** Core ML on the same M2 GPU is 8–15% faster end to end (FluidAudio
-  GPU 134 vs wavo 145 ms on jfk, 372 vs 437 ms on dots). Profile our encoder against it and close
-  the gap.
+- **GPU headroom on Parakeet.** Core ML on the same M2 GPU takes 8–15% less time end to end
+  (FluidAudio GPU 134 vs wavo 145 ms on jfk, 372 vs 437 ms on dots). Profile our encoder against
+  it and close the gap.
 - **Neural Engine backend** (opt-in, macOS) for Parakeet, then GigaAM; not scheduled.
   [Plan](plans/20261011-ane.md)
 
