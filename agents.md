@@ -141,6 +141,10 @@ the `Makefile` and `.github/workflows/main.yml`.
   `changelog.md` and the version bump, without a branch or pull request.
 - An orchestrating agent writes each task, verifies every report itself (`make check`, `make test`,
   the diff, benchmarks) instead of trusting it, and keeps the person informed.
+- Report a blocker as soon as you hit it: an unreachable machine, a missing permission or tool, a
+  failing service, or anything else that stops the task. Tell whoever delegated the task right
+  away (a subagent messages the orchestrator), say what can still be done without it, and keep
+  doing that part. Never wait or poll silently for more than a few minutes.
 - Build in vertical slices: a model's first commit already produces a transcript.
 - Ask the person only when output must change, the public API must break, a heavy dependency is
   needed, or the request is ambiguous. Otherwise decide and say so in your report.
