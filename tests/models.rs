@@ -11,7 +11,7 @@ use std::sync::{Mutex, PoisonError};
 static GPU: Mutex<()> = Mutex::new(());
 
 /// The Q8_0 GGUF of `name` in the Hugging Face cache (`make models`), with the root resolved as
-/// the CLI does (`src/cli/hfs.rs`).
+/// `wavo::hub::Hub::new` does (`src/hub/cache.rs`).
 fn model_path(name: &str) -> PathBuf {
   let var = |k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
   let user = || var("HOME").or_else(|| var("USERPROFILE")).unwrap_or_default();

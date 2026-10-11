@@ -11,7 +11,9 @@ check:
 	cargo +nightly fmt --check
 	cargo clippy $(CARGO_FLAGS) --all-targets -- -D warnings
 	cargo clippy $(CARGO_FLAGS) --no-default-features --all-targets -- -D warnings
+	cargo clippy $(CARGO_FLAGS) --no-default-features --features hub --all-targets -- -D warnings
 	cargo check $(CARGO_FLAGS)
+	RUSTDOCFLAGS="-D warnings" cargo doc $(CARGO_FLAGS) --no-deps --no-default-features --features hub
 
 test:
 	cargo test $(CARGO_FLAGS)
@@ -60,9 +62,10 @@ REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
 # Whisper has segment timestamps only: TIMESTAMPS=segment.
 TIMESTAMPS := token
 
-# Unit tests only: no models or 3rd/ needed.
+# Unit tests and doc examples only: no models or 3rd/ needed.
 test-unit:
 	cargo test $(CARGO_FLAGS) --lib --bins
+	cargo test $(CARGO_FLAGS) --doc --no-default-features --features hub
 
 test-ci: test-unit
 	cargo test $(CARGO_FLAGS) --test models -- --exact $(CI_TESTS)

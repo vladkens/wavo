@@ -1,13 +1,13 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! Models in the Hugging Face cache, laid out as the Hub local cache spec says
-//! (https://huggingface.co/docs/hub/local-cache), so `hf` and `wavo` find each other's downloads:
+//! Files in the Hugging Face cache, laid out as the Hub local cache spec says
+//! (<https://huggingface.co/docs/hub/local-cache>), so `hf` and `wavo` find each other's downloads:
 //!
 //! ```text
 //! <root>/models--<org>--<repo>/blobs/<etag>                 file content; LFS etag = SHA-256
 //!                             /snapshots/<commit>/<file>     -> ../../blobs/<etag>
 //!                             /refs/main                     <commit>
 //! <root>/.locks/models--<org>--<repo>/<etag>.lock            held while downloading
-//!                                    /wavo.lock              wavo's: held by pull and rm
+//!                                    /wavo.lock              wavo's: held by pull and remove
 //! ```
 //!
 //! Newer `hf` versions make `blobs/<etag>` a symlink into a shared `<root>/blobs/<xx>/<hash>`
@@ -15,21 +15,13 @@
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io;
+use std::io::{self, Read, Write};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail, ensure};
-use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
-
-/// Downloads that fail on the network resume this many more times.
-const RETRIES: u32 = 3;
-
-pub struct Cache {
-  root: PathBuf,
-  /// The environment variable that set `root`, if any.
-  from: Option<&'static str>,
-}
+use super::{Hub, Progress, RETRIES};
+use crate::{Error, Result};
 
 /// What a HEAD of `resolve/main/<file>` says about the latest revision.
 struct Remote {
@@ -39,13 +31,9 @@ struct Remote {
   url: String,
 }
 
-impl Cache {
-  pub fn new() -> Self {
-    Self::from_env(|k| std::env::var_os(k).filter(|v| !v.is_empty()))
-  }
-
+impl Hub {
   /// The root as huggingface_hub resolves it (`constants.py`).
-  fn from_env(var: impl Fn(&str) -> Option<OsString>) -> Self {
+  pub(super) fn from_env(var: impl Fn(&str) -> Option<OsString>) -> Self {
     let set =
       |k: &'static str, hub: fn(PathBuf) -> PathBuf| var(k).map(|v| (hub(v.into()), Some(k)));
     let (root, from) = (set("HF_HUB_CACHE", |p| p))
@@ -59,12 +47,6 @@ impl Cache {
     Self { root, from }
   }
 
-  /// The root for messages, with the variable that set it.
-  pub fn describe(&self) -> String {
-    let from = self.from.map(|v| format!(" (set by {v})")).unwrap_or_default();
-    format!("{}{from}", self.root.display())
-  }
-
   fn folder(&self, repo: &str) -> PathBuf {
     self.root.join(format!("models--{}", repo.replace('/', "--")))
   }
@@ -75,7 +57,7 @@ impl Cache {
   }
 
   /// The cached file: in the snapshot `refs/main` names, else in any snapshot that has it.
-  pub fn find(&self, repo: &str, file: &str) -> Option<PathBuf> {
+  pub(super) fn find_file(&self, repo: &str, file: &str) -> Option<PathBuf> {
     let dir = self.folder(repo);
     let main = fs::read_to_string(dir.join("refs/main"));
     let main = main.ok().map(|commit| dir.join("snapshots").join(commit.trim()));
@@ -84,20 +66,28 @@ impl Cache {
 
   /// Downloads the file at `main` unless that revision is cached, as huggingface_hub does. A
   /// dropped download resumes up to `RETRIES` more times, after 1, 2 and 4 s.
-  pub fn pull(&self, repo: &str, file: &str, bars: &MultiProgress) -> Result<PathBuf> {
+  pub(super) fn pull_file(
+    &self,
+    repo: &str,
+    file: &str,
+    mut progress: impl FnMut(Progress<'_>) -> ControlFlow<()>,
+  ) -> Result<PathBuf> {
     let remote = head(repo, file)?;
-    let fetch = |part: &Path| download(&remote.url, part, remote.size, file, bars);
     self.install(repo, file, &remote, |part| {
-      for retry in 1..=RETRIES {
-        match fetch(part) {
-          Err(e) if transient(&e) => {
-            bars.suspend(|| eprintln!("retrying {file} ({retry}/{RETRIES}) after: {e:#}"));
-            std::thread::sleep(Duration::from_secs(1 << (retry - 1)));
+      let mut retry = 0;
+      loop {
+        match download(&remote.url, part, remote.size, &mut progress) {
+          Err(e) if retry < RETRIES && transient(&e) => {
+            let done = fs::metadata(part).map_or(0, |m| m.len());
+            if progress(Progress { done, total: remote.size, retrying: Some(&e) }).is_break() {
+              return Err(Error::Cancelled);
+            }
+            std::thread::sleep(Duration::from_secs(1 << retry));
+            retry += 1;
           }
           result => return result,
         }
       }
-      fetch(part)
     })
   }
 
@@ -123,7 +113,10 @@ impl Cache {
       lens.contains(&s.len()) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     };
     if !hex(&remote.commit, &[40]) || !hex(&remote.etag, &[40, 64]) {
-      bail!("unexpected commit {:?} or etag {:?} from the Hub", remote.commit, remote.etag);
+      let (commit, etag) = (&remote.commit, &remote.etag);
+      return Err(Error::Hub(format!(
+        "unexpected commit {commit:?} or etag {etag:?} from the Hub"
+      )));
     }
     let _repo = self.lock(repo, "wavo")?;
     let dir = self.folder(repo);
@@ -137,7 +130,10 @@ impl Cache {
         let part = blob.with_file_name(format!("{}.incomplete", remote.etag));
         fetch(&part)?;
         let got = fs::metadata(&part)?.len();
-        ensure!(got == remote.size, "{file}: downloaded {got} bytes, expected {}", remote.size);
+        if got != remote.size {
+          let size = remote.size;
+          return Err(Error::Hub(format!("{file}: downloaded {got} bytes, expected {size}")));
+        }
         fs::rename(&part, &blob)?;
       }
       link(&blob, &pointer, &remote.etag)?;
@@ -155,7 +151,7 @@ impl Cache {
   /// Deletes the file from every snapshot along with its blobs, then the snapshots and refs left
   /// empty, and the repo folder once no snapshot is left; other files stay. Returns the bytes
   /// freed, or `None` when nothing was cached.
-  pub fn remove(&self, repo: &str, file: &str) -> Result<Option<u64>> {
+  pub(super) fn remove_file(&self, repo: &str, file: &str) -> Result<Option<u64>> {
     let dir = self.folder(repo);
     if !dir.exists() {
       return Ok(None);
@@ -170,7 +166,8 @@ impl Cache {
       .filter_map(|target| target.file_name().map(|etag| dir.join("blobs").join(etag)))
       .collect();
     if blobs.iter().any(|b| b.is_symlink()) {
-      bail!("hf keeps {file} in its shared blob store; run: hf cache rm hf://models/{repo}/{file}");
+      let run = format!("hf cache rm hf://models/{repo}/{file}");
+      return Err(Error::Hub(format!("hf keeps {file} in its shared blob store; run: {run}")));
     }
     let (mut freed, mut emptied) = (0, Vec::new());
     for pointer in &pointers {
@@ -213,67 +210,74 @@ fn linked(dir: &Path) -> Vec<OsString> {
   .collect()
 }
 
+fn http(url: &str, e: ureq::Error) -> Error {
+  let status = if let ureq::Error::StatusCode(code) = e { Some(code) } else { None };
+  Error::Http { url: url.into(), status, message: e.to_string() }
+}
+
 fn head(repo: &str, file: &str) -> Result<Remote> {
   let endpoint = std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".into());
   let url = format!("{}/{repo}/resolve/main/{file}", endpoint.trim_end_matches('/'));
   let agent: ureq::Agent = ureq::Agent::config_builder().max_redirects(0).build().into();
   let resp = agent.head(&url).header("Accept-Encoding", "identity").call();
-  let resp = resp.with_context(|| format!("HEAD {url}"))?;
+  let resp = resp.map_err(|e| http(&url, e))?;
   let header = |k: &str| resp.headers().get(k).and_then(|v| v.to_str().ok());
+  let missing = |what: &str| Error::Hub(format!("{url}: no {what}"));
   // A redirect's Content-Length is its own body's; X-Linked-Size is the file's.
   let length = header("content-length").filter(|_| resp.status() == 200);
   let size = header("x-linked-size").or(length);
-  let etag = header("x-linked-etag").or_else(|| header("etag")).context("no ETag")?;
+  let etag = header("x-linked-etag").or_else(|| header("etag")).ok_or_else(|| missing("ETag"))?;
   Ok(Remote {
-    commit: header("x-repo-commit").context("no X-Repo-Commit")?.into(),
+    commit: header("x-repo-commit").ok_or_else(|| missing("X-Repo-Commit"))?.into(),
     etag: etag.trim_start_matches("W/").trim_matches('"').into(),
-    size: size.and_then(|s| s.parse().ok()).context("no file size")?,
+    size: size.and_then(|s| s.parse().ok()).ok_or_else(|| missing("file size"))?,
     url: header("location").filter(|l| l.starts_with("http")).unwrap_or(&url).into(),
   })
 }
 
-/// Appends to `part` from where an interrupted pull stopped. Progress goes to a bar in `bars` on a
-/// terminal, else to a plain line on stderr at the start and one at the end.
-fn download(url: &str, part: &Path, size: u64, file: &str, bars: &MultiProgress) -> Result<()> {
+/// Appends to `part` from where an interrupted pull stopped, calling `progress` before every chunk.
+fn download(
+  url: &str,
+  part: &Path,
+  size: u64,
+  progress: &mut impl FnMut(Progress<'_>) -> ControlFlow<()>,
+) -> Result<()> {
   let mut out = OpenOptions::new().create(true).append(true).open(part)?;
   let have = out.metadata()?.len();
   let mut done = if have < size { have } else { 0 };
-  let resp = ureq::get(url).header("Range", format!("bytes={done}-")).call().context("download")?;
+  let resp = ureq::get(url).header("Range", format!("bytes={done}-")).call();
+  let resp = resp.map_err(|e| http(url, e))?;
   if resp.status() != 206 || done != have {
     out.set_len(0)?;
     done = 0;
   }
-  let (mb, plain) = (|bytes: u64| bytes as f64 / 1e6, bars.is_hidden());
-  if plain {
-    let resume = if done > 0 { format!(", resuming at {:.0} MB", mb(done)) } else { String::new() };
-    eprintln!("downloading {file} ({:.2} GB{resume})", mb(size) / 1e3);
+  let (mut body, mut buf) = (resp.into_body().into_reader(), vec![0; 1 << 16]);
+  loop {
+    if progress(Progress { done, total: size, retrying: None }).is_break() {
+      return Err(Error::Cancelled);
+    }
+    let n = match body.read(&mut buf) {
+      Ok(0) => return Ok(()),
+      Ok(n) => n,
+      Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+      Err(e) => {
+        let message = format!("download interrupted: {e}");
+        return Err(Error::Http { url: url.into(), status: None, message });
+      }
+    };
+    out.write_all(&buf[..n])?;
+    done += n as u64;
   }
-  let style =
-    "{msg}: {percent:>3}% {decimal_bytes} / {decimal_total_bytes}, {decimal_bytes_per_sec}";
-  let bar = ProgressBar::new(size).with_style(ProgressStyle::with_template(style)?);
-  let bar = bars.add(bar.with_message(file.to_string()).with_finish(ProgressFinish::AndClear));
-  bar.set_position(done);
-  bar.reset_eta(); // a resumed part doesn't count toward the speed
-  let mut body = bar.wrap_read(resp.into_body().into_reader());
-  let got = io::copy(&mut body, &mut out).context("download interrupted")?;
-  bar.finish();
-  if plain {
-    let (done, speed) = (done + got, mb(got) / bar.elapsed().as_secs_f64());
-    let pct = done * 100 / size;
-    eprintln!("{file}: {pct:3}% {:.0} / {:.0} MB, {speed:.1} MB/s", mb(done), mb(size));
-  }
-  Ok(())
 }
 
 /// Whether a failed download may get further on another try: not after an HTTP 4xx or a disk
 /// error.
-fn transient(e: &anyhow::Error) -> bool {
+fn transient(e: &Error) -> bool {
   use io::ErrorKind::{PermissionDenied, ReadOnlyFilesystem, StorageFull};
-  match e.downcast_ref() {
-    Some(ureq::Error::StatusCode(code)) => *code >= 500,
-    Some(_) => true,
-    None => (e.downcast_ref::<io::Error>())
-      .is_some_and(|e| !matches!(e.kind(), PermissionDenied | ReadOnlyFilesystem | StorageFull)),
+  match e {
+    Error::Http { status, .. } => status.is_none_or(|code| code >= 500),
+    Error::Io(e) => !matches!(e.kind(), PermissionDenied | ReadOnlyFilesystem | StorageFull),
+    _ => false,
   }
 }
 
@@ -293,10 +297,10 @@ fn link(blob: &Path, pointer: &Path, etag: &str) -> io::Result<()> {
 mod tests {
   use super::*;
 
-  fn temp(name: &str) -> Cache {
+  fn temp(name: &str) -> Hub {
     let root = std::env::temp_dir().join(format!("wavo-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
-    Cache { root, from: None }
+    Hub::at(root)
   }
 
   fn remote(commit: char, etag: char, size: u64) -> Remote {
@@ -312,8 +316,8 @@ mod tests {
   fn root_follows_huggingface_hub() {
     // Paths compare as `Path`s, so the test holds with Windows' separators too.
     let root = |vars: &[(&str, &str)]| {
-      let cache = Cache::from_env(|k| vars.iter().rev().find(|v| v.0 == k).map(|v| v.1.into()));
-      (cache.root, cache.from)
+      let hub = Hub::from_env(|k| vars.iter().rev().find(|v| v.0 == k).map(|v| v.1.into()));
+      (hub.root, hub.from)
     };
     let mut vars = vec![("USERPROFILE", "/u")];
     assert_eq!(root(&vars), (PathBuf::from("/u/.cache/huggingface/hub"), None));
@@ -327,55 +331,61 @@ mod tests {
       vars.push((var, value));
       assert_eq!(root(&vars), (PathBuf::from(expected), from), "{var}");
     }
-    let cache = Cache { root: PathBuf::from("/c"), from: Some("HF_HUB_CACHE") };
-    assert_eq!(cache.describe(), "/c (set by HF_HUB_CACHE)");
+    let hub = Hub { root: PathBuf::from("/c"), from: Some("HF_HUB_CACHE") };
+    assert_eq!(hub.to_string(), "/c (set by HF_HUB_CACHE)");
+    assert_eq!(Hub::at("/c").to_string(), "/c");
   }
 
   #[test]
   fn retries_only_what_may_pass() {
-    let status = |code| anyhow::Error::from(ureq::Error::StatusCode(code)).context("download");
+    let status = |code| http("u", ureq::Error::StatusCode(code));
     assert!(transient(&status(503)) && !transient(&status(404)));
-    let io = |kind| anyhow::Error::from(io::Error::from(kind)).context("download interrupted");
-    assert!(transient(&io(io::ErrorKind::UnexpectedEof)));
-    assert!(!transient(&io(io::ErrorKind::StorageFull)));
-    assert!(transient(&ureq::Error::Io(io::ErrorKind::ConnectionReset.into()).into()));
+    assert!(transient(&http("u", ureq::Error::Io(io::ErrorKind::ConnectionReset.into()))));
+    let broke = Error::Http { url: "u".into(), status: None, message: "interrupted".into() };
+    assert!(transient(&broke));
+    assert!(transient(&io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+    assert!(!transient(&io::Error::from(io::ErrorKind::StorageFull).into()));
+    assert!(!transient(&Error::Cancelled) && !transient(&Error::Hub("size".into())));
   }
 
   #[cfg(unix)]
   #[test]
   fn install_writes_the_spec_layout() {
-    let cache = temp("install");
-    let dir = cache.root.join("models--org--m-gguf");
+    let hub = temp("install");
+    let dir = hub.root.join("models--org--m-gguf");
     let a = remote('a', '1', 5);
-    let path = cache.install("org/m-gguf", "m.gguf", &a, write("hello")).unwrap();
+    let path = hub.install("org/m-gguf", "m.gguf", &a, write("hello")).unwrap();
     assert_eq!(path, dir.join("snapshots").join(&a.commit).join("m.gguf"));
     assert_eq!(fs::read_link(&path).unwrap(), Path::new("../../blobs").join(&a.etag));
     assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
     assert_eq!(fs::read_to_string(dir.join("refs/main")).unwrap(), a.commit);
-    let locks = cache.root.join(".locks/models--org--m-gguf");
+    let locks = hub.root.join(".locks/models--org--m-gguf");
     assert!(locks.join(format!("{}.lock", a.etag)).is_file() && locks.join("wavo.lock").is_file());
-    assert_eq!(cache.find("org/m-gguf", "m.gguf").as_ref(), Some(&path));
+    assert_eq!(hub.find_file("org/m-gguf", "m.gguf").as_ref(), Some(&path));
 
     // A cached revision and a new revision of the same content download nothing.
     let fail = |_: &Path| -> Result<()> { panic!("downloaded again") };
-    assert_eq!(cache.install("org/m-gguf", "m.gguf", &a, fail).unwrap(), path);
+    assert_eq!(hub.install("org/m-gguf", "m.gguf", &a, fail).unwrap(), path);
     let b = remote('b', '1', 5);
-    let path = cache.install("org/m-gguf", "m.gguf", &b, fail).unwrap();
+    let path = hub.install("org/m-gguf", "m.gguf", &b, fail).unwrap();
     assert_eq!(fs::read_to_string(dir.join("refs/main")).unwrap(), b.commit);
-    assert_eq!(cache.find("org/m-gguf", "m.gguf"), Some(path));
+    assert_eq!(hub.find_file("org/m-gguf", "m.gguf"), Some(path));
 
-    // A short download fails and stays for the next pull to resume.
+    // A short or cancelled download fails and stays for the next pull to resume.
     let c = remote('c', '3', 10);
-    assert!(cache.install("org/m-gguf", "m.gguf", &c, write("short")).is_err());
+    assert!(hub.install("org/m-gguf", "m.gguf", &c, write("short")).is_err());
     let part = dir.join("blobs").join(format!("{}.incomplete", c.etag));
-    assert_eq!(fs::read_to_string(part).unwrap(), "short");
+    assert_eq!(fs::read_to_string(&part).unwrap(), "short");
+    let cancel = |_: &Path| -> Result<()> { Err(Error::Cancelled) };
+    assert!(matches!(hub.install("org/m-gguf", "m.gguf", &c, cancel), Err(Error::Cancelled)));
+    assert_eq!(fs::read_to_string(&part).unwrap(), "short");
     assert_eq!(fs::read_to_string(dir.join("refs/main")).unwrap(), b.commit);
-    fs::remove_dir_all(&cache.root).unwrap();
+    fs::remove_dir_all(&hub.root).unwrap();
   }
 
   #[test]
   fn install_takes_only_hex_ids() {
-    let cache = temp("ids");
+    let hub = temp("ids");
     let ok = remote('a', '1', 5);
     for (commit, etag) in [
       ("../../x", ok.etag.as_str()),
@@ -386,95 +396,108 @@ mod tests {
       (&ok.commit, "\"0123\""),
     ] {
       let r = Remote { commit: commit.into(), etag: etag.into(), size: 5, url: String::new() };
-      assert!(cache.install("org/m", "m.gguf", &r, write("hello")).is_err(), "{commit} {etag}");
+      assert!(hub.install("org/m", "m.gguf", &r, write("hello")).is_err(), "{commit} {etag}");
     }
-    assert!(!cache.root.exists(), "nothing written");
+    assert!(!hub.root.exists(), "nothing written");
     let sha1 = Remote { etag: "f".repeat(40), ..ok };
-    assert!(cache.install("org/m", "m.gguf", &sha1, write("hello")).is_ok());
-    fs::remove_dir_all(&cache.root).unwrap();
+    assert!(hub.install("org/m", "m.gguf", &sha1, write("hello")).is_ok());
+    fs::remove_dir_all(&hub.root).unwrap();
   }
 
   #[cfg(unix)]
   #[test]
   fn remove_waits_for_the_repo_lock() {
-    let cache = temp("lock");
-    cache.install("org/m", "m.gguf", &remote('a', '1', 5), write("hello")).unwrap();
-    let lock = cache.lock("org/m", "wavo").unwrap();
+    let hub = temp("lock");
+    hub.install("org/m", "m.gguf", &remote('a', '1', 5), write("hello")).unwrap();
+    let lock = hub.lock("org/m", "wavo").unwrap();
     std::thread::scope(|s| {
       let (tx, rx) = std::sync::mpsc::channel();
-      let c = &cache;
-      s.spawn(move || tx.send(c.remove("org/m", "m.gguf").unwrap()).unwrap());
+      let h = &hub;
+      s.spawn(move || tx.send(h.remove_file("org/m", "m.gguf").unwrap()).unwrap());
       assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "rm ran under the lock");
       drop(lock);
       assert_eq!(rx.recv().unwrap(), Some(5));
     });
-    fs::remove_dir_all(&cache.root).unwrap();
+    fs::remove_dir_all(&hub.root).unwrap();
   }
 
   #[cfg(unix)]
   #[test]
   fn find_prefers_refs_main() {
-    let cache = temp("find");
-    let snapshots = cache.folder("org/m").join("snapshots");
-    assert_eq!(cache.find("org/m", "m.gguf"), None);
+    let hub = temp("find");
+    let snapshots = hub.folder("org/m").join("snapshots");
+    assert_eq!(hub.find_file("org/m", "m.gguf"), None);
     for s in ["x", "y"] {
       fs::create_dir_all(snapshots.join(s)).unwrap();
       fs::write(snapshots.join(s).join("m.gguf"), s).unwrap();
     }
     std::os::unix::fs::symlink("../../blobs/gone", snapshots.join("x/n.gguf")).unwrap();
-    assert_eq!(cache.find("org/m", "n.gguf"), None);
-    fs::create_dir_all(cache.folder("org/m").join("refs")).unwrap();
-    fs::write(cache.folder("org/m").join("refs/main"), "y").unwrap();
-    assert_eq!(cache.find("org/m", "m.gguf"), Some(snapshots.join("y/m.gguf")));
-    fs::write(cache.folder("org/m").join("refs/main"), "z").unwrap();
-    assert!(cache.find("org/m", "m.gguf").is_some());
-    fs::remove_dir_all(&cache.root).unwrap();
+    assert_eq!(hub.find_file("org/m", "n.gguf"), None);
+    fs::create_dir_all(hub.folder("org/m").join("refs")).unwrap();
+    fs::write(hub.folder("org/m").join("refs/main"), "y").unwrap();
+    assert_eq!(hub.find_file("org/m", "m.gguf"), Some(snapshots.join("y/m.gguf")));
+    fs::write(hub.folder("org/m").join("refs/main"), "z").unwrap();
+    assert!(hub.find_file("org/m", "m.gguf").is_some());
+    fs::remove_dir_all(&hub.root).unwrap();
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn find_and_remove_by_name() {
+    let hub = temp("names");
+    let m = super::super::lookup("gigaam-v3").unwrap();
+    hub.install(&m.repo(), &m.file(), &remote('a', '1', 5), write("hello")).unwrap();
+    let path = hub.find("gigaam-v3-e2e-rnnt").unwrap();
+    assert!(path.starts_with(hub.root.join("models--handy-computer--gigaam-v3-e2e-rnnt-gguf")));
+    assert_eq!(hub.remove("gigaam-v3").unwrap(), Some(5));
+    assert_eq!((hub.find("gigaam-v3"), hub.remove("gigaam-v3").unwrap()), (None, None));
+    fs::remove_dir_all(&hub.root).unwrap();
   }
 
   #[cfg(unix)]
   #[test]
   fn remove_keeps_other_files() {
-    let cache = temp("remove");
-    let dir = cache.folder("org/m");
-    cache.install("org/m", "m.gguf", &remote('a', '1', 5), write("hello")).unwrap();
-    cache.install("org/m", "other.gguf", &remote('a', '2', 3), write("abc")).unwrap();
-    cache.install("org/m", "m.gguf", &remote('b', '1', 5), write("hello")).unwrap();
-    assert_eq!(cache.remove("org/m", "m.gguf").unwrap(), Some(5));
-    assert_eq!(cache.find("org/m", "m.gguf"), None);
+    let hub = temp("remove");
+    let dir = hub.folder("org/m");
+    hub.install("org/m", "m.gguf", &remote('a', '1', 5), write("hello")).unwrap();
+    hub.install("org/m", "other.gguf", &remote('a', '2', 3), write("abc")).unwrap();
+    hub.install("org/m", "m.gguf", &remote('b', '1', 5), write("hello")).unwrap();
+    assert_eq!(hub.remove_file("org/m", "m.gguf").unwrap(), Some(5));
+    assert_eq!(hub.find_file("org/m", "m.gguf"), None);
     assert!(!dir.join("blobs").join("1".repeat(64)).exists());
     assert!(!dir.join("snapshots").join("b".repeat(40)).exists());
     assert!(!dir.join("refs/main").exists(), "refs/main named the removed snapshot");
-    assert!(cache.find("org/m", "other.gguf").is_some());
-    assert_eq!(cache.remove("org/m", "m.gguf").unwrap(), None);
+    assert!(hub.find_file("org/m", "other.gguf").is_some());
+    assert_eq!(hub.remove_file("org/m", "m.gguf").unwrap(), None);
 
     // Two names with the same content share a blob: it goes with the last of them.
-    cache.install("org/m", "x.gguf", &remote('c', '4', 4), write("four")).unwrap();
-    cache.install("org/m", "y.gguf", &remote('c', '4', 4), write("four")).unwrap();
-    assert_eq!(cache.remove("org/m", "x.gguf").unwrap(), Some(0));
-    assert_eq!(fs::read_to_string(cache.find("org/m", "y.gguf").unwrap()).unwrap(), "four");
-    assert_eq!(cache.remove("org/m", "y.gguf").unwrap(), Some(4));
+    hub.install("org/m", "x.gguf", &remote('c', '4', 4), write("four")).unwrap();
+    hub.install("org/m", "y.gguf", &remote('c', '4', 4), write("four")).unwrap();
+    assert_eq!(hub.remove_file("org/m", "x.gguf").unwrap(), Some(0));
+    assert_eq!(fs::read_to_string(hub.find_file("org/m", "y.gguf").unwrap()).unwrap(), "four");
+    assert_eq!(hub.remove_file("org/m", "y.gguf").unwrap(), Some(4));
     assert!(!dir.join("blobs").join("4".repeat(64)).exists());
-    assert_eq!(cache.remove("org/m", "other.gguf").unwrap(), Some(3));
+    assert_eq!(hub.remove_file("org/m", "other.gguf").unwrap(), Some(3));
     assert!(!dir.exists());
-    fs::remove_dir_all(&cache.root).unwrap();
+    fs::remove_dir_all(&hub.root).unwrap();
   }
 
   #[cfg(unix)]
   #[test]
   fn remove_leaves_shared_blobs_to_hf() {
-    let cache = temp("shared");
-    let (dir, hash) = (cache.folder("org/m"), "ab".repeat(32));
-    fs::create_dir_all(cache.root.join("blobs/ab")).unwrap();
-    fs::write(cache.root.join("blobs/ab").join(&hash), "hello").unwrap();
+    let hub = temp("shared");
+    let (dir, hash) = (hub.folder("org/m"), "ab".repeat(32));
+    fs::create_dir_all(hub.root.join("blobs/ab")).unwrap();
+    fs::write(hub.root.join("blobs/ab").join(&hash), "hello").unwrap();
     fs::create_dir_all(dir.join("blobs")).unwrap();
     let r = remote('a', '1', 5);
     std::os::unix::fs::symlink(format!("../../blobs/ab/{hash}"), dir.join("blobs").join(&r.etag))
       .unwrap();
-    let path = cache.install("org/m", "m.gguf", &r, write("")).unwrap();
+    let path = hub.install("org/m", "m.gguf", &r, write("")).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
-    let e = cache.remove("org/m", "m.gguf").unwrap_err().to_string();
+    let e = hub.remove_file("org/m", "m.gguf").unwrap_err().to_string();
     assert!(e.contains("hf cache rm hf://models/org/m/m.gguf"), "{e}");
-    assert_eq!(cache.find("org/m", "m.gguf"), Some(path));
-    fs::remove_dir_all(&cache.root).unwrap();
+    assert_eq!(hub.find_file("org/m", "m.gguf"), Some(path));
+    fs::remove_dir_all(&hub.root).unwrap();
   }
 }

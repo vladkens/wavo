@@ -2,18 +2,19 @@
 //! `wavo`: speech to text with models pulled by name into the Hugging Face cache.
 
 mod audio;
-mod hfs;
 mod models;
 mod output;
 mod split;
 
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
-use models::{MODELS, Source};
+use models::Source;
+use wavo::hub::{self, Hub, MODELS};
 
 const USAGE: &str = "\
 Usage:
@@ -40,8 +41,8 @@ const SEGMENT_MS: u32 = 60_000;
 fn usage() -> String {
   let mut usage = USAGE.to_string();
   for m in MODELS {
-    let full = if m.name == m.variant { String::new() } else { format!(" ({})", m.variant) };
-    usage += &format!("\n  {:<18} {}  {}{full}", m.name, models::gb(m.size), m.about);
+    let full = if m.name == m.full_name { String::new() } else { format!(" ({})", m.full_name) };
+    usage += &format!("\n  {:<18} {}  {}{full}", m.name, models::gb(m.size), models::about(m));
   }
   usage
 }
@@ -79,10 +80,10 @@ fn model_path(arg: &str) -> Result<PathBuf> {
     Source::Path(path) if path.is_file() => Ok(path),
     Source::Path(path) => bail!("{}: no such file", path.display()),
     Source::Model(m) => {
-      let cache = hfs::Cache::new();
-      cache.find(&m.repo(), &m.file()).ok_or_else(|| {
-        let (name, size, root) = (m.name, models::gb(m.size), cache.describe());
-        anyhow!("{name} is not in {root}; run: wavo pull {name} ({size})")
+      let hub = Hub::new();
+      hub.find(m.name).ok_or_else(|| {
+        let (name, size) = (m.name, models::gb(m.size));
+        anyhow!("{name} is not in {hub}; run: wavo pull {name} ({size})")
       })
     }
   }
@@ -110,7 +111,7 @@ fn run(args: &[&str]) -> Result<()> {
     }
   }
   let (model, audio) = match *rest {
-    [arg] if models::find(arg).is_some() && !Path::new(arg).exists() => {
+    [arg] if hub::lookup(arg).is_ok() && !Path::new(arg).exists() => {
       bail!("no audio file given: wavo run {arg} AUDIO")
     }
     [audio] => (models::DEFAULT, audio),
@@ -148,7 +149,7 @@ fn run(args: &[&str]) -> Result<()> {
 }
 
 /// A model by name, for the commands that manage the cache.
-fn named(arg: &str) -> Result<&'static models::Model> {
+fn named(arg: &str) -> Result<&'static hub::ModelInfo> {
   match models::resolve(arg)? {
     Source::Model(m) => Ok(m),
     Source::Path(_) => bail!("expected a model name, not a path: {arg}"),
@@ -160,11 +161,10 @@ fn pull(args: &[&str]) -> Result<()> {
   let mut models = args.iter().map(|arg| named(arg)).collect::<Result<Vec<_>>>()?;
   let mut seen = std::collections::HashSet::new();
   models.retain(|m| seen.insert(m.name));
-  let (cache, bars) = (hfs::Cache::new(), MultiProgress::new());
+  let (hub, bars) = (Hub::new(), MultiProgress::new());
   let results: Vec<_> = std::thread::scope(|s| {
-    let (cache, bars) = (&cache, &bars);
-    let pulls: Vec<_> =
-      models.iter().map(|m| s.spawn(move || cache.pull(&m.repo(), &m.file(), bars))).collect();
+    let (hub, bars) = (&hub, &bars);
+    let pulls: Vec<_> = models.iter().map(|m| s.spawn(move || pull_one(hub, m, bars))).collect();
     pulls.into_iter().map(|pull| pull.join().unwrap()).collect()
   });
   for (m, result) in models.iter().zip(&results) {
@@ -178,10 +178,51 @@ fn pull(args: &[&str]) -> Result<()> {
   Ok(())
 }
 
+/// Progress goes to a bar in `bars` on a terminal, else to a plain line on stderr at the start of
+/// each try and one at the end.
+fn pull_one(hub: &Hub, m: &hub::ModelInfo, bars: &MultiProgress) -> Result<PathBuf> {
+  let (file, plain, mb) = (m.file(), bars.is_hidden(), |bytes: u64| bytes as f64 / 1e6);
+  let style = ProgressStyle::with_template(
+    "{msg}: {percent:>3}% {decimal_bytes} / {decimal_total_bytes}, {decimal_bytes_per_sec}",
+  )?;
+  let (mut bar, mut retries): (Option<(ProgressBar, u64)>, u32) = (None, 0);
+  let path = hub.pull(m.name, |p| {
+    if let Some(e) = p.retrying {
+      retries += 1;
+      bar = None; // dropping a bar clears it
+      bars.suspend(|| eprintln!("retrying {file} ({retries}/{}) after: {e}", hub::RETRIES));
+      return ControlFlow::Continue(());
+    }
+    let (bar, _) = bar.get_or_insert_with(|| {
+      if plain {
+        let resume = (p.done > 0).then(|| format!(", resuming at {:.0} MB", mb(p.done)));
+        eprintln!("downloading {file} ({:.2} GB{})", mb(p.total) / 1e3, resume.unwrap_or_default());
+      }
+      let bar = ProgressBar::new(p.total).with_style(style.clone()).with_message(file.clone());
+      let bar = bars.add(bar.with_finish(ProgressFinish::AndClear));
+      bar.set_position(p.done);
+      bar.reset_eta(); // a resumed part doesn't count toward the speed
+      (bar, p.done)
+    });
+    bar.set_position(p.done);
+    ControlFlow::Continue(())
+  })?;
+  if let Some((bar, start)) = bar {
+    bar.finish();
+    let (done, size) = (bar.position(), bar.length().unwrap_or_default());
+    if plain {
+      let speed = mb(done - start) / bar.elapsed().as_secs_f64();
+      let pct = done * 100 / size;
+      eprintln!("{file}: {pct:3}% {:.0} / {:.0} MB, {speed:.1} MB/s", mb(done), mb(size));
+    }
+  }
+  Ok(path)
+}
+
 fn list() -> Result<()> {
-  let cache = hfs::Cache::new();
+  let hub = Hub::new();
   let found: Vec<_> =
-    MODELS.iter().filter_map(|m| cache.find(&m.repo(), &m.file()).map(|path| (m, path))).collect();
+    MODELS.iter().filter_map(|m| hub.find(m.name).map(|path| (m, path))).collect();
   if found.is_empty() {
     eprintln!("no models downloaded; try: wavo pull {}", models::DEFAULT);
   } else {
@@ -195,7 +236,7 @@ fn list() -> Result<()> {
 
 fn rm(arg: &str) -> Result<()> {
   let m = named(arg)?;
-  let freed = hfs::Cache::new().remove(&m.repo(), &m.file());
+  let freed = Hub::new().remove(m.name);
   let freed = freed.with_context(|| format!("removing {}", m.name))?;
   let freed = freed.with_context(|| format!("{} is not downloaded", m.name))?;
   eprintln!("removed {} ({} freed)", m.name, models::gb(freed));

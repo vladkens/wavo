@@ -1,0 +1,353 @@
+// Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
+//! Download and manage the supported models in the Hugging Face cache (the `hub` feature).
+//!
+//! [`MODELS`] lists the models wavo knows by name: the Q8_0 GGUF files transcribe.cpp publishes as
+//! `handy-computer/<full name>-gguf` on Hugging Face. A [`Hub`] finds, downloads and removes them
+//! in a cache folder laid out as the
+//! [Hub local cache spec](https://huggingface.co/docs/hub/local-cache) says, so `wavo`, the `hf`
+//! CLI, Python's `huggingface_hub` and your app all find what any of them downloaded.
+//!
+//! Only [`Hub::pull`] uses the network. It blocks until the file is complete, so run it on a thread
+//! of your own (the library starts none): [`std::thread::spawn`], or tokio's `spawn_blocking`.
+//!
+//! ```no_run
+//! use std::ops::ControlFlow;
+//! use wavo::hub::{self, Hub};
+//!
+//! # fn main() -> wavo::Result<()> {
+//! for m in hub::MODELS {
+//!   println!("{:<18} {:>5} MB  {}", m.name, m.size / 1_000_000, m.languages);
+//! }
+//! let hub = Hub::new();
+//! let path = match hub.find("gigaam-v3") {
+//!   Some(path) => path,
+//!   None => hub.pull("gigaam-v3", |_| ControlFlow::Continue(()))?,
+//! };
+//! let model = wavo::Model::load(path)?;
+//! # Ok(())
+//! # }
+//! ```
+
+mod cache;
+
+use std::fmt;
+use std::ops::ControlFlow;
+use std::path::{Path, PathBuf};
+
+use crate::{Error, Result};
+
+/// How many more times [`Hub::pull`] resumes a download that failed on the network, after 1, 2
+/// and 4 s.
+pub const RETRIES: u32 = 3;
+
+/// A model wavo can download by name: one entry of [`MODELS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ModelInfo {
+  /// Short name, such as `parakeet-v3`.
+  pub name: &'static str,
+  /// The name transcribe.cpp publishes it under, such as `parakeet-tdt-0.6b-v3`; the same as
+  /// `name` for most models. Every function that takes a name accepts this one too.
+  pub full_name: &'static str,
+  /// Size of the Q8_0 GGUF file in bytes.
+  pub size: u64,
+  /// The languages it transcribes, for people: `English`, `Russian`, `25 European languages`, …
+  pub languages: &'static str,
+  /// Whether the text comes cased and punctuated; `false` is lowercase without punctuation.
+  pub punctuated: bool,
+}
+
+impl ModelInfo {
+  /// The Hugging Face repository, such as `handy-computer/parakeet-tdt-0.6b-v3-gguf`.
+  pub fn repo(&self) -> String {
+    format!("handy-computer/{}-gguf", self.full_name)
+  }
+
+  /// The file name in [`repo`](Self::repo), such as `parakeet-tdt-0.6b-v3-Q8_0.gguf`.
+  pub fn file(&self) -> String {
+    format!("{}-Q8_0.gguf", self.full_name)
+  }
+}
+
+/// Every model wavo can download by name, as in the crate's [model table](crate#models).
+#[rustfmt::skip]
+pub static MODELS: &[ModelInfo] = &[
+  ModelInfo { name: "parakeet-v3", full_name: "parakeet-tdt-0.6b-v3", size: 739_508_576, languages: "25 European languages", punctuated: true },
+  ModelInfo { name: "parakeet-v2", full_name: "parakeet-tdt-0.6b-v2", size: 729_574_912, languages: "English", punctuated: true },
+  ModelInfo { name: "gigaam-v3", full_name: "gigaam-v3-e2e-rnnt", size: 273_724_832, languages: "Russian", punctuated: true },
+  ModelInfo { name: "gigaam-v3-e2e-ctc", full_name: "gigaam-v3-e2e-ctc", size: 272_151_136, languages: "Russian", punctuated: true },
+  ModelInfo { name: "gigaam-v3-rnnt", full_name: "gigaam-v3-rnnt", size: 273_022_880, languages: "Russian", punctuated: false },
+  ModelInfo { name: "gigaam-v3-ctc", full_name: "gigaam-v3-ctc", size: 271_803_328, languages: "Russian", punctuated: false },
+  ModelInfo { name: "whisper-turbo", full_name: "whisper-large-v3-turbo", size: 886_381_760, languages: "100 languages", punctuated: true },
+  ModelInfo { name: "whisper-tiny", full_name: "whisper-tiny", size: 45_981_088, languages: "99 languages", punctuated: true },
+  ModelInfo { name: "whisper-base", full_name: "whisper-base", size: 84_962_880, languages: "99 languages", punctuated: true },
+  ModelInfo { name: "whisper-small", full_name: "whisper-small", size: 269_751_136, languages: "99 languages", punctuated: true },
+  ModelInfo { name: "whisper-medium", full_name: "whisper-medium", size: 831_538_144, languages: "99 languages", punctuated: true },
+  ModelInfo { name: "whisper-large-v3", full_name: "whisper-large-v3", size: 1_668_741_440, languages: "100 languages", punctuated: true },
+  ModelInfo { name: "whisper-tiny.en", full_name: "whisper-tiny.en", size: 45_904_544, languages: "English", punctuated: true },
+  ModelInfo { name: "whisper-base.en", full_name: "whisper-base.en", size: 84_886_208, languages: "English", punctuated: true },
+  ModelInfo { name: "whisper-small.en", full_name: "whisper-small.en", size: 269_674_144, languages: "English", punctuated: true },
+  ModelInfo { name: "whisper-medium.en", full_name: "whisper-medium.en", size: 831_460_928, languages: "English", punctuated: true },
+  ModelInfo { name: "whisper-large", full_name: "whisper-large", size: 1_667_964_192, languages: "99 languages", punctuated: true },
+  ModelInfo { name: "whisper-large-v2", full_name: "whisper-large-v2", size: 1_667_964_224, languages: "99 languages", punctuated: true },
+  ModelInfo { name: "breeze-asr-25", full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", punctuated: true },
+];
+
+/// The model a short or full name stands for.
+///
+/// # Errors
+///
+/// [`Error::UnknownModel`] for any other name, with the closest known name when it looks like a
+/// typo.
+///
+/// # Examples
+///
+/// ```
+/// let m = wavo::hub::lookup("parakeet-tdt-0.6b-v3")?;
+/// assert_eq!(m.name, "parakeet-v3");
+/// assert_eq!(m.repo(), "handy-computer/parakeet-tdt-0.6b-v3-gguf");
+///
+/// let e = wavo::hub::lookup("parakeet3").unwrap_err();
+/// assert!(matches!(e, wavo::Error::UnknownModel { suggestion: Some("parakeet-v3"), .. }));
+/// # Ok::<(), wavo::Error>(())
+/// ```
+pub fn lookup(name: &str) -> Result<&'static ModelInfo> {
+  if let Some(m) = MODELS.iter().find(|m| m.name == name || m.full_name == name) {
+    return Ok(m);
+  }
+  let closest = (MODELS.iter().flat_map(|m| [m.name, m.full_name]))
+    .map(|n| (distance(name, n), n))
+    .min()
+    .filter(|&(d, n)| d <= (n.len() / 3).max(2));
+  Err(Error::UnknownModel { name: name.into(), suggestion: closest.map(|(_, n)| n) })
+}
+
+/// The end of [`Error::UnknownModel`]'s first sentence.
+pub(crate) fn hint(suggestion: Option<&str>) -> String {
+  suggestion.map_or(".".into(), |n| format!(", did you mean {n}?"))
+}
+
+pub(crate) fn names() -> String {
+  MODELS.iter().map(|m| m.name).collect::<Vec<_>>().join(", ")
+}
+
+/// Levenshtein distance.
+fn distance(a: &str, b: &str) -> usize {
+  let b: Vec<char> = b.chars().collect();
+  let mut row: Vec<usize> = (0..=b.len()).collect();
+  for (i, ca) in a.chars().enumerate() {
+    let mut diag = row[0];
+    row[0] = i + 1;
+    for (j, &cb) in b.iter().enumerate() {
+      let next = (diag + (ca != cb) as usize).min(row[j] + 1).min(row[j + 1] + 1);
+      diag = row[j + 1];
+      row[j + 1] = next;
+    }
+  }
+  row[b.len()]
+}
+
+/// How far [`Hub::pull`] got, passed to its callback.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct Progress<'a> {
+  /// Bytes of the file on disk, including a part an earlier pull left to resume.
+  pub done: u64,
+  /// Size of the file in bytes.
+  pub total: u64,
+  /// The error a try failed with, on the one call before [`Hub::pull`] waits and retries;
+  /// `None` on every other call.
+  pub retrying: Option<&'a Error>,
+}
+
+/// A Hugging Face cache folder that holds models.
+///
+/// It shares the cache with `hf` and Python's `huggingface_hub`: a model either of them downloaded
+/// is found here, and the other way round. A model's file is at
+/// `<root>/models--handy-computer--<full name>-gguf/snapshots/<commit>/<full name>-Q8_0.gguf`, a
+/// symlink into the repository's `blobs/`. Several processes can pull and remove at once: they
+/// take turns through lock files in `<root>/.locks/`.
+#[derive(Debug, Clone)]
+pub struct Hub {
+  root: PathBuf,
+  /// The environment variable that set `root`, if any.
+  from: Option<&'static str>,
+}
+
+impl Default for Hub {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl Hub {
+  /// The cache that `hf` and Python's `huggingface_hub` use: `$HF_HUB_CACHE`, else
+  /// `$HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub`.
+  pub fn new() -> Self {
+    Self::from_env(|k| std::env::var_os(k).filter(|v| !v.is_empty()))
+  }
+
+  /// A cache in a folder of your own, such as your app's data folder. It is created on the first
+  /// pull.
+  pub fn at(root: impl Into<PathBuf>) -> Self {
+    Self { root: root.into(), from: None }
+  }
+
+  /// The cache folder.
+  pub fn root(&self) -> &Path {
+    &self.root
+  }
+
+  /// The downloaded file of a model by short or full name. Never uses the network.
+  ///
+  /// `None` when the model isn't downloaded, or `name` isn't in [`MODELS`].
+  pub fn find(&self, name: &str) -> Option<PathBuf> {
+    let m = lookup(name).ok()?;
+    self.find_file(&m.repo(), &m.file())
+  }
+
+  /// Downloads a model by short or full name, unless its latest revision is in the cache already,
+  /// and returns the path of its file.
+  ///
+  /// It blocks until the file is complete: run it on a thread of your own. One HEAD request asks
+  /// the Hub for the latest revision; when the cache has it, nothing else is downloaded and
+  /// `progress` is never called. Otherwise the file downloads into
+  /// `blobs/<etag>.incomplete`, resuming a part an earlier pull left there, and moves into place
+  /// once complete. A download that breaks off is resumed up to [`RETRIES`] more times.
+  ///
+  /// `progress` is called when the download starts, after every chunk it receives (often: throttle
+  /// your own UI updates), and before every retry. Return [`ControlFlow::Break`] to cancel: the
+  /// partial file stays for the next pull to resume.
+  ///
+  /// # Errors
+  ///
+  /// - [`Error::UnknownModel`]: `name` is not in [`MODELS`].
+  /// - [`Error::Http`]: the Hub could not be reached or answered with an error status, or the
+  ///   download broke off more times than it retries.
+  /// - [`Error::Hub`]: the Hub's answer lacks the expected headers, or the file came out at the
+  ///   wrong size.
+  /// - [`Error::Cancelled`]: `progress` returned [`ControlFlow::Break`].
+  /// - [`Error::Io`]: writing to the cache failed, for example on a full disk.
+  ///
+  /// # Examples
+  ///
+  /// Print the percentage, and give up after 1 GB:
+  ///
+  /// ```no_run
+  /// use std::ops::ControlFlow;
+  ///
+  /// let path = wavo::hub::Hub::new().pull("whisper-large-v3", |p| {
+  ///   eprint!("\r{:3}%", p.done * 100 / p.total);
+  ///   if p.done < 1_000_000_000 { ControlFlow::Continue(()) } else { ControlFlow::Break(()) }
+  /// })?;
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  ///
+  /// On a thread, with a cancel button: see
+  /// [the crate docs](crate#download-on-a-thread-with-progress-and-cancel).
+  pub fn pull(
+    &self,
+    name: &str,
+    progress: impl FnMut(Progress<'_>) -> ControlFlow<()>,
+  ) -> Result<PathBuf> {
+    let m = lookup(name)?;
+    self.pull_file(&m.repo(), &m.file(), progress)
+  }
+
+  /// Deletes a model by short or full name from the cache, and returns the bytes freed; `None`
+  /// when it wasn't downloaded. Other files in the model's repository folder stay.
+  ///
+  /// It waits while another process pulls the same model.
+  ///
+  /// # Errors
+  ///
+  /// - [`Error::UnknownModel`]: `name` is not in [`MODELS`].
+  /// - [`Error::Hub`]: newer `hf` versions keep the file in a blob store shared across
+  ///   repositories, which this leaves alone; the message names the `hf cache rm` command to run.
+  /// - [`Error::Io`]: deleting failed.
+  pub fn remove(&self, name: &str) -> Result<Option<u64>> {
+    let m = lookup(name)?;
+    self.remove_file(&m.repo(), &m.file())
+  }
+}
+
+/// The root, with the environment variable that set it: `/data/hub (set by HF_HOME)`.
+impl fmt::Display for Hub {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", self.root.display())?;
+    self.from.map_or(Ok(()), |v| write!(f, " (set by {v})"))
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn name(arg: &str) -> &'static str {
+    lookup(arg).unwrap().name
+  }
+
+  fn error(arg: &str) -> String {
+    lookup(arg).unwrap_err().to_string()
+  }
+
+  #[test]
+  fn short_and_full_names() {
+    assert_eq!(name("parakeet-v3"), "parakeet-v3");
+    assert_eq!(name("parakeet-tdt-0.6b-v3"), "parakeet-v3");
+    assert_eq!(name("gigaam-v3"), "gigaam-v3");
+    assert_eq!(name("gigaam-v3-e2e-rnnt"), "gigaam-v3");
+    assert_eq!(name("gigaam-v3-ctc"), "gigaam-v3-ctc");
+    let m = lookup("gigaam-v3").unwrap();
+    assert_eq!(m.repo(), "handy-computer/gigaam-v3-e2e-rnnt-gguf");
+    assert_eq!(m.file(), "gigaam-v3-e2e-rnnt-Q8_0.gguf");
+    assert_eq!(name("whisper-large-v3-turbo"), "whisper-turbo");
+    let m = lookup("whisper-turbo").unwrap();
+    assert_eq!(m.repo(), "handy-computer/whisper-large-v3-turbo-gguf");
+    assert_eq!(m.file(), "whisper-large-v3-turbo-Q8_0.gguf");
+    assert_eq!(name("Breeze-ASR-25"), "breeze-asr-25");
+    let m = lookup("breeze-asr-25").unwrap();
+    assert_eq!(m.repo(), "handy-computer/Breeze-ASR-25-gguf");
+    assert_eq!(m.file(), "Breeze-ASR-25-Q8_0.gguf");
+  }
+
+  #[test]
+  fn names_are_unambiguous() {
+    for (i, a) in MODELS.iter().enumerate() {
+      for b in &MODELS[i + 1..] {
+        for n in [b.name, b.full_name] {
+          assert!(a.name != n && a.full_name != n, "{} and {} share {n}", a.full_name, b.full_name);
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn unknown_names() {
+    assert!(error("parakeet3").contains("did you mean parakeet-v3?"));
+    assert!(error("gigam-v3").contains("did you mean gigaam-v3?"));
+    assert!(error("parakeet-tdt-06b-v3").contains("did you mean parakeet-tdt-0.6b-v3?"));
+    let e = error("whisper");
+    assert!(e.starts_with("unknown model \"whisper\". Known models: parakeet-v3, "), "{e}");
+    assert_eq!(distance("kitten", "sitting"), 3);
+    assert_eq!(distance("", "abc"), 3);
+    let hub = Hub::at("/nowhere");
+    assert_eq!(hub.find("whisper"), None);
+    assert!(matches!(hub.remove("whisper"), Err(Error::UnknownModel { .. })));
+  }
+
+  /// The crate docs' model table lists exactly `MODELS`, in order.
+  #[test]
+  fn docs_list_the_models() {
+    let rows: Vec<&str> =
+      (include_str!("../lib.rs").lines()).filter_map(|l| l.strip_prefix("//! | `")).collect();
+    let expected: Vec<String> = (MODELS.iter())
+      .map(|m| {
+        let output = if m.punctuated { "cased, punctuated" } else { "lowercase, no punctuation" };
+        let (size, langs) = (m.size as f64 / 1e9, m.languages);
+        format!("{}` | `{}` | {size:.2} GB | {langs} | {output} |", m.name, m.full_name)
+      })
+      .collect();
+    assert_eq!(rows, expected);
+  }
+}

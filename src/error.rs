@@ -1,24 +1,79 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
+
+/// Everything that can fail in wavo: loading a model, running it on the GPU and, with the `hub`
+/// feature, managing downloads.
+///
+/// It is `#[non_exhaustive]` because the `hub` feature adds variants, and features unify across a
+/// build: keep a `_` arm when matching on it.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
+  /// Reading the model file, or the cache's files and folders with the `hub` feature, failed.
   #[error(transparent)]
   Io(#[from] std::io::Error),
+  /// The file is not a model wavo supports: not a GGUF, an architecture other than `gigaam`,
+  /// `parakeet` and `whisper`, or a missing or mismatched tensor or metadata key.
   #[error("invalid model: {0}")]
   Model(String),
+  /// No GPU adapter (Metal, Vulkan) is available.
   #[error("no GPU adapter: {0}")]
   Adapter(#[from] wgpu::RequestAdapterError),
+  /// The GPU adapter refused a device with the limits the model needs.
   #[error("GPU device: {0}")]
   Device(#[from] wgpu::RequestDeviceError),
+  /// Reading results back from the GPU failed.
   #[error("GPU readback: {0}")]
   Readback(#[from] wgpu::BufferAsyncError),
+  /// Mapping a GPU buffer for reading failed.
   #[error("GPU readback: {0}")]
   Map(#[from] wgpu::MapRangeError),
+  /// Waiting for the GPU failed, for example after a device loss.
   #[error("GPU poll: {0}")]
   Poll(#[from] wgpu::PollError),
+  /// An error the GPU reported during a call (out of memory, a lost device), or work the driver
+  /// dropped unfinished: some drivers cancel GPU work that runs for more than about 20 s.
   #[error("GPU: {0}")]
   Gpu(String),
+  /// A name that is neither a short nor a full name in [`hub::MODELS`](crate::hub::MODELS).
+  #[cfg(feature = "hub")]
+  #[cfg_attr(docsrs, doc(cfg(feature = "hub")))]
+  #[error("unknown model {name:?}{} Known models: {}", crate::hub::hint(*suggestion), crate::hub::names())]
+  UnknownModel {
+    /// The name as given.
+    name: String,
+    /// The closest known name, when one is a likely typo of `name`.
+    suggestion: Option<&'static str>,
+  },
+  /// A request to the Hugging Face Hub failed, including a download that broke off midway.
+  /// [`Hub::pull`](crate::hub::Hub::pull) has already retried what may pass on another try.
+  #[cfg(feature = "hub")]
+  #[cfg_attr(docsrs, doc(cfg(feature = "hub")))]
+  #[error("{url}: {message}")]
+  Http {
+    /// The URL requested.
+    url: String,
+    /// The HTTP status of an error response (404: no such file); `None` when no response came
+    /// or the body broke off.
+    status: Option<u16>,
+    /// What went wrong.
+    message: String,
+  },
+  /// The Hub's answer or the cache is not as expected: a response without the commit, ETag or
+  /// size headers, a download of the wrong size, or a file `hf` keeps in its shared blob store.
+  #[cfg(feature = "hub")]
+  #[cfg_attr(docsrs, doc(cfg(feature = "hub")))]
+  #[error("{0}")]
+  Hub(String),
+  /// The progress callback of [`Hub::pull`](crate::hub::Hub::pull) returned
+  /// [`ControlFlow::Break`](std::ops::ControlFlow::Break). The partial download stays in the
+  /// cache, and the next pull of the model resumes it.
+  #[cfg(feature = "hub")]
+  #[cfg_attr(docsrs, doc(cfg(feature = "hub")))]
+  #[error("download cancelled")]
+  Cancelled,
 }
 
+/// `Result` with wavo's [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Shorthand for `Error::Model` with a formatted message.
