@@ -211,6 +211,23 @@ KhronosGroup.VulkanSDK` (in PowerShell) and add `-DTRANSCRIBE_VULKAN=ON` to the 
 step. `ssh user@host wsl` opens the default WSL distribution instead, a separate Linux with its own
 toolchain.
 
+For a headless machine, Remote Desktop (built into Windows Pro) works without a monitor. Allow it
+and SSH only from the local network (here 192.168.8.0/23; `LocalSubnet` would leave out a client
+in the neighbouring subnet). A Windows update can switch the network to Public, which blocks the
+default SSH rule, so allow both rules on every profile:
+
+```powershell
+Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+Set-NetFirewallRule -DisplayGroup 'Remote Desktop' -Profile Any -RemoteAddress 192.168.8.0/23
+Set-NetFirewallRule -Name *ssh* -Profile Any -RemoteAddress 192.168.8.0/23
+Set-NetConnectionProfile -InterfaceAlias '<adapter>' -NetworkCategory Private
+```
+
+On a Mac, connect with Windows App (App Store), signing in with the account's password, not its
+PIN. It needs Local Network access in System Settings, and an outbound firewall such as LuLu must
+allow it to reach the machine on TCP 3389: error 0x4 means the connection never left the Mac.
+
 </details>
 
 ## 📝 License
