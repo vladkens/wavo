@@ -57,10 +57,7 @@ Left: wgpu features per target. Plan: [docs/plans/20261010-fast-build.md](plans/
 `Hub::find/pull/remove` in the Hugging Face cache, which the CLI's `pull/list/rm` use; docs on
 docs.rs for every public item, with compiled examples.
 
-Later research: **accuracy against the originals.** The fixtures prove wavo matches
-transcribe.cpp, itself a port of the PyTorch originals, so a reference bug passes unseen. Compare
-the original implementations, transcribe.cpp and wavo on the same clips, and their WER against
-human transcripts. Plan: [docs/plans/20261011-accuracy.md](plans/20261011-accuracy.md).
+Later research: **accuracy against the originals.** Plan: [docs/plans/20261011-accuracy.md](plans/20261011-accuracy.md).
 
 Later, only on request: streaming, slowing fast speech down before recognition
 (pitch-keeping time-stretch such as WSOLA; first measure WER on samples sped up with ffmpeg
