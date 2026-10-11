@@ -217,8 +217,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NOTES: ${{ needs.release-check.outputs.notes }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" target/distrib/* --clobber
+          # A rerun of all jobs rebuilds the archives: keep the ones already released.
+          if have=$(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null); then
+            for f in target/distrib/*; do
+              grep -qxF "${f##*/}" <<< "$have" || gh release upload "$TAG" "$f"
+            done
           else
             gh release create "$TAG" target/distrib/* --verify-tag --title "$TAG" --notes "$NOTES"
           fi
