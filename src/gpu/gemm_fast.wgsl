@@ -1,19 +1,25 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-// gemm.wgsl on 8×8 cooperative matrices with f16 operands and F32 accumulators, as the reference's
+// gemm.wgsl on F×F cooperative matrices with f16 operands and F32 accumulators, as the reference's
 // `kernel_mul_mm` multiplies (a and W both rounded to f16): 128 threads (four 32-lane subgroups)
-// compute a ROWS×64 tile of c, each subgroup a (ROWS / 2)×32 quadrant. K advances 512 / ROWS per
-// step, so staging takes 2–3 KB of shared memory, and the c tile goes out in rounds of 16 rows:
-// shared memory sets occupancy. 32-row tiles serve short inputs, where 64-row ones leave too few
-// workgroups or too much padding. A dispatch with m == 0 is a probe: it writes the subgroup size
-// and count to c[0..2].
+// compute a ROWS×8F tile of c, each subgroup a (ROWS / 2)×4F quadrant. F is 8 (Apple) or 16: the
+// module is built with F and the matrix types replaced. ROWS is 4F or 8F, and K advances 8F² / ROWS
+// per step, so staging takes 2–3 KB of shared memory at F = 8, and the c tile goes out in rounds of
+// 2F rows: shared memory sets occupancy. 4F-row tiles serve short inputs, where 8F-row ones leave
+// too few workgroups or too much padding. A dispatch with m == 0 is a probe: it writes the subgroup
+// size and count to c[0..2].
 
 enable f16;
 enable wgpu_cooperative_matrix;
 
 override WTYPE: u32;
-// 32 or 64, and the K step.
+const F: u32 = 8u;
+// 4F or 8F, and the K step.
 override ROWS: u32;
-override KS: u32 = 512u / ROWS;
+override KS: u32 = 8u * F * F / ROWS;
+// W has rows up to n rounded up to 64, so a tile 128 wide may pass them; checking costs ~8% at 8.
+const WIDE: bool = F > 8u;
+// Halves of the a tile, where the Wᵀ tile starts.
+const AT: u32 = 8u * F * F;
 
 struct Params {
   m: u32,
@@ -38,11 +44,11 @@ alias AM = coop_mat8x8<f16, A>;
 alias BM = coop_mat8x8<f16, B>;
 alias CM = coop_mat8x8<f32, C>;
 
-// a as 8×8 row-major fragments [k / 8][row / 8] at 0, Wᵀ as fragments [k / 8][col / 8] (k as rows)
-// at 512.
-var<workgroup> tile: array<f16, 512u + 64u * KS>;
-// 16 rows of the c tile: 8 of the upper quadrants, then 8 of the lower ones.
-var<workgroup> ct: array<f32, 1024>;
+// a as F×F row-major fragments [k / F][row / F] at 0, Wᵀ as fragments [k / F][col / F] (k as rows)
+// at AT.
+var<workgroup> tile: array<f16, AT + 8u * F * KS>;
+// 2F rows of the c tile: F of the upper quadrants, then F of the lower ones.
+var<workgroup> ct: array<f32, 16u * F * F>;
 
 // GELU as gemm.wgsl's.
 fn gelu(x: f32) -> f32 {
@@ -65,7 +71,7 @@ fn stage_a(m0: u32, k0: u32, i: u32) {
   if (m0 + r < p.m) {
     v = a[((m0 + r) * p.k + k0 + kk) / 4u];
   }
-  let o = (kk / 8u * ROWS + r) * 8u + kk % 8u;
+  let o = (kk / F * ROWS + r) * F + kk % F;
   tile[o] = f16(v.x);
   tile[o + 1u] = f16(v.y);
   tile[o + 2u] = f16(v.z);
@@ -77,26 +83,28 @@ fn stage_w(n0: u32, k0: u32, i: u32) {
   let r = i / (KS / 4u);
   let kk = i % (KS / 4u) * 4u;
   let x = (n0 + r) * p.k + k0 + kk;
-  var v: vec4<f32>;
-  switch WTYPE {
-    case 0u: { v = bitcast<vec4<f32>>(vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u])); }
-    case 1u: { v = vec4(unpack2x16float(w[x / 2u]), unpack2x16float(w[x / 2u + 1u])); }
-    default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
+  var v = vec4<f32>(0.0);
+  if (!WIDE || n0 + r < p.n) {
+    switch WTYPE {
+      case 0u: { v = bitcast<vec4<f32>>(vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u])); }
+      case 1u: { v = vec4(unpack2x16float(w[x / 2u]), unpack2x16float(w[x / 2u + 1u])); }
+      default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
+    }
   }
-  let t = 512u + (kk / 8u * 8u + r / 8u) * 64u + kk % 8u * 8u + r % 8u;
+  let t = AT + (kk / F * 8u + r / F) * F * F + kk % F * F + r % F;
   tile[t] = f16(v.x);
-  tile[t + 8u] = f16(v.y);
-  tile[t + 16u] = f16(v.z);
-  tile[t + 24u] = f16(v.w);
+  tile[t + F] = f16(v.y);
+  tile[t + 2u * F] = f16(v.z);
+  tile[t + 3u * F] = f16(v.w);
 }
 
-// Writes `ct`, rows q·8.. of each quadrant row, through the epilogue.
+// Writes `ct`, rows q·F.. of each quadrant row, through the epilogue.
 fn flush(m0: u32, n0: u32, q: u32, lane: u32) {
   workgroupBarrier();
-  for (var i = lane; i < 1024u; i += 128u) {
-    let m = m0 + i / 512u * ROWS / 2u + q * 8u + i / 64u % 8u;
-    if (m < p.m) {
-      let n = n0 + i % 64u;
+  for (var i = lane; i < 16u * F * F; i += 128u) {
+    let m = m0 + i / (8u * F * F) * ROWS / 2u + q * F + i / (8u * F) % F;
+    let n = n0 + i % (8u * F);
+    if (m < p.m && (!WIDE || n < p.n)) {
       let v = ct[i] + bias[n];
       let o = m * (p.n + p.dual) + n;
       switch p.mode {
@@ -130,11 +138,12 @@ fn gemm(
     }
     return;
   }
-  let n0 = wg.x * 64u;
+  let n0 = wg.x * 8u * F;
   let m0 = wg.y * ROWS;
-  // This subgroup's quadrant: rows sr..sr + ROWS / 2, columns sc..sc + 32 of the tile.
+  // This subgroup's quadrant: rows sr..sr + ROWS / 2, columns sc..sc + 4F of the tile.
   let sr = sg / 2u * ROWS / 2u;
-  let sc = sg % 2u * 32u;
+  let sc = sg % 2u * 4u * F;
+  let ff = F * F;
   var c00: CM;
   var c01: CM;
   var c02: CM;
@@ -152,21 +161,23 @@ fn gemm(
   var c32: CM;
   var c33: CM;
   for (var k0 = 0u; k0 < p.k; k0 += KS) {
-    stage_a(m0, k0, lane);
-    stage_w(n0, k0, lane);
-    if (KS > 8u) {
-      stage_w(n0, k0, lane + 128u);
+    // Each thread stages a vec4 per 128 of a and of W.
+    for (var j = 0u; j < AT / 512u; j++) {
+      stage_a(m0, k0, lane + j * 128u);
+    }
+    for (var j = 0u; j < F * KS / 64u; j++) {
+      stage_w(n0, k0, lane + j * 128u);
     }
     workgroupBarrier();
-    for (var f = 0u; f < KS / 8u; f++) {
-      let ta = (f * ROWS + sr) * 8u;
-      let tb = 512u + (f * 8u + sc / 8u) * 64u;
-      let a0 = coopLoadT<AM>(&tile[ta], 8u);
-      let a1 = coopLoadT<AM>(&tile[ta + 64u], 8u);
-      let b0 = coopLoadT<BM>(&tile[tb], 8u);
-      let b1 = coopLoadT<BM>(&tile[tb + 64u], 8u);
-      let b2 = coopLoadT<BM>(&tile[tb + 128u], 8u);
-      let b3 = coopLoadT<BM>(&tile[tb + 192u], 8u);
+    for (var f = 0u; f < KS / F; f++) {
+      let ta = (f * ROWS + sr) * F;
+      let tb = AT + (f * 8u + sc / F) * ff;
+      let a0 = coopLoadT<AM>(&tile[ta], F);
+      let a1 = coopLoadT<AM>(&tile[ta + ff], F);
+      let b0 = coopLoadT<BM>(&tile[tb], F);
+      let b1 = coopLoadT<BM>(&tile[tb + ff], F);
+      let b2 = coopLoadT<BM>(&tile[tb + 2u * ff], F);
+      let b3 = coopLoadT<BM>(&tile[tb + 3u * ff], F);
       c00 = coopMultiplyAdd(a0, b0, c00);
       c01 = coopMultiplyAdd(a0, b1, c01);
       c02 = coopMultiplyAdd(a0, b2, c02);
@@ -175,9 +186,9 @@ fn gemm(
       c11 = coopMultiplyAdd(a1, b1, c11);
       c12 = coopMultiplyAdd(a1, b2, c12);
       c13 = coopMultiplyAdd(a1, b3, c13);
-      if (ROWS > 32u) {
-        let a2 = coopLoadT<AM>(&tile[ta + 128u], 8u);
-        let a3 = coopLoadT<AM>(&tile[ta + 192u], 8u);
+      if (ROWS > 4u * F) {
+        let a2 = coopLoadT<AM>(&tile[ta + 2u * ff], F);
+        let a3 = coopLoadT<AM>(&tile[ta + 3u * ff], F);
         c20 = coopMultiplyAdd(a2, b0, c20);
         c21 = coopMultiplyAdd(a2, b1, c21);
         c22 = coopMultiplyAdd(a2, b2, c22);
@@ -190,28 +201,28 @@ fn gemm(
     }
     workgroupBarrier();
   }
-  let o = sg / 2u * 512u + sc;
-  coopStoreT(c00, &ct[o], 64u);
-  coopStoreT(c01, &ct[o + 8u], 64u);
-  coopStoreT(c02, &ct[o + 16u], 64u);
-  coopStoreT(c03, &ct[o + 24u], 64u);
+  let o = sg / 2u * 8u * ff + sc;
+  coopStoreT(c00, &ct[o], 8u * F);
+  coopStoreT(c01, &ct[o + F], 8u * F);
+  coopStoreT(c02, &ct[o + 2u * F], 8u * F);
+  coopStoreT(c03, &ct[o + 3u * F], 8u * F);
   flush(m0, n0, 0u, lane);
-  coopStoreT(c10, &ct[o], 64u);
-  coopStoreT(c11, &ct[o + 8u], 64u);
-  coopStoreT(c12, &ct[o + 16u], 64u);
-  coopStoreT(c13, &ct[o + 24u], 64u);
+  coopStoreT(c10, &ct[o], 8u * F);
+  coopStoreT(c11, &ct[o + F], 8u * F);
+  coopStoreT(c12, &ct[o + 2u * F], 8u * F);
+  coopStoreT(c13, &ct[o + 3u * F], 8u * F);
   flush(m0, n0, 1u, lane);
-  if (ROWS == 32u) {
+  if (ROWS == 4u * F) {
     return;
   }
-  coopStoreT(c20, &ct[o], 64u);
-  coopStoreT(c21, &ct[o + 8u], 64u);
-  coopStoreT(c22, &ct[o + 16u], 64u);
-  coopStoreT(c23, &ct[o + 24u], 64u);
+  coopStoreT(c20, &ct[o], 8u * F);
+  coopStoreT(c21, &ct[o + F], 8u * F);
+  coopStoreT(c22, &ct[o + 2u * F], 8u * F);
+  coopStoreT(c23, &ct[o + 3u * F], 8u * F);
   flush(m0, n0, 2u, lane);
-  coopStoreT(c30, &ct[o], 64u);
-  coopStoreT(c31, &ct[o + 8u], 64u);
-  coopStoreT(c32, &ct[o + 16u], 64u);
-  coopStoreT(c33, &ct[o + 24u], 64u);
+  coopStoreT(c30, &ct[o], 8u * F);
+  coopStoreT(c31, &ct[o + F], 8u * F);
+  coopStoreT(c32, &ct[o + 2u * F], 8u * F);
+  coopStoreT(c33, &ct[o + 3u * F], 8u * F);
   flush(m0, n0, 3u, lane);
 }

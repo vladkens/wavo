@@ -82,30 +82,37 @@ impl Kernels {
   }
 }
 
-/// The fast GEMMs (per weight type 32- and 64-row tiles), LayerNorm, conv_glu, flash attention and
-/// relative attention, before their probes.
-type FastPipelines = (Vec<Pipeline>, [Pipeline; 4]);
+/// The fast GEMMs (per weight type 4F- and 8F-row tiles), LayerNorm, conv_glu, flash attention and
+/// relative attention, before their probes. Flash attention needs 8×8 F32 matrices (F = 8).
+type FastPipelines = (Vec<Pipeline>, [Option<Pipeline>; 4]);
 
-/// Compiles the fast kernels; `None` if any fails.
-fn compile_fast(device: &wgpu::Device) -> Option<FastPipelines> {
+/// Compiles the fast kernels for F×F cooperative matrices; `None` if any fails.
+fn compile_fast(device: &wgpu::Device, f: usize) -> Option<FastPipelines> {
   // Error scopes are per thread.
   let scopes = [wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation]
     .map(|f| device.push_error_scope(f));
-  let gemm = module(device, include_str!("gemm_fast.wgsl"));
+  let source = include_str!("gemm_fast.wgsl")
+    .replace("F: u32 = 8u", &format!("F: u32 = {f}u"))
+    .replace("8x8", &format!("{f}x{f}"));
+  let gemm = module(device, &source);
   let ops = module(device, include_str!("ops_fast.wgsl"));
-  let relative = module(device, include_str!("attention_fast.wgsl"));
-  let flash = module(device, include_str!("flash.wgsl"));
   let gemm: Vec<_> = (0..6)
     .map(|i| {
-      let constants = [("WTYPE", (i / 2) as f64), ("ROWS", (32 << (i % 2)) as f64)];
+      let constants = [("WTYPE", (i / 2) as f64), ("ROWS", ((4 * f) << (i % 2)) as f64)];
       pipeline(device, &gemm, "gemm", &constants)
     })
     .collect();
+  let flash = (f == 8).then(|| {
+    let relative = module(device, include_str!("attention_fast.wgsl"));
+    let flash = module(device, include_str!("flash.wgsl"));
+    [pipeline(device, &flash, "flash", &[]), pipeline(device, &relative, "attention", &[])]
+  });
+  let [attention, relative] = flash.map(|[a, r]| [Some(a), Some(r)]).unwrap_or_default();
   let kernels = [
-    pipeline(device, &ops, "layer_norm", &[]),
-    pipeline(device, &ops, "conv_glu", &[]),
-    pipeline(device, &flash, "flash", &[]),
-    pipeline(device, &relative, "attention", &[]),
+    Some(pipeline(device, &ops, "layer_norm", &[])),
+    Some(pipeline(device, &ops, "conv_glu", &[])),
+    attention,
+    relative,
   ];
   let errors = scopes.into_iter().rev().filter_map(|s| pollster::block_on(s.pop())).count();
   (errors == 0).then_some((gemm, kernels))
@@ -121,6 +128,8 @@ struct Decoder {
 
 #[derive(Default)]
 struct Fast {
+  /// F of the GEMM's F×F cooperative matrices: 8 (Apple) or 16.
+  size: usize,
   gemm: Option<Vec<Pipeline>>,
   layer_norm: Option<Pipeline>,
   conv_glu: Option<Pipeline>,
@@ -196,7 +205,8 @@ impl Gpu {
   /// The device with the fast kernels that pass their probes, or only the portable ones.
   pub fn new(fast: bool) -> Result<Self> {
     let adapter = adapter()?;
-    let fast = fast && offers_fast(&adapter);
+    let size = if fast { fast_size(&adapter) } else { None };
+    let fast = size.is_some();
     let mappable = adapter.get_info().device_type == wgpu::DeviceType::IntegratedGpu
       && adapter.features().contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
     let mut features = wgpu::Features::IMMEDIATES;
@@ -235,7 +245,7 @@ impl Gpu {
 
     // The fast kernels compile on a second thread meanwhile.
     let (kernels, compiled) = std::thread::scope(|s| {
-      let compiled = s.spawn(|| if fast { compile_fast(&device) } else { None });
+      let compiled = s.spawn(|| size.and_then(|f| compile_fast(&device, f)));
       (Kernels::new(&device), compiled.join().unwrap())
     });
     let mut weights = wgpu::BufferUsages::STORAGE;
@@ -265,8 +275,8 @@ impl Gpu {
       calls: Mutex::new(0),
       failure,
     };
-    if let Some(compiled) = compiled {
-      gpu.fast = gpu.probe(compiled);
+    if let (Some(size), Some(compiled)) = (size, compiled) {
+      gpu.fast = Fast { size, ..gpu.probe(compiled) };
     }
     Ok(gpu)
   }
@@ -277,7 +287,7 @@ impl Gpu {
   fn probe(&self, compiled: FastPipelines) -> Fast {
     let (gemm, [layer_norm, conv_glu, attention, relative]) = compiled;
     // Per kernel: bindings, the output's, params and subgroups.
-    let mut probes: Vec<_> = gemm.into_iter().map(|k| (k, 5, 2, 6, 4.0)).collect();
+    let mut probes: Vec<_> = gemm.into_iter().map(|k| (Some(k), 5, 2, 6, 4.0)).collect();
     probes.extend([
       (layer_norm, 6, 3, 4, 4.0),
       (conv_glu, 6, 5, 6, 4.0),
@@ -290,7 +300,9 @@ impl Gpu {
     let outs: Vec<Buffer> = (probes.iter())
       .map(|(k, bindings, out, params, _)| {
         let mut buffers: Vec<Buffer> = (0..*bindings).map(|_| self.buffer(16)).collect();
-        p.run(k, &buffers.iter().collect::<Vec<_>>(), &[0; 8][..*params], [1, 1, 1]);
+        if let Some(k) = k {
+          p.run(k, &buffers.iter().collect::<Vec<_>>(), &[0; 8][..*params], [1, 1, 1]);
+        }
         buffers.swap_remove(*out)
       })
       .collect();
@@ -308,12 +320,13 @@ impl Gpu {
     let range = mapped.then(|| read.slice(..).get_mapped_range().ok()).flatten();
     let got: Vec<f32> = range.map(|r| bytemuck::cast_slice(&r).to_vec()).unwrap_or_default();
     let mut kept = (probes.into_iter().enumerate()).map(|(i, (k, .., subgroups))| {
-      (got.get(2 * i..2 * i + 2) == Some(&[32.0, subgroups][..])).then_some(k)
+      k.filter(|_| got.get(2 * i..2 * i + 2) == Some(&[32.0, subgroups][..]))
     });
     let mut next = || kept.next().flatten();
     // All six GEMMs are taken before any is checked, so the kernels after them stay in place.
     let gemm: Vec<_> = (0..6).map(|_| next()).collect();
     Fast {
+      size: 0,
       gemm: gemm.into_iter().collect(),
       layer_norm: next(),
       conv_glu: next(),
@@ -571,22 +584,23 @@ fn adapter() -> Result<wgpu::Adapter> {
   }))?)
 }
 
-/// Whether `adapter` has what the fast kernels need: 8×8 cooperative matrices of F32 and of F16
-/// into F32, and 32-lane subgroups. Apple GPUs do; Vulkan drivers so far offer F16/int8 matrices
-/// at best.
-fn offers_fast(adapter: &wgpu::Adapter) -> bool {
+/// F of the F×F cooperative matrices the fast kernels use on `adapter`, which needs 32-lane
+/// subgroups: 8 with 8×8 matrices of F32 and of F16 into F32 (Apple GPUs; all fast kernels), else
+/// 16 with 16×16 F16 into F32 (Vulkan drivers of NVIDIA, AMD and Intel Arc; no flash attention).
+fn fast_size(adapter: &wgpu::Adapter) -> Option<usize> {
   use wgpu::CooperativeScalarType::{F16, F32};
   let info = adapter.get_info();
   let matrices = adapter.cooperative_matrix_properties();
-  let has = |ab| {
-    matrices
-      .iter()
-      .any(|p| (p.m_size, p.n_size, p.k_size, p.ab_type, p.cr_type) == (8, 8, 8, ab, F32))
+  let has = |f, ab| {
+    let shape = (f, f, f, ab, F32);
+    matrices.iter().any(|p| (p.m_size, p.n_size, p.k_size, p.ab_type, p.cr_type) == shape)
   };
-  adapter.features().contains(COOP)
-    && (info.subgroup_min_size..=info.subgroup_max_size).contains(&32)
-    && has(F32)
-    && has(F16)
+  if !adapter.features().contains(COOP)
+    || !(info.subgroup_min_size..=info.subgroup_max_size).contains(&32)
+  {
+    return None;
+  }
+  if has(8, F32) && has(8, F16) { Some(8) } else { has(16, F16).then_some(16) }
 }
 
 fn module(device: &wgpu::Device, source: &str) -> wgpu::ShaderModule {
@@ -652,10 +666,10 @@ impl<'a> Pass<'a> {
   /// Submits the work recorded so far, marked done once `after` is written, and waits for the
   /// submission before it. A driver may cancel a long request (i915 20 s after it was queued,
   /// while a slow GPU runs a minute of Parakeet for longer), so each request is short and at
-  /// most two are queued. Errors show in `Gpu::run`'s last poll. With the fast kernels (Apple) a
-  /// call stays one submission: splitting costs ~1% there, and a 20 s call ran fine.
+  /// most two are queued. Errors show in `Gpu::run`'s last poll. With Apple's fast kernels (F = 8)
+  /// a call stays one submission: splitting costs ~1% there, and a 20 s call ran fine.
   fn flush(&mut self, after: &Buffer) {
-    if self.gpu.fast.gemm.is_some() {
+    if self.gpu.fast.size == 8 {
       return;
     }
     self.mark(after);
@@ -727,11 +741,12 @@ impl<'a> Pass<'a> {
     let buffers = [a, &l.bias, c, &l.weight, l.scales.as_ref().unwrap_or(&l.bias)];
     match &gpu.fast.gemm {
       Some(k) => {
-        // 64-row tiles unless they leave few workgroups or pad more rows than 32-row ones.
-        let (m64, m32) = (m.div_ceil(64), m.div_ceil(32));
-        let tall = m64 * l.n / 64 >= 64 && m64 * 20 <= m32 * 11;
-        let rows = if tall { 64 } else { 32 };
-        self.run(&k[2 * l.ty + tall as usize], &buffers, &params, [l.n / 64, m.div_ceil(rows), 1])
+        // 8F-row tiles unless they leave few workgroups or pad more rows than 4F-row ones.
+        let short = 4 * gpu.fast.size;
+        let (cols, m8, m4) = (l.n.div_ceil(2 * short), m.div_ceil(2 * short), m.div_ceil(short));
+        let tall = m8 * cols >= 64 && m8 * 20 <= m4 * 11;
+        let rows = if tall { 2 * short } else { short };
+        self.run(&k[2 * l.ty + tall as usize], &buffers, &params, [cols, m.div_ceil(rows), 1])
       }
       None => self.run(&gpu.kernels.gemm[l.ty], &buffers, &params, [l.n / 64, m.div_ceil(64), 1]),
     }
@@ -917,9 +932,10 @@ mod tests {
       let fast = Gpu::new(true).unwrap();
       let f = &fast.fast;
       let ops = [&f.layer_norm, &f.conv_glu, &f.attention, &f.relative];
-      if offers_fast(&adapter().unwrap()) {
+      // Flash attention needs 8×8 matrices.
+      if let Some(size) = fast_size(&adapter().unwrap()) {
         assert!(
-          f.gemm.is_some() && ops.iter().all(|k| k.is_some()),
+          f.gemm.is_some() && ops[..if size == 8 { 4 } else { 2 }].iter().all(|k| k.is_some()),
           "a fast kernel failed its probe"
         );
       }
