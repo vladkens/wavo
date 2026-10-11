@@ -134,3 +134,8 @@ fn whisper_base() {
 fn whisper_small() {
   check("whisper-small", &["jfk", "zh-short", "ru-long", "uk-short"]);
 }
+
+#[test]
+fn whisper_medium() {
+  check("whisper-medium", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
+}
