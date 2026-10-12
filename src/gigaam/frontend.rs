@@ -9,7 +9,7 @@ use crate::fft::Fft;
 use crate::gguf::Gguf;
 
 pub const N_FFT: usize = 320;
-const HOP: usize = 160;
+pub const HOP: usize = 160;
 const BINS: usize = N_FFT / 2 + 1;
 
 pub struct Frontend {
@@ -45,6 +45,10 @@ impl Frontend {
   }
 
   /// Features of 16 kHz PCM, time-major `[frames][mels]`.
+  pub fn mels(&self) -> usize {
+    self.mels
+  }
+
   pub fn compute(&self, pcm: &[f32]) -> Vec<f32> {
     let mut out = Vec::with_capacity(pcm.len() / HOP * self.mels);
     let (mut frame, mut buf) = ([0f32; N_FFT], [0f32; 4 * N_FFT]);

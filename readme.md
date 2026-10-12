@@ -11,11 +11,12 @@
 
 </div>
 
-`wavo` turns speech into text locally, on the GPU, in pure Rust. Give it a recording of any
-length, a voice note or a two-hour meeting, and get the text with timestamps. It runs the open ASR
-models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes with
-practically the same output and comparable or better speed. Use it as a command-line tool with an
-ollama-like model manager, or as a library that builds with a plain `cargo build`.
+`wavo` turns speech into text locally, on the GPU or a Mac's Neural Engine, in pure Rust. Give it
+a recording of any length, a voice note or a two-hour meeting, and get the text with timestamps.
+It runs the open ASR models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp)
+publishes with practically the same output and comparable or better speed. Use it as a
+command-line tool with an ollama-like model manager, or as a library that builds with a plain
+`cargo build`.
 
 ## 🌟 Features
 
@@ -24,6 +25,8 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
 - 🎧 Any common format: wav, mp3, m4a, flac, ogg (Vorbis), resampled for you
 - 🦀 Pure Rust library: no CMake, C++ toolchain, Python or ONNX Runtime to install
 - ⚡ Runs on the GPU: Metal on Apple Silicon, Vulkan on Linux
+- 🧠 On Apple Silicon Macs, Parakeet and GigaAM run on the Neural Engine, 2–3.6× faster than
+  the GPU on 11 s of audio, prepared once by `wavo pull`
 - 🏎️ As fast as transcribe.cpp or faster on the same model files, and loads in 0.1–0.2 s
 - 🎯 Same text, tokens and timestamps as transcribe.cpp on its test clips
 - 📦 `pull` / `list` / `rm` models, shared with the Hugging Face cache that `hf` uses
@@ -134,6 +137,7 @@ wavo run talk.wav --srt > talk.srt    # subtitles
 wavo list                             # downloaded models
 wavo rm parakeet-v3                   # delete one
 wavo bench gigaam-v3 talk.wav         # load time and speed on your machine
+wavo run talk.wav --backend gpu       # the GPU even where the Neural Engine is ready
 ```
 
 When the model isn't downloaded yet, `wavo run` asks before downloading it, in a terminal; `-y`
@@ -143,6 +147,15 @@ moments and transcribed piece by piece, so an hour of audio works as well as a m
 `--segment SECS` sets the piece length, `--segment 0` runs one pass. Models are stored in the
 Hugging Face cache (`~/.cache/huggingface/hub`), so a model fetched with `hf download` is found by
 `wavo` and the other way round.
+
+On an Apple Silicon Mac with macOS 15 or later, `wavo pull` also prepares Parakeet and GigaAM for
+the Neural Engine: it compiles the model's encoder for Core ML once, which takes 15–30 s and as much
+disk as the model, in `~/Library/Caches/wavo`. From then on `wavo run` uses the Neural Engine for
+them (`wavo list` shows which are ready) and splits audio into pieces of up to 15 s; the words
+are the same as on the GPU on the test clips, while now and then a comma or a capital letter
+differs and some tokens start a frame or two apart. `--backend gpu` runs on the
+GPU anyway, `--backend ane` fails rather than fall back. Whisper and Moonshine always run on the
+GPU, where they are faster.
 
 ## ⚡ Speed
 
@@ -157,6 +170,19 @@ Apple M2, the same Q8_0 model file, wavo against transcribe.cpp on Metal, an 11 
 
 For dictation, where a model is loaded for each recording, the whole run (start, load, transcribe)
 is about a quarter to a third shorter. More numbers in [docs/perf.md](docs/perf.md).
+
+On the Neural Engine, warm ms for an 11 s clip / a 4.5 s one, against wavo on the GPU and
+transcribe.cpp on Metal:
+
+| Model | Mac | Neural Engine | GPU | transcribe.cpp |
+|---|---|---|---|---|
+| `parakeet-v3` | M1 | **70** / **53** | 252 / 115 | 295 / 142 |
+| `parakeet-v3` | M2 | **57** / **44** | 149 / 72 | 269 / 96 |
+| `gigaam-v3` | M1 | **52** / **42** | 170 / 70 | 180 / 74 |
+| `gigaam-v3` | M2 | **46** / **40** | 92 / 47 | 105 / 53 |
+
+A load takes 0.1–0.15 s, and the wavo process needs 16–21 MiB: the weights live in the system's
+Neural Engine service.
 
 ## 📚 Library usage
 
@@ -185,10 +211,15 @@ for token in &transcript.tokens {
 ```
 
 The `hub` feature downloads models by name (it adds an HTTP client); leave it out to load `.gguf`
-files you fetch yourself, with a pure Rust build. Decoding and resampling audio and splitting long
-recordings are up to you: `model.max_audio_ms()` tells how long a piece the model was trained on
-(25 s for GigaAM, 30 s for Whisper and Moonshine). The [API docs](https://docs.rs/wavo) have the details,
-including downloading on a thread with progress and cancel, as
+files you fetch yourself, with a pure Rust build. Decoding and resampling audio are up to you.
+`model.transcribe_long(&pcm)` splits long recordings at pauses into pieces of up to
+`model.max_audio_ms()` (15 s on the Neural Engine, 25 s for GigaAM, 30 s for Whisper and
+Moonshine) and joins the transcripts; `wavo::split` gives the pieces to transcribe yourself. On a
+Mac, `hub.pull` also prepares Parakeet and GigaAM for the Neural Engine, `wavo::Model::prepare`
+does it for a file you manage, and `Model::load` then runs them there. The system caches this
+per program, so your app prepares for itself even when `wavo pull` already did (then it takes
+one load of 10–30 s, without rebuilding); `Model::load_with(path, Backend::Gpu)` picks the GPU. The [API docs](https://docs.rs/wavo) have
+the details, including downloading on a thread with progress and cancel, as
 [examples/hub.rs](examples/hub.rs) does.
 
 ## 🤝 Contributing

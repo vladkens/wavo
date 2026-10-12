@@ -34,6 +34,16 @@ pub enum Error {
   /// dropped unfinished: some drivers cancel GPU work that runs for more than about 20 s.
   #[error("GPU: {0}")]
   Gpu(String),
+  /// The Neural Engine can't run the model: this machine has none (it needs Apple Silicon and
+  /// macOS 15 or later), the family has no Neural Engine program, the model isn't
+  /// [prepared](crate::Model::prepare), or Core ML failed to compile, load or run it.
+  #[error("Neural Engine: {0}")]
+  NeuralEngine(String),
+  /// A progress callback returned [`ControlFlow::Break`](std::ops::ControlFlow::Break): the one
+  /// of [`Model::prepare`](crate::Model::prepare), or with the `hub` feature of `Hub::pull`,
+  /// whose partial download stays in the cache for the next pull of the model to resume.
+  #[error("cancelled")]
+  Cancelled,
   /// A name that is neither a short nor a full name in [`hub::MODELS`](crate::hub::MODELS).
   #[cfg(feature = "hub")]
   #[cfg_attr(docsrs, doc(cfg(feature = "hub")))]
@@ -64,13 +74,6 @@ pub enum Error {
   #[cfg_attr(docsrs, doc(cfg(feature = "hub")))]
   #[error("{0}")]
   Hub(String),
-  /// The progress callback of [`Hub::pull`](crate::hub::Hub::pull) returned
-  /// [`ControlFlow::Break`](std::ops::ControlFlow::Break). The partial download stays in the
-  /// cache, and the next pull of the model resumes it.
-  #[cfg(feature = "hub")]
-  #[cfg_attr(docsrs, doc(cfg(feature = "hub")))]
-  #[error("download cancelled")]
-  Cancelled,
 }
 
 /// `Result` with wavo's [`Error`].

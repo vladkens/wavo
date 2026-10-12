@@ -1,8 +1,9 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Parakeet TDT: log-mel frontend on the CPU, FastConformer encoder (8× conv subsampling, relative
-//! positions) on the GPU, TDT greedy decoding on the CPU, where the joint also predicts how many
-//! frames to advance.
+//! positions) on the GPU or the Neural Engine, TDT greedy decoding on the CPU, where the joint also
+//! predicts how many frames to advance.
 
+pub mod ane;
 mod decoder;
 mod encoder;
 mod frontend;
@@ -20,55 +21,67 @@ use crate::{Token, Transcript};
 /// Encoder frame length: 10 ms hop × subsampling 8.
 const FRAME_MS: u32 = 80;
 
+enum Backend {
+  Gpu(Box<(Gpu, Encoder)>),
+  Ane(crate::ane::Model),
+}
+
 pub struct Parakeet {
-  gpu: Gpu,
+  backend: Backend,
   frontend: Frontend,
-  encoder: Encoder,
   decoder: Decoder,
   vocab: Vec<String>,
   /// Tokens left out of the result: unknown and control ones.
   special: Vec<bool>,
 }
 
-impl Parakeet {
-  pub fn load(g: &Gguf) -> Result<Self> {
-    for (key, want) in [
-      ("general.architecture", "parakeet"),
-      ("stt.parakeet.head_kind", "tdt"),
-      ("stt.parakeet.encoder.att_context_style", "regular"),
-      ("tokenizer.ggml.model", "bpe"),
-      ("stt.frontend.type", "mel"),
-      ("stt.frontend.window", "hann"),
-      ("stt.frontend.normalize", "per_feature"),
-    ] {
-      g.check(key, &[want])?;
-    }
-    for (key, want) in [
-      ("stt.parakeet.encoder.subsampling_factor", 8),
-      ("stt.frontend.sample_rate", 16000),
-      ("stt.frontend.num_mels", MELS),
-      ("stt.frontend.n_fft", N_FFT),
-      ("stt.frontend.win_length", WINDOW),
-      ("stt.frontend.hop_length", HOP),
-    ] {
-      g.check(key, &[want as u32])?;
-    }
-    for (key, want) in [("pre_emphasis", PRE_EMPHASIS), ("f_min", 0.0), ("f_max", F_MAX)] {
-      g.check(&format!("stt.frontend.{key}"), &[want])?;
-    }
-    g.check("stt.parakeet.encoder.use_bias", &[false])?;
-    g.check("stt.parakeet.encoder.xscaling", &[false])?;
-    let cfg = conformer::Config::load(g, "parakeet", Attention::Relative, false)?;
-    let pad = (cfg.kernel / 2) as i32;
-    for (key, want) in [
-      ("att_context_left", -1),
-      ("att_context_right", -1),
-      ("conv_context_left", pad),
-      ("conv_context_right", pad),
-    ] {
-      g.check(&format!("stt.parakeet.encoder.{key}"), &[want])?;
-    }
+/// Checks the encoder's metadata and returns its config, subsampling channels and joint size.
+fn config(g: &Gguf) -> Result<(conformer::Config, usize, usize)> {
+  for (key, want) in [
+    ("general.architecture", "parakeet"),
+    ("stt.parakeet.head_kind", "tdt"),
+    ("stt.parakeet.encoder.att_context_style", "regular"),
+    ("tokenizer.ggml.model", "bpe"),
+    ("stt.frontend.type", "mel"),
+    ("stt.frontend.window", "hann"),
+    ("stt.frontend.normalize", "per_feature"),
+  ] {
+    g.check(key, &[want])?;
+  }
+  for (key, want) in [
+    ("stt.parakeet.encoder.subsampling_factor", 8),
+    ("stt.frontend.sample_rate", 16000),
+    ("stt.frontend.num_mels", MELS),
+    ("stt.frontend.n_fft", N_FFT),
+    ("stt.frontend.win_length", WINDOW),
+    ("stt.frontend.hop_length", HOP),
+  ] {
+    g.check(key, &[want as u32])?;
+  }
+  for (key, want) in [("pre_emphasis", PRE_EMPHASIS), ("f_min", 0.0), ("f_max", F_MAX)] {
+    g.check(&format!("stt.frontend.{key}"), &[want])?;
+  }
+  g.check("stt.parakeet.encoder.use_bias", &[false])?;
+  g.check("stt.parakeet.encoder.xscaling", &[false])?;
+  let cfg = conformer::Config::load(g, "parakeet", Attention::Relative, false)?;
+  let pad = (cfg.kernel / 2) as i32;
+  for (key, want) in [
+    ("att_context_left", -1),
+    ("att_context_right", -1),
+    ("conv_context_left", pad),
+    ("conv_context_right", pad),
+  ] {
+    g.check(&format!("stt.parakeet.encoder.{key}"), &[want])?;
+  }
+  let ch = g.get::<u32>("stt.parakeet.encoder.subsampling_channels")? as usize;
+  let joint = g.get::<u32>("stt.parakeet.joint.hidden")? as usize;
+  Ok((cfg, ch, joint))
+}
 
+impl Parakeet {
+  /// Runs the encoder on `ane` when given, else on the GPU.
+  pub fn load(g: &Gguf, ane: Option<crate::ane::Model>) -> Result<Self> {
+    let (cfg, ch, joint) = config(g)?;
     let vocab: Vec<String> =
       g.array::<&str>("tokenizer.ggml.tokens")?.into_iter().map(String::from).collect();
     let types = g.array::<i32>("tokenizer.ggml.token_type")?;
@@ -82,12 +95,16 @@ impl Parakeet {
       .map(|i| matches!(types[i], 2 | 3) || i == unk || vocab[i] == "<unk>")
       .collect();
 
-    let gpu = Gpu::new(true)?;
-    let ch = g.get::<u32>("stt.parakeet.encoder.subsampling_channels")? as usize;
-    let joint = g.get::<u32>("stt.parakeet.joint.hidden")? as usize;
-    let encoder = Encoder::new(&gpu, g, cfg, ch, joint)?;
+    let backend = match ane {
+      Some(model) => Backend::Ane(model),
+      None => {
+        let gpu = Gpu::new(true)?;
+        let encoder = Encoder::new(&gpu, g, cfg, ch, joint)?;
+        Backend::Gpu(Box::new((gpu, encoder)))
+      }
+    };
     let decoder = Decoder::new(g, vocab.len(), blank)?;
-    Ok(Self { gpu, frontend: Frontend::new(), encoder, decoder, vocab, special })
+    Ok(Self { backend, frontend: Frontend::new(), decoder, vocab, special })
   }
 
   pub fn transcribe(&self, pcm: &[f32]) -> Result<Transcript> {
@@ -95,7 +112,10 @@ impl Parakeet {
     if mel.is_empty() {
       return Ok(Transcript::default());
     }
-    let (enc, width) = self.encoder.run(&self.gpu, &mel)?;
+    let (enc, width) = match &self.backend {
+      Backend::Gpu(gpu) => gpu.1.run(&gpu.0, &mel)?,
+      Backend::Ane(model) => ane::run(model, &mel)?,
+    };
     let tokens: Vec<Token> = (self.decoder.decode(&enc, width).into_iter())
       .filter(|&(id, _)| !self.special[id as usize])
       .map(|(id, frame)| Token {
