@@ -1,0 +1,2 @@
+# Fixtures are compared byte for byte, also on Windows checkouts with core.autocrlf.
+tests/fixtures/*.txt text eol=lf
