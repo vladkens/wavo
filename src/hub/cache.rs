@@ -217,20 +217,47 @@ impl Hub {
   }
 
   /// Deletes a shared-store file unless a repo still links to it, and returns the bytes freed.
-  /// As in `hf cache rm`, the links its `<hash>.refs` lists are checked under `hf`'s lock for the
-  /// file, so a download that links it meanwhile waits; without the list the file stays. Links in
-  /// every `<root>/*/blobs/` count as well, listed or not.
+  /// As in `hf cache rm`, the links listed in its `<hash>.refs` are checked under `hf`'s lock for
+  /// the file, so a download that links it meanwhile waits; without the list the file stays. Links
+  /// in every `<root>/*/blobs/` count as well, listed or not. A link that can't be checked (no
+  /// permission) counts as one, so the file stays.
   fn sweep(&self, store: &Path) -> Result<u64> {
     let name = store.file_name().unwrap().to_string_lossy();
     let _lock = hold(&store.with_file_name(format!("{name}.lock")))?;
     let refs = store.with_file_name(format!("{name}.refs"));
     let Ok(listed) = fs::read_to_string(&refs) else { return Ok(0) };
-    let repos = fs::read_dir(&self.root).into_iter().flatten().flatten();
-    let found = repos.flat_map(|r| fs::read_dir(r.path().join("blobs")).into_iter().flatten());
-    let found = found.flatten().map(|b| b.path());
-    let mut links = listed.lines().map(|l| self.root.join(l)).chain(found);
     let target = fs::canonicalize(store)?;
-    if links.any(|b| b.is_symlink() && fs::canonicalize(b).is_ok_and(|t| t == target)) {
+    let absent =
+      |e: &io::Error| matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory);
+    let links = |b: &Path| match b.symlink_metadata() {
+      Ok(m) if m.is_symlink() => match fs::canonicalize(b) {
+        Err(e) if absent(&e) => Ok(false),
+        t => Ok(t? == target),
+      },
+      Err(e) if !absent(&e) => Err(e),
+      _ => Ok(false),
+    };
+    let used = || -> io::Result<bool> {
+      for line in listed.lines() {
+        if links(&self.root.join(line))? {
+          return Ok(true);
+        }
+      }
+      for repo in fs::read_dir(&self.root)? {
+        match fs::read_dir(repo?.path().join("blobs")) {
+          Err(e) if absent(&e) => {}
+          blobs => {
+            for b in blobs? {
+              if links(&b?.path())? {
+                return Ok(true);
+              }
+            }
+          }
+        }
+      }
+      Ok(false)
+    };
+    if !matches!(used(), Ok(false)) {
       return Ok(0);
     }
     let size = fs::symlink_metadata(store)?.len();
@@ -641,6 +668,29 @@ mod tests {
     assert_eq!(hub.remove_file("org/m", "m.gguf").unwrap(), Some(0));
     assert_eq!(fs::read_to_string(hub.find_file("org/n", "n.gguf").unwrap()).unwrap(), "hello");
     assert!(store.exists());
+    fs::remove_dir_all(&hub.root).unwrap();
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn remove_keeps_a_shared_blob_it_cannot_check() {
+    use std::os::unix::fs::PermissionsExt;
+    let hub = temp("shared-denied");
+    for listed in [true, false] {
+      let store = share(&hub, "org/m", "m.gguf", '1', "hello", true);
+      share(&hub, "org/n", "n.gguf", '1', "hello", listed);
+      let blobs = hub.folder("org/n").join("blobs");
+      fs::set_permissions(&blobs, fs::Permissions::from_mode(0o000)).unwrap();
+      if fs::read_dir(&blobs).is_ok() {
+        fs::set_permissions(&blobs, fs::Permissions::from_mode(0o755)).unwrap();
+        break; // root reads it anyway
+      }
+      let freed = hub.remove_file("org/m", "m.gguf").unwrap();
+      fs::set_permissions(&blobs, fs::Permissions::from_mode(0o755)).unwrap();
+      assert_eq!((freed, store.exists()), (Some(0), true), "listed: {listed}");
+      fs::remove_dir_all(hub.folder("org/n")).unwrap();
+      fs::remove_file(store.with_extension("refs")).unwrap();
+    }
     fs::remove_dir_all(&hub.root).unwrap();
   }
 
