@@ -272,7 +272,8 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
   ms; Parakeet unchanged. M2 Moonshine `dots` tiny 424 → 302, base 687 → 498 ms, peak 187 → 120
   and 259 → 194 MiB (reference 138 / 236). Fixtures exact (all 21 models on the RTX 4060, M2).
   Kept. Turbo `jfk` on the RTX 4060 after it, GPU timestamps per call: attention 473 → 86 ms,
-  GEMM 122, decoder gemv 23.5 and attend 13 ms.
+  GEMM 122, decoder gemv 23.5 and attend 13 ms. With the split decoder attention below, the N100:
+  whisper-tiny `jfk` / `dots` 2269 / 5016 → 759 / 1988 ms (reference Vulkan 1340 / 3052).
   - On the M2 in place of the 8×8 `flash.wgsl`: turbo `jfk` 1232 → 1926, GigaAM `ru-long` 248 →
     333 ms. Not used there.
   - Writing a vector component by a runtime index (`a[i][r % 2u] = x` on a workgroup array of
