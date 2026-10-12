@@ -14,7 +14,8 @@
 `wavo` turns speech into text locally, on the GPU, in pure Rust. Give it a recording of any
 length, a voice note or a two-hour meeting, and get the text with timestamps. It runs the open ASR
 models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes with
-practically the same output and comparable or better speed. Use it as a command-line tool with an
+practically the same output, faster than transcribe.cpp on Apple Silicon and NVIDIA GPUs, on par
+or slower on integrated Intel GPUs for some models. Use it as a command-line tool with an
 ollama-like model manager, or as a library that builds with a plain `cargo build`.
 
 ## 🌟 Features
@@ -24,11 +25,30 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
 - 🎧 Any common format: wav, mp3, m4a, flac, ogg (Vorbis), resampled for you
 - 🦀 Pure Rust library: no CMake, C++ toolchain, Python or ONNX Runtime to install
 - ⚡ Runs on the GPU: Metal on Apple Silicon, Vulkan on Linux
-- 🏎️ As fast as transcribe.cpp or faster on the same model files, and loads in 0.1–0.2 s
+- 🏎️ Faster than transcribe.cpp on the same model files on Apple Silicon and NVIDIA (see
+  [Speed](#-speed)), and loads in about 0.1 s on an M2
 - 🎯 Same text, tokens and timestamps as transcribe.cpp on its test clips
 - 📦 `pull` / `list` / `rm` models, shared with the Hugging Face cache that `hf` uses
 - 📝 Plain text, JSON with a start time for every token, or SRT subtitles
 - 🌍 English, Russian, 25 European languages, and 100 with Whisper
+
+## 🤖 How it's made
+
+wavo is written by AI coding agents, Claude Code and Codex, under the direction of its author,
+[vladkens](https://github.com/vladkens), an experienced developer whose hand-written projects
+include [macmon](https://github.com/vladkens/macmon),
+[twscrape](https://github.com/vladkens/twscrape) and [ghstats](https://github.com/vladkens/ghstats).
+He chooses the work, agrees each plan, and reviews and merges every pull request. The agents write
+the code, the WGSL kernels, the tests and the docs, following [agents.md](agents.md).
+
+The output is checked, not trusted:
+
+- Fixtures come from transcribe.cpp's own CLI: the text, every token and its start time, for each
+  model on its test clips. `make test` must reproduce them exactly, and CI runs them for the
+  smallest model of each family.
+- Speed changes are measured A/B/A, back to back, and against the reference on the same model and
+  audio files; every attempt, kept or rejected, is logged in [docs/perf.md](docs/perf.md).
+- Plans and their results are in [docs/plans/](docs/plans/).
 
 ## 🧠 Models
 
@@ -146,17 +166,56 @@ Hugging Face cache (`~/.cache/huggingface/hub`), so a model fetched with `hf dow
 
 ## ⚡ Speed
 
-Apple M2, the same Q8_0 model file, wavo against transcribe.cpp on Metal, an 11 s clip:
+Transcribe times are warm medians of `wavo bench MODEL CLIP` against `transcribe-bench` of
+transcribe.cpp at 5bb2deb, on the same Q8_0 file and clip; cells are wavo / transcribe.cpp. Bold
+marks the better side where the gap is over 3%.
 
-| Model | Transcribe, ms | Load, ms | Memory, MiB |
+**Apple M2** (10-core GPU, 24 GiB, macOS 27) against transcribe.cpp on Metal, an 11 s clip (`jfk`,
+GigaAM `ru-short`). Transcribe and peak memory measured 2026-10-09 and 10 (wavo up to f957a74),
+load 2026-10-11 (f60436e, [#24]). The GPU changes since, [#36] and [#38], left these models within
+noise on the M2.
+
+| Model | Transcribe, ms | Load, ms | Peak memory, MiB |
 |---|---|---|---|
 | `gigaam-v3` | **96** / 100 | **44** / 104 | **302** / 325 |
 | `parakeet-v2` | **143** / 199 | **81** / 245 | **740** / 820 |
 | `parakeet-v3` | **154** / 215 | **89** / 245 | **763** / 884 |
 | `whisper-turbo` | **1240** / 1390 | **105** / 298 | **1018** / 1055 |
 
-For dictation, where a model is loaded for each recording, the whole run (start, load, transcribe)
-is about a quarter to a third shorter. More numbers in [docs/perf.md](docs/perf.md).
+For dictation, where a model is loaded for each recording, load plus the first call takes 142 /
+217 ms (`gigaam-v3`), 256 / 468 ms (`parakeet-v3`) and 1437 / 1756 ms (`whisper-turbo`) [#24].
+Whisper's other sizes and Moonshine are faster too
+([Whisper plan](docs/plans/completed/20261010-whisper.md),
+[Moonshine plan](docs/plans/20261011-moonshine.md)).
+
+**NVIDIA RTX 4060 Laptop** (Windows 11, Vulkan) against transcribe.cpp's Vulkan build, 2026-10-11
+and 12. wavo at 7aa51e6 ([#38]) for `whisper-turbo` and `whisper-large-v3`, a397b48 ([#36]) for the
+other models, and 4973122 for Parakeet, which #36 left unchanged. Clips: `jfk` 11 s, `ru` 4.5 s,
+`ru-long` 34 s, `dots` 35 s.
+
+| Model | Clip | wavo, ms | transcribe.cpp, ms |
+|---|---|---|---|
+| `gigaam-v3` | `ru` / `ru-long` | **18.9 / 70** | 134 / 1064 |
+| `parakeet-v3` | `jfk` | **74** | 88 |
+| `parakeet-v3`, first call | `jfk` | 219–264 | **99** |
+| `whisper-turbo` | `jfk` / `ru-long` | **197 / 452** | 226 / 503 |
+| `whisper-large-v3` | `jfk` | **375** | 427 |
+| `whisper-tiny` | `jfk` / `dots` | **23 / 89** | 43 / 135 |
+| `moonshine-tiny` | `dots` | **90** | 144 |
+| `moonshine-base` | `dots` | **141** | 227 |
+
+`whisper-small` and `whisper-medium` were last measured here before #36, which made the larger
+Whisper models 2.2–3.2× faster; they were 1.9–2.2× slower than the reference then.
+
+**Intel N100** (integrated GPU, Linux, portable kernels) against transcribe.cpp's Vulkan build,
+2026-10-12: GigaAM is faster (`ru-long` 7414 / 7994 ms), `whisper-tiny` too since #36 (`jfk` 759 /
+1340 ms), Parakeet is 1.1–1.35× slower, and `whisper-turbo`, last measured before #36, 1.6× slower
+than the reference's CPU build (its Vulkan build times out there). Details in the [speed
+plan](docs/plans/20261012-speed.md).
+
+[#24]: https://github.com/vladkens/wavo/pull/24
+[#36]: https://github.com/vladkens/wavo/pull/36
+[#38]: https://github.com/vladkens/wavo/pull/38
 
 ## 📚 Library usage
 
@@ -193,10 +252,8 @@ including downloading on a thread with progress and cancel, as
 
 ## 🤝 Contributing
 
-wavo is written by AI coding agents. A person set the direction; the agents wrote the code and
-the GPU kernels, matched the reference output and searched for the fastest solutions themselves.
-Pull requests are welcome, and so are your agents: point them at [agents.md](agents.md) and let
-them make it better.
+Pull requests are welcome, and so are your agents: wavo is made the way [How it's
+made](#-how-its-made) describes, so point them at [agents.md](agents.md).
 
 <details>
 <summary>Installing a branch</summary>
@@ -209,6 +266,37 @@ cargo uninstall wavo                                                            
 ```
 
 </details>
+
+## 🙏 Credits
+
+wavo's kernels and algorithms are built from the ideas and code of these projects:
+
+- [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) (MIT): the reference wavo
+  matches, its GGUF format and converters, the published models and the test clips. wavo's FFT,
+  mel frontends, TDT and Whisper decoding, repetition guard and SentencePiece decoding follow its
+  code.
+- [ggml](https://github.com/ggml-org/ggml) (MIT): kernels adapted from it. Flash attention after
+  Vulkan's `flash_attn_cm1.comp`, the Q8_0 matrix multiplication after ggml-metal's
+  `kernel_mul_mm`, and GELU's erf.
+- [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT),
+  [Hugging Face transformers](https://github.com/huggingface/transformers) and
+  [NVIDIA NeMo](https://github.com/NVIDIA/NeMo) (Apache-2.0): algorithms that reached wavo through
+  transcribe.cpp's ports.
+
+**Models.** wavo ships no weights: `wavo pull` downloads the GGUF conversions that
+[handy-computer](https://huggingface.co/handy-computer) publishes on Hugging Face, under the
+original licenses:
+
+- Parakeet TDT ([v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2),
+  [v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)) © NVIDIA, CC-BY-4.0
+- [GigaAM v3](https://huggingface.co/ai-sage/GigaAM-v3) © Sber, MIT
+- Whisper © OpenAI, MIT for [large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo)
+  and Apache-2.0 for the other sizes (such as
+  [large-v3](https://huggingface.co/openai/whisper-large-v3)), as their model cards state
+- Moonshine ([tiny](https://huggingface.co/UsefulSensors/moonshine-tiny),
+  [base](https://huggingface.co/UsefulSensors/moonshine-base)) © Useful Sensors, MIT
+- [Breeze-ASR-25](https://huggingface.co/MediaTek-Research/Breeze-ASR-25) © MediaTek Research,
+  Apache-2.0
 
 ## 📝 License
 
