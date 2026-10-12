@@ -26,8 +26,9 @@ Open:
   (18, optional). [Plan](plans/20261011-moonshine.md)
 - **Fast kernels beyond Apple.** The GEMM on F16 16×16 cooperative matrices runs on NVIDIA
   (#28, [plan](plans/completed/20261011-nvidia-fast.md)): 10–40% faster on an RTX 4060, Parakeet ahead of
-  transcribe.cpp, Whisper still 2–3× behind. Open: attention on 16×16 matrices, the tier on AMD
-  and Intel Arc, and the Linux plan's portable-encoder items. [Speed plan](plans/20261012-speed.md)
+  transcribe.cpp; flash attention on them and a portable one (#36) put Whisper ahead too. Open: the
+  rest of the [speed plan](plans/20261012-speed.md), the tier on AMD and Intel Arc, and the Linux
+  plan's portable-encoder items.
 - **Fast build.** The in-house FFT replaced `rustfft` (#15); left: wgpu features per target.
   [Plan](plans/20261010-fast-build.md)
 - **Other engines.** Measure wavo against the other ways to run the same models on a Mac, not
