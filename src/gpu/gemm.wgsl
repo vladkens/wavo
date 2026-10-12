@@ -206,15 +206,17 @@ fn gemv(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
   }
 }
 
-// c = W[m] + a[offset..] + bias for k values: row m of an embedding table in its GGUF type, plus a
-// position's row.
+@group(0) @binding(5) var<storage, read> ids: array<u32>;
+
+// c = W[ids[m]] + a[offset..] + bias for k values: a row of an embedding table in its GGUF type,
+// plus a position's row.
 @compute @workgroup_size(256)
 fn embed(@builtin(global_invocation_id) id: vec3<u32>) {
   let i = id.x;
   if (i >= p.k) {
     return;
   }
-  let x = p.m * p.k + i;
+  let x = ids[p.m] * p.k + i;
   var v: f32;
   switch WTYPE {
     case 0u: { v = bitcast<f32>(w[x]); }

@@ -142,11 +142,13 @@ impl Moonshine {
       })?;
       Ok(out[0].to_bits() as usize)
     };
-    // The encoder, the cross K/V and the step on `<s>` in one pass.
+    // The encoder, the cross K/V and the step on `<s>` in one pass. Each step reads its token
+    // from `next`, where the step before left it.
+    self.gpu.write(next, &[f32::from_bits(self.bos as u32)]);
     let mut token = run(window, &|p| {
       self.encoder.record(p, enc, n, rope);
       self.decoder.record_cross(p, dec, &enc.t.y, &enc.t.h, t);
-      self.decoder.record_step(p, dec, self.bos, 0, t, Some(rope));
+      self.decoder.record_step(p, dec, (next, 0), 0, t, Some(rope));
     })?;
     // As the reference's loop: a step per position up to the context, the repetition guard after
     // each token, and on a stop at the context a repeating tail trimmed.
@@ -161,7 +163,7 @@ impl Moonshine {
         break;
       }
       let pos = ids.len();
-      token = run(steps, &|p| self.decoder.record_step(p, dec, token, pos, t, Some(rope)))?;
+      token = run(steps, &|p| self.decoder.record_step(p, dec, (next, 0), pos, t, Some(rope)))?;
     }
     let pieces = self.tok.pieces(&ids);
     let text = tokenizer::text(&pieces);

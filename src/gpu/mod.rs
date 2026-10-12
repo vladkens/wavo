@@ -3,7 +3,8 @@
 //! Each kernel has a portable version; a fast one (subgroups, cooperative matrices) replaces it
 //! when the device supports it and a probe dispatch of that pipeline succeeds.
 
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 
 use wgpu::BindGroup;
 pub use wgpu::Buffer;
@@ -34,8 +35,10 @@ pub struct Gpu {
   /// back the previous call's output; a slot without the number makes the call an error instead.
   marks: Buffer,
   marks_read: Buffer,
-  /// The last call's number. Calls share `marks`, so each holds this lock while it runs.
-  calls: Mutex<u32>,
+  /// The last call's number.
+  calls: AtomicU32,
+  /// Held from a call's first submission to its readback: calls share `marks`.
+  busy: Mutex<()>,
   /// The first device-lost or uncaptured wgpu error, reported by the next call.
   failure: Arc<Mutex<Option<String>>>,
 }
@@ -297,7 +300,8 @@ impl Gpu {
       spare,
       marks,
       marks_read,
-      calls: Mutex::new(0),
+      calls: AtomicU32::new(0),
+      busy: Mutex::new(()),
       failure,
     };
     if let (Some(size), Some(compiled)) = (size, compiled) {
@@ -574,9 +578,46 @@ impl Gpu {
     len: usize,
     record: impl FnOnce(&mut Pass),
   ) -> Result<Vec<f32>> {
-    let mut calls = self.calls.lock().unwrap_or_else(PoisonError::into_inner);
-    *calls = calls.wrapping_add(1);
-    let call = *calls;
+    let busy = self.busy();
+    let r = self.record_call(groups, out, read, len, record);
+    self.complete(busy, r, read, || ())
+  }
+
+  /// `run` in two halves, so the CPU can record the next call while the GPU runs this one: records
+  /// a call, which must not use `Pass::layers`, for `finish`.
+  pub fn record(
+    &self,
+    groups: &mut Groups,
+    out: &Buffer,
+    read: &Buffer,
+    len: usize,
+    record: impl FnOnce(&mut Pass),
+  ) -> Recorded {
+    self.record_call(groups, out, read, len, |p| {
+      record(p);
+      assert!(p.queued.is_none(), "a call recorded on its own submitted part of itself");
+    })
+  }
+
+  /// Submits a call from `record`, runs `meanwhile` while the GPU works, then waits for it and
+  /// returns its output, read through `read` (the buffer given to `record`).
+  pub fn finish(&self, r: Recorded, read: &Buffer, meanwhile: impl FnOnce()) -> Result<Vec<f32>> {
+    self.complete(self.busy(), r, read, meanwhile)
+  }
+
+  fn busy(&self) -> MutexGuard<'_, ()> {
+    self.busy.lock().unwrap_or_else(PoisonError::into_inner)
+  }
+
+  fn record_call(
+    &self,
+    groups: &mut Groups,
+    out: &Buffer,
+    read: &Buffer,
+    len: usize,
+    record: impl FnOnce(&mut Pass),
+  ) -> Recorded {
+    let call = self.calls.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     let mut p = Pass::new(self, groups, call);
     record(&mut p);
     p.mark(out);
@@ -585,7 +626,19 @@ impl Gpu {
     let (size, marks) = ((len * 4) as u64, marked as u64 * 4);
     encoder.copy_buffer_to_buffer(out, 0, read, 0, size);
     encoder.copy_buffer_to_buffer(&self.marks, 0, &self.marks_read, 0, marks);
-    self.queue.submit([encoder.finish()]);
+    Recorded { commands: encoder.finish(), call, size, marks }
+  }
+
+  fn complete(
+    &self,
+    _busy: MutexGuard<'_, ()>,
+    r: Recorded,
+    read: &Buffer,
+    meanwhile: impl FnOnce(),
+  ) -> Result<Vec<f32>> {
+    let Recorded { commands, call, size, marks } = r;
+    self.queue.submit([commands]);
+    meanwhile();
 
     let slices = [read.slice(..size), self.marks_read.slice(..marks)];
     let (tx, rx) = mpsc::channel();
@@ -610,6 +663,15 @@ impl Gpu {
     }
     Ok(data)
   }
+}
+
+/// A call recorded by `Gpu::record`, to run with `Gpu::finish`.
+pub struct Recorded {
+  commands: wgpu::CommandBuffer,
+  call: u32,
+  /// Bytes to read back: the output and the marks.
+  size: u64,
+  marks: u64,
 }
 
 fn fail(failure: &Mutex<Option<String>>, message: String) {
@@ -856,10 +918,18 @@ impl<'a> Pass<'a> {
     self.run(&self.gpu.decoder().gemv[l.ty], &buffers, &params, [l.cols / 32, 1, 1]);
   }
 
-  /// `c` = row `id` of the table `l` + `pos[offset..]` + the table's bias, `l.k` values.
-  pub fn embed(&mut self, l: &Linear, pos: &Buffer, c: &Buffer, id: usize, offset: usize) {
-    let params = [id as u32, l.n as u32, l.k as u32, 0, 0, 0, offset as u32];
-    let buffers = [pos, &l.bias, c, &l.weight, l.scales.as_ref().unwrap_or(&l.bias)];
+  /// `c` = row `ids[i]` of the table `l` + `pos[offset..]` + the table's bias, `l.k` values. `ids`
+  /// holds token ids as u32 bits, so a step can be recorded before its token is known.
+  pub fn embed(
+    &mut self,
+    l: &Linear,
+    pos: &Buffer,
+    c: &Buffer,
+    (ids, i): (&Buffer, usize),
+    offset: usize,
+  ) {
+    let params = [i as u32, l.n as u32, l.k as u32, 0, 0, 0, offset as u32];
+    let buffers = [pos, &l.bias, c, &l.weight, l.scales.as_ref().unwrap_or(&l.bias), ids];
     self.run(&self.gpu.decoder().embed[l.ty], &buffers, &params, [l.k.div_ceil(256), 1, 1]);
   }
 
@@ -1362,8 +1432,12 @@ mod tests {
             assert_close(&run(gpu, &c, |p, out| p.gemv(&ab, &l, out, e, 3)), &want);
           }
           let pb = up(gpu, &pos);
+          let ids = up(gpu, &[f32::from_bits(5), f32::from_bits(7)]);
           let want: Vec<f32> = (0..k).map(|i| w[7 * k + i] + pos[k + i] + bias[i]).collect();
-          assert_close(&run(gpu, &vec![0.0; k], |p, out| p.embed(&l, &pb, out, 7, k)), &want);
+          assert_close(
+            &run(gpu, &vec![0.0; k], |p, out| p.embed(&l, &pb, out, (&ids, 1), k)),
+            &want,
+          );
         }
       }
     }

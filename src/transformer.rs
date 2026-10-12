@@ -239,15 +239,15 @@ impl Decoder {
     }
   }
 
-  /// Records the decoder on `token` at position `pos`, attending to `frames` encoder frames; the
-  /// logits end up in `b.logits`. With rotary dims, `rope` is the table of `Pass::rope` from
-  /// position 0.
+  /// Records the decoder on a token at position `pos`, attending to `frames` encoder frames; the
+  /// logits end up in `b.logits`. The token is `ids[i]` (u32 bits) when the step runs. With
+  /// rotary dims, `rope` is the table of `Pass::rope` from position 0.
   #[allow(clippy::too_many_arguments)]
   pub fn record_step(
     &self,
     p: &mut Pass,
     b: &Steps,
-    token: usize,
+    token: (&Buffer, usize),
     pos: usize,
     frames: usize,
     rope: Option<&Buffer>,

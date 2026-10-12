@@ -46,9 +46,10 @@ product goes out in blocks of 64 rows to four scoped threads that take the next 
 conv2 added onto the positions), pre-LN blocks with one `[q | k | v]` GEMM and flash attention, the
 cross `[K | V]` of every decoder layer packed into F16 caches, and the SOT step. Shapes are fixed
 (1500 frames, 448 positions), so the arena is allocated at load. The decoder runs on the GPU, one
-pass per token (gemv on Q8_0 rows, attention over the F16 self and cross caches, the tied head over
-the vocabulary), and reads the logits back; suppression, timestamp rules, argmax, language and
-no-speech run on the CPU, and windows advance as the reference's seek loop.
+pass per token (gemv on Q8_0 rows, attention over the F16 self and cross caches with K transposed,
+the tied head over the vocabulary), and reads the logits back; the next pass is recorded while the
+GPU runs one. Suppression, timestamp rules, argmax, language and no-speech run on the CPU, and
+windows advance as the reference's seek loop.
 
 **Moonshine.** No frontend: the whole input in one pass, with the arena and the rotary table
 (computed on the CPU) sized for the longest input so far. One submission (one per layer on the
@@ -433,6 +434,11 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### Whisper decoder
 
+- 2026-10-12, Whisper, the next step recorded while the GPU runs one (`Gpu::record` and
+  `finish`; the token comes from a buffer written before the submit). On the RTX 4060 recording a
+  step took ~0.1 ms of its ~1.2 with the GPU idle. A/B/A turbo `jfk` 199.2 / 196.5 / 199.6,
+  `ru-long` 464.3 / 455.7 / 465.7 ms; M2 whisper-tiny `jfk` 65.3 / 64.5 / 64.4 ms (noise); N100
+  whisper-tiny `jfk` 747 / 735 / 747, `dots` 1943 / 1865 / 1943 ms. Fixtures exact. Kept.
 - 2026-10-12, Whisper and Moonshine, the decoder caches with K transposed (pair i of position j
   at word i·cols + j; V stays by position), so `attend`'s threads, one key each, read consecutive
   words; the cross cache is packed in runs of 64 positions. RTX 4060 (turbo, GPU timestamps):

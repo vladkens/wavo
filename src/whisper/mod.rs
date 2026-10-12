@@ -17,7 +17,7 @@ use tokenizer::Tokenizer;
 
 use crate::error::{Result, bail};
 use crate::gguf::Gguf;
-use crate::gpu::{Buffer, Gpu, Groups};
+use crate::gpu::{Buffer, Gpu, Groups, Recorded};
 use crate::transformer::{self, Decoder, Steps};
 use crate::{Token, Transcript};
 
@@ -44,9 +44,13 @@ pub struct Whisper {
 struct Arena {
   enc: encoder::Buffers,
   dec: Steps,
+  /// The tokens of a pass's steps, as u32 bits.
+  ids: Buffer,
   read: Buffer,
   window: Groups,
   steps: Groups,
+  /// The step at a position, recorded while the GPU ran the one before.
+  next: Option<(usize, Recorded)>,
 }
 
 impl Whisper {
@@ -132,9 +136,11 @@ impl Whisper {
     let arena = Arena {
       enc: encoder.buffers(&gpu),
       dec: decoder.steps(&gpu, frames),
+      ids: gpu.buffer(2),
       read: gpu.readback(vocab),
       window: Vec::new(),
       steps: Vec::new(),
+      next: None,
     };
     Ok(Self {
       sot: u("sot_token_id")?,
@@ -210,25 +216,42 @@ impl Whisper {
   /// Encodes a window of mel frames, computes the cross K/V and runs the decoder on SOT; returns
   /// its logits.
   fn window(&self, a: &mut Arena, mel: &[f32]) -> Result<Vec<f32>> {
-    let Arena { enc, dec, read, window, .. } = a;
+    let Arena { enc, dec, ids, read, window, .. } = a;
     let t = self.encoder.cfg.frames;
     self.gpu.write(&enc.mel, mel);
     self.gpu.write(&enc.t.x, &self.encoder.positions);
+    self.gpu.write(ids, &[f32::from_bits(self.sot as u32)]);
     self.gpu.run(window, &dec.logits, read, self.decoder.vocab, |p| {
       self.encoder.record(p, enc, t);
       self.decoder.record_cross(p, dec, &enc.t.y, &enc.t.h, t);
-      self.decoder.record_step(p, dec, self.sot, 0, t, None);
+      self.decoder.record_step(p, dec, (ids, 0), 0, t, None);
     })
   }
 
-  /// Runs the decoder on `tokens` from position `pos` in one pass; returns the last one's logits.
-  /// Every step has the same dispatches over the same buffers, so the bind groups are shared.
+  /// Runs the decoder on `tokens` (at most 2) from position `pos` in one pass; returns the last
+  /// one's logits. While the GPU runs it, the CPU records a step at the position after, which the
+  /// next call takes if it is for that position. Every step has the same dispatches over the same
+  /// buffers, so the bind groups are shared.
   fn steps(&self, a: &mut Arena, tokens: &[usize], pos: usize) -> Result<Vec<f32>> {
     let frames = self.encoder.cfg.frames;
-    let Arena { dec, read, steps, .. } = a;
-    self.gpu.run(steps, &dec.logits, read, self.decoder.vocab, |p| {
-      for (i, &token) in tokens.iter().enumerate() {
-        self.decoder.record_step(p, dec, token, pos + i, frames, None);
+    let Arena { dec, ids, read, steps, next, .. } = a;
+    let record = |steps: &mut Groups, pos: usize, n: usize| {
+      self.gpu.record(steps, &dec.logits, read, self.decoder.vocab, |p| {
+        for i in 0..n {
+          self.decoder.record_step(p, dec, (ids, i), pos + i, frames, None);
+        }
+      })
+    };
+    let r = match next.take() {
+      Some((at, r)) if at == pos && tokens.len() == 1 => r,
+      _ => record(steps, pos, tokens.len()),
+    };
+    let bits: Vec<f32> = tokens.iter().map(|&t| f32::from_bits(t as u32)).collect();
+    self.gpu.write(ids, &bits);
+    let after = pos + tokens.len();
+    self.gpu.finish(r, read, || {
+      if after < self.decoder.context {
+        *next = Some((after, record(steps, after, 1)));
       }
     })
   }
