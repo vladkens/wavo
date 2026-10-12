@@ -1,7 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 // Linear layer c = epilogue(a·Wᵀ + bias): `a` is row-major [m][k] F32, W is [n][k] in its GGUF
-// type. A workgroup computes a 64×64 tile of c, each thread 4×4 outputs strided by 16. K advances
-// 32 per step (one Q8_0 block). W has a multiple of 64 rows and k % 32 == 0; c's rows are n + dual
+// type. A workgroup computes a ROWS×128 tile of c. K advances 32 per step (one Q8_0 block). W
+// has a multiple of 64 rows and k % 32 == 0; c's rows are n + dual
 // wide, and outputs from n on (W's zero rows) are not written. W is rounded to f16 after
 // dequantization, as ggml-metal's `kernel_mul_mm` (`ggml/src/ggml-metal/kernels/mul_mm.metal`)
 // does; without it, near-ties (one CTC frame of e2e-ctc on ru-short) fall on the other side. The
@@ -10,6 +10,8 @@
 
 // Weight type, one pipeline each: 0: F32, 1: F16, 2: Q8_0.
 override WTYPE: u32;
+// Rows of the GEMM's tile: 64, or 32 (more workgroups).
+override ROWS: u32 = 64u;
 
 struct Params {
   m: u32,
@@ -35,6 +37,8 @@ var<immediate> p: Params;
 @group(0) @binding(3) var<storage, read> w: array<u32>;
 // Q8_0 block scales as f16 pairs (any buffer for other types).
 @group(0) @binding(4) var<storage, read> scales: array<u32>;
+// `a` for the GEMM's 16-byte loads.
+@group(0) @binding(0) var<storage, read> a4: array<vec4<f32>>;
 
 // Rounds to the nearest f16, ties to even, by hand: NVIDIA's Vulkan driver folds
 // unpack2x16float(pack2x16float(x)) into x and AMD's truncates. Normal halves keep 10 mantissa
@@ -50,10 +54,10 @@ fn scale(block: u32) -> f32 {
   return select(s.x, s.y, (block & 1u) == 1u);
 }
 
-// [64][32] tiles of a and W; the padded row stride avoids shared-memory bank conflicts.
-const S: u32 = 33u;
-var<workgroup> at: array<f32, 2112>;
-var<workgroup> wt: array<f32, 2112>;
+// The [ROWS][32] tile of a as [row][k quad], rows padded to 9 quads against bank conflicts; the
+// [32][128] tile of W as [k][column quad].
+var<workgroup> at: array<vec4<f32>, 576>;
+var<workgroup> wt: array<vec4<f32>, 1024>;
 
 // GELU with erf as ggml-metal computes it: `erf_approx` (Abramowitz–Stegun 7.1.26) in
 // ggml/src/ggml-metal/kernels/common.h, `0.5·x·(1 + erf(x/√2))` in unary.metal.
@@ -91,62 +95,145 @@ fn epilogue(m: u32, n: u32, acc: f32) {
 fn store(m: u32, n0: u32, acc: vec4<f32>) {
   if (m < p.m) {
     epilogue(m, n0, acc.x);
-    epilogue(m, n0 + 16u, acc.y);
-    epilogue(m, n0 + 32u, acc.z);
-    epilogue(m, n0 + 48u, acc.w);
+    epilogue(m, n0 + 1u, acc.y);
+    epilogue(m, n0 + 2u, acc.z);
+    epilogue(m, n0 + 3u, acc.w);
   }
 }
 
+// The words of W[n][k..k + 4]; for Q8_0 one, the word of its block's scale and the block's
+// parity. Zeros from row p.n on.
+fn w_words(n: u32, k: u32) -> vec4<u32> {
+  if (n >= p.n) {
+    return vec4(0u);
+  }
+  let x = n * p.k + k;
+  switch WTYPE {
+    case 0u: { return vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u]); }
+    case 1u: { return vec4(w[x / 2u], w[x / 2u + 1u], 0u, 0u); }
+    default: { return vec4(w[x / 4u], scales[x / 64u], (x / 32u) & 1u, 0u); }
+  }
+}
+
+// The 4 weights of `w_words`, rounded.
+fn w_floats(v: vec4<u32>) -> vec4<f32> {
+  var x: vec4<f32>;
+  switch WTYPE {
+    case 0u: { x = bitcast<vec4<f32>>(v); }
+    case 1u: { x = vec4(unpack2x16float(v.x), unpack2x16float(v.y)); }
+    default: {
+      let s = unpack2x16float(v.y);
+      x = vec4<f32>(unpack4xI8(v.x)) * select(s.x, s.y, v.z == 1u);
+    }
+  }
+  return vec4(to_half(x.x), to_half(x.y), to_half(x.z), to_half(x.w));
+}
+
+// What a thread stages per K step: a quads of rows r and r + 32, and W words of 4 rows.
+struct Fetch {
+  a0: vec4<f32>,
+  a1: vec4<f32>,
+  w0: vec4<u32>,
+  w1: vec4<u32>,
+  w2: vec4<u32>,
+  w3: vec4<u32>,
+}
+
+// Thread lid's share of the K step from k0: a rows m0 + lid / 8 (and + 32) at quad lid % 8, W rows
+// from n0 + 4·(lid / 8) at the quad lid % 8.
+fn fetch(m0: u32, n0: u32, k0: u32, lid: u32) -> Fetch {
+  var f: Fetch;
+  let r = m0 + lid / 8u;
+  let k = k0 + 4u * (lid % 8u);
+  if (r < p.m) {
+    f.a0 = a4[(r * p.k + k) / 4u];
+  }
+  if (ROWS == 64u && r + 32u < p.m) {
+    f.a1 = a4[((r + 32u) * p.k + k) / 4u];
+  }
+  let n = n0 + 4u * (lid / 8u);
+  f.w0 = w_words(n, k);
+  f.w1 = w_words(n + 1u, k);
+  f.w2 = w_words(n + 2u, k);
+  f.w3 = w_words(n + 3u, k);
+  return f;
+}
+
+// A workgroup computes a ROWS×128 tile of c: thread (tx, ty) = (lid % 16, lid / 16) rows ty + 16i
+// and columns 4tx.. and 64 + 4tx.., four each, summed over k in order. The next K step's loads
+// are issued before this one's products, which hides their latency on GPUs with few workgroups.
 @compute @workgroup_size(256)
 fn gemm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
-  let n0 = wg.x * 64u;
-  let m0 = wg.y * 64u;
+  let n0 = wg.x * 128u;
+  let m0 = wg.y * ROWS;
   let tx = lid % 16u;
   let ty = lid / 16u;
-  var acc0: vec4<f32>;
-  var acc1: vec4<f32>;
-  var acc2: vec4<f32>;
-  var acc3: vec4<f32>;
+  var c00: vec4<f32>;
+  var c01: vec4<f32>;
+  var c10: vec4<f32>;
+  var c11: vec4<f32>;
+  var c20: vec4<f32>;
+  var c21: vec4<f32>;
+  var c30: vec4<f32>;
+  var c31: vec4<f32>;
+  let r = lid / 8u;
+  let kq = 4u * (lid % 8u);
+  var f = fetch(m0, n0, 0u, lid);
   for (var k0 = 0u; k0 < p.k; k0 += 32u) {
-    for (var i = 0u; i < 8u; i++) {
-      let e = lid + i * 256u;
-      let r = e / 32u;
-      var v = 0.0;
-      if (m0 + r < p.m) {
-        v = a[(m0 + r) * p.k + k0 + e % 32u];
-      }
-      at[r * S + e % 32u] = v;
+    at[r * 9u + kq / 4u] = f.a0;
+    if (ROWS == 64u) {
+      at[(r + 32u) * 9u + kq / 4u] = f.a1;
     }
-    // Each thread loads 8 weights: element e of the tile is W[n0 + e / 32][k0 + e % 32].
-    for (var i = 0u; i < 2u; i++) {
-      let e = (lid + i * 256u) * 4u;
-      let x = (n0 + e / 32u) * p.k + k0 + e % 32u;
-      var v: vec4<f32>;
-      switch WTYPE {
-        case 0u: { v = bitcast<vec4<f32>>(vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u])); }
-        case 1u: { v = vec4(unpack2x16float(w[x / 2u]), unpack2x16float(w[x / 2u + 1u])); }
-        default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
-      }
-      let o = e / 32u * S + e % 32u;
-      wt[o] = to_half(v.x);
-      wt[o + 1u] = to_half(v.y);
-      wt[o + 2u] = to_half(v.z);
-      wt[o + 3u] = to_half(v.w);
+    // W transposed to [k][column quad].
+    let x0 = w_floats(f.w0);
+    let x1 = w_floats(f.w1);
+    let x2 = w_floats(f.w2);
+    let x3 = w_floats(f.w3);
+    wt[kq * 32u + r] = vec4(x0.x, x1.x, x2.x, x3.x);
+    wt[(kq + 1u) * 32u + r] = vec4(x0.y, x1.y, x2.y, x3.y);
+    wt[(kq + 2u) * 32u + r] = vec4(x0.z, x1.z, x2.z, x3.z);
+    wt[(kq + 3u) * 32u + r] = vec4(x0.w, x1.w, x2.w, x3.w);
+    if (k0 + 32u < p.k) {
+      f = fetch(m0, n0, k0 + 32u, lid);
     }
     workgroupBarrier();
-    for (var kk = 0u; kk < 32u; kk++) {
-      let b = vec4(wt[tx * S + kk], wt[(tx + 16u) * S + kk], wt[(tx + 32u) * S + kk], wt[(tx + 48u) * S + kk]);
-      acc0 += at[ty * S + kk] * b;
-      acc1 += at[(ty + 16u) * S + kk] * b;
-      acc2 += at[(ty + 32u) * S + kk] * b;
-      acc3 += at[(ty + 48u) * S + kk] * b;
+    for (var kq = 0u; kq < 8u; kq++) {
+      let a0 = at[ty * 9u + kq];
+      let a1 = at[(ty + 16u) * 9u + kq];
+      var a2: vec4<f32>;
+      var a3: vec4<f32>;
+      if (ROWS == 64u) {
+        a2 = at[(ty + 32u) * 9u + kq];
+        a3 = at[(ty + 48u) * 9u + kq];
+      }
+      for (var j = 0u; j < 4u; j++) {
+        let b0 = wt[(4u * kq + j) * 32u + tx];
+        let b1 = wt[(4u * kq + j) * 32u + 16u + tx];
+        c00 += a0[j] * b0;
+        c01 += a0[j] * b1;
+        c10 += a1[j] * b0;
+        c11 += a1[j] * b1;
+        if (ROWS == 64u) {
+          c20 += a2[j] * b0;
+          c21 += a2[j] * b1;
+          c30 += a3[j] * b0;
+          c31 += a3[j] * b1;
+        }
+      }
     }
     workgroupBarrier();
   }
-  store(m0 + ty, n0 + tx, acc0);
-  store(m0 + ty + 16u, n0 + tx, acc1);
-  store(m0 + ty + 32u, n0 + tx, acc2);
-  store(m0 + ty + 48u, n0 + tx, acc3);
+  let n = n0 + 4u * tx;
+  store(m0 + ty, n, c00);
+  store(m0 + ty, n + 64u, c01);
+  store(m0 + ty + 16u, n, c10);
+  store(m0 + ty + 16u, n + 64u, c11);
+  if (ROWS == 64u) {
+    store(m0 + ty + 32u, n, c20);
+    store(m0 + ty + 32u, n + 64u, c21);
+    store(m0 + ty + 48u, n, c30);
+    store(m0 + ty + 48u, n + 64u, c31);
+  }
 }
 
 // a[8j..8j + 8]·W[row][8j..8j + 8]. Q8_0 scales the int8 sum once per 8 weights, as ggml's

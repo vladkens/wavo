@@ -97,13 +97,12 @@ is at the memory's pace (see the 2026-10-12 profile): what is left there is ~25 
 per token (LayerNorm, merge, pack: ~0.12 ms of ~1.03 ms on turbo when removed outright), which
 folding into the gemvs didn't save.
 
-GPUs without cooperative matrices, open in [the Linux plan](plans/20261010-linux.md) (Tasks 5
-and 7): profile the portable encoder with GPU timestamps; subgroup LayerNorm and conv_glu at any
-subgroup width, apart from the cooperative-matrix gate; a register-tiled GEMM with Q8_0/F16
-dequantized in registers (optionally F16 math);
-Parakeet's fixed cost per call (`first_depthwise`, frames padded to 64); with the person's
-approval, since it changes arithmetic, an int8 GEMM (`dot4I8Packed`) on Q8_0 activations as the
-reference's CPU path does.
+GPUs without cooperative matrices, open in [the Linux plan](plans/20261010-linux.md) (Tasks 5 and
+7): the portable GEMM is ~90% of Parakeet's GPU time on the N100 (~120 GFLOP/s of its ~290 peak in
+FFN up); F16 math in it; subgroup LayerNorm and conv_glu at any subgroup width, apart from the
+cooperative-matrix gate; Parakeet's fixed cost per call (`first_depthwise`, frames padded to 64);
+with the person's approval, since it changes arithmetic, an int8 GEMM (`dot4I8Packed`) on Q8_0
+activations as the reference's CPU path does.
 
 Apple M5: the GEMM's inputs written as f16 by their producers (LayerNorm, attention, conv_glu,
 the GEMM epilogue, im2col) instead of the `cast` pass, which costs 2–5% of a call (see the Log);
@@ -185,6 +184,33 @@ Each entry sits under its topic, newest first: date, model, what was tried, the 
 two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### GEMM
+
+- 2026-10-12, all models, the portable GEMM (all GEMMs on GPUs without cooperative matrices, and
+  those under 16 tiles of the 16×16 GEMM on NVIDIA): tiles of ROWS × 128 (64 rows; 32 on the
+  16×16 tier, for more workgroups), each of 256 threads on 4 (2) rows × two column quads, a
+  staged as [row][k quad] quads (16-byte loads) and W transposed to [k][column quad], so a step of
+  4 k takes 4 (2) a loads and 8 W loads for 32 (16) vector FMAs; the next K step's a and W words
+  are loaded before this step's products. Each output sums k in the same order: fixtures exact
+  (N100, RTX 4060, M2). N100 A/B/A (main / this / main, with the relative attention above):
+  Parakeet V3 `jfk` 3508 / 2199 / 3492, `dots` 11690 / 5702 / 11688, GigaAM `ru` 755 / 524 / 755,
+  `ru-long` 5627 / 4170 / 5624, whisper-tiny `jfk` 736 / 649 / 736, `dots` 1868 / 1696 / 1870,
+  Moonshine `dots` tiny 1531 / 1452 / 1531, base 2757 / 2531 / 2758, whisper-turbo `jfk` 30110 /
+  23224 / 30116 ms. RTX 4060: GigaAM `ru` 19.1 / 16.9 / 18.7 ms, the rest within noise or faster
+  through the attention. Kept.
+  - Steps on the N100 (GPU timestamps, Parakeet V3 `dots`, FFN up 4096←1024 per dispatch): the
+    old 64×64 tile 43.9 ms; 64×128 tiles with per-k scalar a loads 42.7 (F16 layers 25.6 → 22.1).
+    Ablations of that one: W not rounded to f16 41.9, W not loaded or dequantized 41.6, the inner
+    loop over 1 of 32 k 13.9 ms: the loop's shared-memory loads were the limit. a as quads with 4 k
+    per step: 30.5 ms, `dots` 7710 → 5753 ms. Kept.
+  - Loads of the next K step before the products: N100 `dots` 5753 → 5848, `jfk` 2168 → 2206 ms
+    (+1.5–2%), but on the RTX 4060 it made 32-row tiles beat the old kernel: GigaAM `ru` 21.0 →
+    17.5 ms (old 19.0). Kept, one kernel for both.
+  - 32-row tiles under 16 workgroups everywhere: N100 GigaAM `ru` 518 → 615 ms. Only on the
+    16×16 tier.
+  - 8 rows × 8 columns per thread (128 threads): N100 FFN up 96.6 ms, 3× slower (register spills
+    under Mesa). Rejected.
+  - 64×64 tiles with the quad loop (4 × 4 per thread): N100 `dots` 7378 vs 5641, GigaAM `ru` 705
+    vs 518 ms; RTX 4060 `ru` 20.6 vs 18.7 (old). Rejected.
 
 - 2026-10-12, all models, Apple M5 (10 GPU cores, macOS 27.0.1): the GEMM on the Metal 4 tensor
   API (MetalPerformancePrimitives' `matmul2d`, after ggml's tensor `kernel_mul_mm`) through
