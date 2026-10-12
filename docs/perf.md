@@ -24,7 +24,10 @@ attention with the output in registers, one subgroup per row for LayerNorm and t
 each turn on after a probe dispatch. On NVIDIA GPUs, which have 16×16 F16 matrices instead of
 8×8 F32 ones, the GEMM (a GEMM of fewer than 16 such workgroups runs the portable one) and flash
 attention (its own kernel, `flash_f16.wgsl`, on f16 operands) are fast; without cooperative
-matrices attention is the portable flash kernel. The head's linear layer is the last GEMM: the joint's encoder
+matrices attention is the portable flash kernel. On Apple M5 and newer every GEMM runs on the
+Metal 4 tensor API instead, on the GPU's neural accelerators (`gemm_tensor.metal`, an MSL module
+passed through wgpu): a `cast` dispatch writes a as f16, the GEMM reads it from device memory with
+W staged as half and accumulates in F32, so it rounds as the 8×8 kernel does. The head's linear layer is the last GEMM: the joint's encoder
 projection for RNN-T, the logits (rows padded to 64) for CTC. The RNN-T loop (LSTM, joint, argmax)
 runs on one CPU thread with NEON (AVX2 + FMA on x86) tiles that score two frames per pass over the
 joint weights; CTC is an argmax and collapse per frame.
@@ -99,6 +102,11 @@ Parakeet's fixed cost per call (`first_depthwise`, frames padded to 64); with th
 approval, since it changes arithmetic, an int8 GEMM (`dot4I8Packed`) on Q8_0 activations as the
 reference's CPU path does.
 
+Apple M5: the GEMM's inputs written as f16 by their producers (LayerNorm, attention, conv_glu,
+the GEMM epilogue, im2col) instead of the `cast` pass, which costs 2–5% of a call (see the Log);
+F16 weights read from device memory without staging; flash attention on the tensor API (ggml
+keeps it off there).
+
 GPUs with 16×16 F16 cooperative matrices ([plan](plans/completed/20261011-nvidia-fast.md)):
 Parakeet's relative attention, still the portable scores, softmax and
 values (~58 of ~120 ms of kernels on V3 `dots`), as a flash kernel on 16×16 matrices or a portable
@@ -171,6 +179,32 @@ Each entry sits under its topic, newest first: date, model, what was tried, the 
 two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### GEMM
+
+- 2026-10-12, all models, Apple M5 (10 GPU cores, macOS 27.0.1): the GEMM on the Metal 4 tensor
+  API (MetalPerformancePrimitives' `matmul2d`, after ggml's tensor `kernel_mul_mm`) through
+  wgpu's MSL passthrough (`PASSTHROUGH_SHADERS`, explicit pipeline layouts, wgpu-hal's Metal
+  slots). A tile is 128 rows × 64 columns, K step 32: a as f16 from device memory (a `cast`
+  dispatch per GEMM), W dequantized to half in threadgroup memory, F32 accumulators, the epilogue
+  on the cooperative tensor's elements. Gate: adapter name with M5/M6/A19/A20 (ggml's rule), the
+  module compiles, a 130×32×64 probe GEMM is right; an f16 scratch grows to the largest input,
+  and cached bind groups are now checked against their buffers too. Research before it, one GEMM
+  through wgpu: 750×1024×4096 Q8_0 1.89 → 0.60 ms, 1500×1280×5120 5.78 → 1.79 ms; f32 a with
+  `relaxed_precision` (ggml's form) 5–15% slower and rounding differently, f32 a without it at
+  the 8×8 kernel's speed, a staged in threadgroup memory ~2× slower; on the M2 the tensor API ran
+  25–30% slower than the 8×8 kernel. A/B/A against main (warm median, ms; reference with its
+  tensor path): GigaAM `ru` 26.3 / 17.3 / 26.3 (20.7), `ru-long` 161.4 / 86.8 / 161.4 (120.1);
+  Parakeet V3 `jfk` 95.5 / 60.2 / 95.7 (93.4), `dots` 303.4 / 185.9 / 303.3 (311.9); whisper-turbo
+  `jfk` 818.9 / 421.4 / 818.7 (571.3); Moonshine `jfk` tiny 21.6 / 20.5 / 21.7 (70.0), base 35.7 /
+  30.9 / 36.0 (118.6). Fixtures exact on the M5 (the 11 models there) and on the M2 with the tier
+  forced (all 21); the M2 without it unchanged (`ru` 41.8 / 41.5 / 41.6, Parakeet `jfk` 146.6 /
+  146.1 / 146.2 ms). Kept.
+  - The `cast` dispatched twice (timing only, same output): `ru` 17.0 → 17.4, `ru-long` 87.0 →
+    91.2, turbo `jfk` 420.7 → 434.9 ms, so the cast costs 2–5% of a call. Producers writing f16
+    would save at most about two thirds of it, for changes in five kernels and the arenas: not
+    tried yet.
+  - The 8×8 kernel below 32 rows against the tensor GEMM at any size, on clips cut to 0.5 / 1 /
+    2 s: GigaAM 12.3 / 12.6 / 13.1 vs 11.8 / 12.0 / 13.1, Parakeet V3 27.9 / 31.0 / 34.8 vs 26.4 /
+    29.7 / 33.5 ms. No fallback: the tensor GEMM takes every size (k is always a multiple of 32).
 
 - 2026-10-12, GigaAM, Parakeet V3, Whisper turbo, encoder Q8_0 weights converted to F16 at load
   (`f16(q·d)`, exact as the GEMM rounds dequantized W to f16; Whisper's decoder stays Q8_0;

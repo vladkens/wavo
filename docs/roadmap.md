@@ -28,7 +28,8 @@ Open:
   (#28, [plan](plans/completed/20261011-nvidia-fast.md)): 10–40% faster on an RTX 4060, Parakeet ahead of
   transcribe.cpp; flash attention on them and a portable one (#36) put Whisper ahead too. Open: the
   rest of the [speed plan](plans/20261012-speed.md), the tier on AMD and Intel Arc, and the Linux
-  plan's portable-encoder items.
+  plan's portable-encoder items. On Apple M5 and newer the GEMM runs on the Metal 4 tensor API:
+  GigaAM, Parakeet and Whisper 1.5–1.9× faster there, ahead of transcribe.cpp on every model.
 - **Fast build.** The in-house FFT replaced `rustfft` (#15); left: wgpu features per target.
   [Plan](plans/20261010-fast-build.md)
 - **Other engines.** Measure wavo against the other ways to run the same models on a Mac, not

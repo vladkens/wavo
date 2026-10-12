@@ -178,6 +178,18 @@ Whisper's other sizes and Moonshine are faster too
 ([Whisper plan](docs/plans/completed/20261010-whisper.md),
 [Moonshine plan](docs/plans/20261011-moonshine.md)).
 
+**Apple M5** (10-core GPU, macOS 27.0.1) against transcribe.cpp on Metal, 2026-10-12, wavo at
+[#43]. On the M5 both multiply on the GPU's neural accelerators through the Metal 4 tensor API.
+Clips: `jfk` 11 s, `ru` 4.5 s, `ru-long` 34 s, `dots` 35 s.
+
+| Model | Clip | wavo, ms | transcribe.cpp, ms |
+|---|---|---|---|
+| `gigaam-v3` | `ru` / `ru-long` | **17.3 / 87** | 20.7 / 120 |
+| `parakeet-v3` | `jfk` / `dots` | **60 / 185** | 94 / 313 |
+| `whisper-turbo` | `jfk` | **420** | 573 |
+| `moonshine-tiny` | `jfk` | **20.3** | 70 |
+| `moonshine-base` | `jfk` | **30.9** | 120 |
+
 **NVIDIA RTX 4060 Laptop** (Windows 11, Vulkan) against transcribe.cpp's Vulkan build, 2026-10-11
 and 12. wavo at 7aa51e6 ([#38]) for `whisper-turbo`, `whisper-small`, `whisper-medium` and
 `whisper-large-v3`, a397b48 ([#36]) for the other models, and 4973122 for Parakeet, which #36 left
@@ -205,6 +217,7 @@ plan](docs/plans/20261012-speed.md).
 [#24]: https://github.com/vladkens/wavo/pull/24
 [#36]: https://github.com/vladkens/wavo/pull/36
 [#38]: https://github.com/vladkens/wavo/pull/38
+[#43]: https://github.com/vladkens/wavo/pull/43
 
 ## 📚 Library usage
 

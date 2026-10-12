@@ -14,8 +14,8 @@ use crate::gguf::{Tensor, Type};
 
 type Pipeline = wgpu::ComputePipeline;
 
-/// Bind groups cached per dispatch, each with the pipeline it was made for.
-pub type Groups = Vec<(Pipeline, BindGroup)>;
+/// Bind groups cached per dispatch, each with the pipeline and buffers it was made for.
+pub type Groups = Vec<(Pipeline, Vec<Buffer>, BindGroup)>;
 
 /// Submissions a call may make (slots in `Gpu::marks`).
 const MARKS: u64 = 256;
@@ -41,6 +41,8 @@ pub struct Gpu {
   busy: Mutex<()>,
   /// The first device-lost or uncaptured wgpu error, reported by the next call.
   failure: Arc<Mutex<Option<String>>>,
+  /// The tensor GEMM's input as f16, grown to the largest so far (bind groups keep older ones).
+  halves: Mutex<Option<Buffer>>,
 }
 
 struct Kernels {
@@ -161,6 +163,14 @@ struct Fast {
   attention_size: usize,
   /// Flash attention with relative positions for head_dim ≤ 128.
   relative: Option<Pipeline>,
+  /// The GEMM on the Metal 4 tensor API, in place of the 8×8 one at any size.
+  tensor: Option<TensorGemm>,
+}
+
+/// `gemm_tensor.metal`: `cast` and per weight type the GEMM.
+struct TensorGemm {
+  cast: Pipeline,
+  gemm: Vec<Pipeline>,
 }
 
 /// A linear layer `y = x·Wᵀ + b` with `W` row-major `[n][k]`, kept in its GGUF type. Q8_0 is
@@ -237,6 +247,7 @@ impl Gpu {
     let adapter = adapter()?;
     let size = if fast { fast_size(&adapter) } else { None };
     let fast = size.is_some();
+    let tensor = size == Some(8) && tensor_gpu(&adapter);
     let mappable = adapter.get_info().device_type == wgpu::DeviceType::IntegratedGpu
       && adapter.features().contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
     let mut features = wgpu::Features::IMMEDIATES;
@@ -245,6 +256,9 @@ impl Gpu {
     }
     if mappable {
       features |= wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
+    }
+    if tensor {
+      features |= wgpu::Features::PASSTHROUGH_SHADERS;
     }
     let supported = adapter.limits();
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -274,8 +288,11 @@ impl Gpu {
     device.set_device_lost_callback(move |_, message| fail(&f, format!("device lost: {message}")));
 
     // The fast kernels compile on a second thread meanwhile.
-    let (kernels, compiled) = std::thread::scope(|s| {
-      let compiled = s.spawn(|| size.and_then(|f| compile_fast(&device, f)));
+    let (kernels, (compiled, tensor)) = std::thread::scope(|s| {
+      let compiled = s.spawn(|| {
+        let fast = size.and_then(|f| compile_fast(&device, f));
+        (fast, if tensor { compile_tensor(&device) } else { None })
+      });
       (Kernels::new(&device), compiled.join().unwrap())
     });
     let mut weights = wgpu::BufferUsages::STORAGE;
@@ -305,11 +322,48 @@ impl Gpu {
       calls: AtomicU32::new(0),
       busy: Mutex::new(()),
       failure,
+      halves: Mutex::new(None),
     };
     if let (Some(size), Some(compiled)) = (size, compiled) {
       gpu.fast = gpu.probe(size, compiled);
     }
+    gpu.fast.tensor = tensor;
+    if gpu.fast.tensor.is_some() && !gpu.probe_tensor() {
+      gpu.fast.tensor = None;
+    }
     Ok(gpu)
+  }
+
+  /// Whether the tensor GEMM computes a small product right, over two tiles of rows: c[r][j] =
+  /// j % 32 + r % 32, with a[r][x] = x + r % 32 and W[j][x] = 1 where x = j % 32, else 0.
+  fn probe_tensor(&self) -> bool {
+    let (m, k, n) = (130, 32, 64);
+    let a: Vec<f32> = (0..m * k).map(|i| (i % k + i / k % 32) as f32).collect();
+    // W as F16 pairs: 1.0 is 0x3c00.
+    let one = |j: usize, x: usize| if x == j % 32 { 0x3c00 } else { 0 };
+    let w: Vec<f32> = (0..n * k / 2)
+      .map(|i| (i / 16, i % 16 * 2))
+      .map(|(j, x)| f32::from_bits(one(j, x) | one(j, x + 1) << 16))
+      .collect();
+    let (Ok(a), Ok(weight), Ok(bias)) = (self.upload(&a), self.upload(&w), self.upload(&[0.0; 64]))
+    else {
+      return false;
+    };
+    let l = Linear { n, cols: n, k, dual: 0, ty: 1, weight, scales: None, bias };
+    let (c, read) = (self.buffer(m * n), self.readback(m * n));
+    let got =
+      self.run(&mut Vec::new(), &c, &read, m * n, |p| p.gemm(&a, &l, &c, m, Epilogue::Bias));
+    let want = (0..m * n).map(|i| (i % n % 32 + i / n % 32) as f32);
+    got.is_ok_and(|got| got.into_iter().eq(want))
+  }
+
+  /// A buffer of at least `len` f16s for the tensor GEMM's input.
+  fn halves(&self, len: usize) -> Buffer {
+    let mut halves = self.halves.lock().unwrap_or_else(PoisonError::into_inner);
+    if halves.as_ref().is_none_or(|h| h.size() < 2 * len as u64) {
+      *halves = Some(self.buffer(len.div_ceil(2)));
+    }
+    halves.clone().unwrap()
   }
 
   /// Keeps each fast kernel whose probe reports its subgroup layout. With all params zero a
@@ -366,6 +420,7 @@ impl Gpu {
       attention_size: if attention.is_some() { size } else { 0 },
       attention,
       relative,
+      tensor: None,
     }
   }
 
@@ -760,6 +815,67 @@ fn fast_size(adapter: &wgpu::Adapter) -> Option<usize> {
   }
 }
 
+/// Whether `adapter` may take the tensor GEMM: Apple M5 and newer, whose GPU cores have neural
+/// accelerators (ggml's rule). On an M2 the tensor API ran 25–30% slower than the 8×8 GEMM.
+fn tensor_gpu(adapter: &wgpu::Adapter) -> bool {
+  let name = adapter.get_info().name;
+  adapter.features().contains(wgpu::Features::PASSTHROUGH_SHADERS)
+    && ["M5", "M6", "A19", "A20"].iter().any(|chip| name.contains(chip))
+}
+
+/// Compiles `gemm_tensor.metal` from source; `None` if it fails.
+fn compile_tensor(device: &wgpu::Device) -> Option<TensorGemm> {
+  let scopes = [wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation]
+    .map(|f| device.push_error_scope(f));
+  let names = ["cast", "gemm_f32", "gemm_f16", "gemm_q8"];
+  let entry_points = names.map(|n| wgpu::PassthroughShaderEntryPoint {
+    name: n.into(),
+    workgroup_size: (if n == "cast" { 256 } else { 128 }, 1, 1),
+  });
+  let desc = wgpu::ShaderModuleDescriptorPassthrough {
+    entry_points: entry_points.to_vec().into(),
+    msl: Some(include_str!("gemm_tensor.metal").into()),
+    ..Default::default()
+  };
+  // SAFETY: the kernels index only inside the buffers `Pass::gemm` sizes for them, which sit in
+  // the Metal slots their layouts below give them.
+  let module = unsafe { device.create_shader_module_passthrough(desc) };
+  // Passthrough modules have no reflection: storage buffers in order, the one at `out` writable.
+  let pipeline = |entry: &str, bindings: u32, out: u32, immediates: u32| {
+    let entries: Vec<_> = (0..bindings)
+      .map(|binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+          ty: wgpu::BufferBindingType::Storage { read_only: binding != out },
+          has_dynamic_offset: false,
+          min_binding_size: None,
+        },
+        count: None,
+      })
+      .collect();
+    let desc = wgpu::BindGroupLayoutDescriptor { label: None, entries: &entries };
+    let group = device.create_bind_group_layout(&desc);
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+      label: None,
+      bind_group_layouts: &[Some(&group)],
+      immediate_size: immediates,
+    });
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+      label: Some(entry),
+      layout: Some(&layout),
+      module: &module,
+      entry_point: Some(entry),
+      compilation_options: Default::default(),
+      cache: None,
+    })
+  };
+  let cast = pipeline("cast", 2, 1, 4);
+  let gemm = names[1..].iter().map(|n| pipeline(n, 5, 2, 24)).collect();
+  let errors = scopes.into_iter().rev().filter_map(|s| pollster::block_on(s.pop())).count();
+  (errors == 0).then_some(TensorGemm { cast, gemm })
+}
+
 fn module(device: &wgpu::Device, source: &str) -> wgpu::ShaderModule {
   let desc =
     wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(source.into()) };
@@ -852,15 +968,19 @@ impl<'a> Pass<'a> {
 
   /// Dispatches `kernel` with `buffers` bound in order and `params` as immediates.
   fn run(&mut self, kernel: &Pipeline, buffers: &[&Buffer], params: &[u32], size: [usize; 3]) {
-    // A group fits only the pipeline it was made for (the GEMM picks its tile per call).
-    if self.groups.get(self.next).is_none_or(|(k, _)| k != kernel) {
-      let group = (kernel.clone(), self.bind_group(kernel, buffers));
+    // A group fits only the pipeline and buffers it was made for (the GEMM picks its tile per
+    // call, the tensor GEMM's f16 input may grow).
+    let cached =
+      |(k, b, _): &(Pipeline, Vec<Buffer>, _)| k == kernel && b.iter().eq(buffers.iter().copied());
+    if !self.groups.get(self.next).is_some_and(cached) {
+      let owned = buffers.iter().map(|&b| b.clone()).collect();
+      let group = (kernel.clone(), owned, self.bind_group(kernel, buffers));
       match self.groups.get_mut(self.next) {
         Some(g) => *g = group,
         None => self.groups.push(group),
       }
     }
-    let group = self.groups[self.next].1.clone();
+    let group = self.groups[self.next].2.clone();
     self.dispatch(kernel, &group, params, size);
     self.next += 1;
   }
@@ -895,7 +1015,15 @@ impl<'a> Pass<'a> {
     let [mode, alpha] = epilogue.params();
     let params = [m as u32, l.cols as u32, l.k as u32, mode, alpha, l.dual as u32];
     // Only Q8_0 reads scales; other types bind the bias in their place.
-    let buffers = [a, &l.bias, c, &l.weight, l.scales.as_ref().unwrap_or(&l.bias)];
+    let scales = l.scales.as_ref().unwrap_or(&l.bias);
+    if let Some(t) = &gpu.fast.tensor {
+      // The tensor GEMM reads a as f16 from device memory (k is a multiple of 32 by `linear`).
+      let (h, n4) = (gpu.halves(m * l.k), m * l.k / 4);
+      self.run(&t.cast, &[a, &h], &[n4 as u32], [n4.div_ceil(256).min(65535), 1, 1]);
+      let size = [l.n / 64, m.div_ceil(128), 1];
+      return self.run(&t.gemm[l.ty], &[&h, &l.bias, c, &l.weight, scales], &params, size);
+    }
+    let buffers = [a, &l.bias, c, &l.weight, scales];
     let f = gpu.fast.size;
     match (&gpu.fast.gemm, gpu.tile_rows(l.n, m)) {
       (Some(k), Some(rows)) => {
@@ -1164,12 +1292,15 @@ mod tests {
       let f = &fast.fast;
       let ops = [&f.layer_norm, &f.conv_glu, &f.attention, &f.relative];
       // With 16×16 matrices only the GEMM and flash attention.
-      if let Some(size) = fast_size(&adapter().unwrap()) {
+      let adapter = adapter().unwrap();
+      if let Some(size) = fast_size(&adapter) {
         let want = [size == 8, size == 8, true, size == 8];
         assert!(
           f.gemm.is_some() && ops.iter().zip(want).all(|(k, w)| k.is_some() == w),
           "a fast kernel failed its probe"
         );
+        let tensor = size == 8 && tensor_gpu(&adapter);
+        assert_eq!(f.tensor.is_some(), tensor, "the tensor GEMM failed its probe");
       }
       [Gpu::new(false).unwrap(), fast]
     })
