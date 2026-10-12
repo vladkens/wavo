@@ -24,7 +24,7 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
   your side
 - 🎧 Any common format: wav, mp3, m4a, flac, ogg (Vorbis), resampled for you
 - 🦀 Pure Rust library: no CMake, C++ toolchain, Python or ONNX Runtime to install
-- ⚡ Runs on the GPU: Metal on Apple Silicon, Vulkan on Linux
+- ⚡ Runs on the GPU: Metal on Apple Silicon, Vulkan on Linux and Windows
 - 🏎️ Faster than transcribe.cpp on the same model files on Apple Silicon and NVIDIA (see
   [Speed](#-speed)), and loads in about 0.1 s on an M2
 - 🎯 Same text, tokens and timestamps as transcribe.cpp on its test clips
@@ -189,9 +189,9 @@ Whisper's other sizes and Moonshine are faster too
 [Moonshine plan](docs/plans/20261011-moonshine.md)).
 
 **NVIDIA RTX 4060 Laptop** (Windows 11, Vulkan) against transcribe.cpp's Vulkan build, 2026-10-11
-and 12. wavo at 7aa51e6 ([#38]) for `whisper-turbo` and `whisper-large-v3`, a397b48 ([#36]) for the
-other models, and 4973122 for Parakeet, which #36 left unchanged. Clips: `jfk` 11 s, `ru` 4.5 s,
-`ru-long` 34 s, `dots` 35 s.
+and 12. wavo at 7aa51e6 ([#38]) for `whisper-turbo`, `whisper-small`, `whisper-medium` and
+`whisper-large-v3`, a397b48 ([#36]) for the other models, and 4973122 for Parakeet, which #36 left
+unchanged. Clips: `jfk` 11 s, `ru` 4.5 s, `ru-long` 34 s, `dots` 35 s.
 
 | Model | Clip | wavo, ms | transcribe.cpp, ms |
 |---|---|---|---|
@@ -199,13 +199,12 @@ other models, and 4973122 for Parakeet, which #36 left unchanged. Clips: `jfk` 1
 | `parakeet-v3` | `jfk` | **74** | 88 |
 | `parakeet-v3`, first call | `jfk` | 219–264 | **99** |
 | `whisper-turbo` | `jfk` / `ru-long` | **197 / 452** | 226 / 503 |
+| `whisper-small` | `jfk` | **69** | 101 |
+| `whisper-medium` | `jfk` | **198** | 226 |
 | `whisper-large-v3` | `jfk` | **375** | 427 |
 | `whisper-tiny` | `jfk` / `dots` | **23 / 89** | 43 / 135 |
 | `moonshine-tiny` | `dots` | **90** | 144 |
 | `moonshine-base` | `dots` | **141** | 227 |
-
-`whisper-small` and `whisper-medium` were last measured here before #36, which made the larger
-Whisper models 2.2–3.2× faster; they were 1.9–2.2× slower than the reference then.
 
 **Intel N100** (integrated GPU, Linux, portable kernels) against transcribe.cpp's Vulkan build,
 2026-10-12: GigaAM is faster (`ru-long` 7414 / 7994 ms), `whisper-tiny` too since #36 (`jfk` 759 /
