@@ -7,6 +7,9 @@
 # or two spaces, so no transcript reads as a header; with TIMESTAMPS=none (Moonshine) a block is
 # the `text: ` line alone. Writes nothing if the reference fails, cuts a decode short (`run:` not
 # `ok`: truncated or repeating) or prints anything else.
+#
+# The clips come from transcribe.cpp's samples/ and stay there; some are Google FLEURS recordings
+# (CC-BY-4.0). The fixtures keep only the reference's transcripts, never audio.
 set -eu
 [ $# -ge 3 ] || { echo "usage: $0 MODEL TIMESTAMPS SAMPLE..." >&2; exit 2; }
 name=$1 timestamps=$2

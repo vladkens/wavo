@@ -1,11 +1,11 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 // attention.wgsl's flash attention (same Params and layouts, no relative positions) on 16×16
 // cooperative matrices with f16 operands and F32 accumulators, heads of head_dim ≤ 64, a multiple of
-// 4, as ggml's flash_attn_cm1.comp does on Vulkan. A workgroup of four 32-lane subgroups takes 64
-// queries of one head. Per block of 64 keys it stages k and v as f16 in shared memory; each
-// subgroup scores its 16 queries (q fragments in registers), runs their softmax and adds the
-// probabilities (rounded to f16) times v onto its output fragments, also in registers, rescaled
-// through shared memory when a row's maximum grows. (Letting the maximum lag by up to 8, as
+// 4, adapted from ggml's `ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1.comp`. A workgroup of
+// four 32-lane subgroups takes 64 queries of one head. Per block of 64 keys it stages k and v as
+// f16 in shared memory; each subgroup scores its 16 queries (q fragments in registers), runs their
+// softmax and adds the probabilities (rounded to f16) times v onto its output fragments, also in
+// registers, rescaled through shared memory when a row's maximum grows. (Letting the maximum lag by up to 8, as
 // flash.wgsl does, kept the speed but moved a GigaAM e2e-ctc token by a frame.) A dispatch with
 // t == 0 is a probe: it writes the subgroup size and count to the first two floats of o.
 

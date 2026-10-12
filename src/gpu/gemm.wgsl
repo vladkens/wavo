@@ -3,10 +3,10 @@
 // type. A workgroup computes a 64×64 tile of c, each thread 4×4 outputs strided by 16. K advances
 // 32 per step (one Q8_0 block). W has a multiple of 64 rows and k % 32 == 0; c's rows are n + dual
 // wide, and outputs from n on (W's zero rows) are not written. W is rounded to f16 after
-// dequantization, as the reference's Metal matmul (`kernel_mul_mm`) does; without it, near-ties
-// (one CTC frame of e2e-ctc on ru-short) fall on the other side. The reference also rounds `a`,
-// which costs ~2% here and no fixture needs. The module also holds `gemv`, for one row of `a`, and
-// `embed`.
+// dequantization, as ggml-metal's `kernel_mul_mm` (`ggml/src/ggml-metal/kernels/mul_mm.metal`)
+// does; without it, near-ties (one CTC frame of e2e-ctc on ru-short) fall on the other side. The
+// reference also rounds `a`, which costs ~2% here and no fixture needs. The module also holds
+// `gemv`, for one row of `a`, and `embed`.
 
 // Weight type, one pipeline each: 0: F32, 1: F16, 2: Q8_0.
 override WTYPE: u32;

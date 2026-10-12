@@ -1,12 +1,12 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-// gemm.wgsl on F×F cooperative matrices with f16 operands and F32 accumulators, as the reference's
-// `kernel_mul_mm` multiplies (a and W both rounded to f16): 128 threads (four 32-lane subgroups)
-// compute a ROWS×8F tile of c, each subgroup a (ROWS / 2)×4F quadrant. F is 8 (Apple) or 16: the
-// module is built with F and the matrix types replaced. ROWS is 4F or 8F, and K advances 8F² / ROWS
-// per step, so staging takes 2–3 KB of shared memory at F = 8, and the c tile goes out in rounds of
-// 2F rows: shared memory sets occupancy. 4F-row tiles serve short inputs, where 8F-row ones leave
-// too few workgroups or too much padding. A dispatch with m == 0 is a probe: it writes the subgroup
-// size and count to c[0..2].
+// gemm.wgsl on F×F cooperative matrices with f16 operands and F32 accumulators, as ggml-metal's
+// `kernel_mul_mm` (`ggml/src/ggml-metal/kernels/mul_mm.metal`) multiplies (a and W both rounded to
+// f16): 128 threads (four 32-lane subgroups) compute a ROWS×8F tile of c, each subgroup a
+// (ROWS / 2)×4F quadrant. F is 8 (Apple) or 16: the module is built with F and the matrix types
+// replaced. ROWS is 4F or 8F, and K advances 8F² / ROWS per step, so staging takes 2–3 KB of shared
+// memory at F = 8, and the c tile goes out in rounds of 2F rows: shared memory sets occupancy.
+// 4F-row tiles serve short inputs, where 8F-row ones leave too few workgroups or too much padding.
+// A dispatch with m == 0 is a probe: it writes the subgroup size and count to c[0..2].
 
 enable f16;
 enable wgpu_cooperative_matrix;

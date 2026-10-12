@@ -1,8 +1,9 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! The CPU side of decoding, as transcribe.cpp's `src/arch/whisper/model.cpp` runs it by default:
 //! greedy at temperature 0 with segment timestamps, the suppression lists and timestamp rules on
-//! the raw logits, and HF's `_retrieve_segment` to cut a window's tokens into segments and find
-//! where the next window starts. Temperature fallback is not ported.
+//! the raw logits, and transformers' `generation_whisper.py` `_retrieve_segment` (Apache-2.0), as
+//! transcribe.cpp ports it, to cut a window's tokens into segments and find where the next window
+//! starts. Temperature fallback is not ported.
 
 use crate::error::Result;
 
