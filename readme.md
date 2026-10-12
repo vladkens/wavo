@@ -34,22 +34,11 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
 
 ## 🤖 How it's made
 
-wavo is written by AI coding agents, Claude Code and Codex, under the direction of its author,
-[vladkens](https://github.com/vladkens), an experienced developer whose hand-written projects
-include [macmon](https://github.com/vladkens/macmon),
-[twscrape](https://github.com/vladkens/twscrape) and [ghstats](https://github.com/vladkens/ghstats).
-The author chooses the work, agrees each plan, and reviews and merges every pull request. The
-agents write the code, the WGSL kernels, the tests and the docs, following [agents.md](agents.md).
-
-The output is checked, not trusted:
-
-- Fixtures come from transcribe.cpp's own CLI on its test clips: the text plus every token and its
-  start time for GigaAM and Parakeet, every segment with its times for Whisper, and the text
-  for Moonshine, which has no timestamps. `make test` must reproduce them exactly, and CI runs
-  them for the smallest model of each family.
-- Speed changes are measured A/B/A, back to back, and against the reference on the same model and
-  audio files; every attempt, kept or rejected, is logged in [docs/perf.md](docs/perf.md).
-- Plans and their results are in [docs/plans/](docs/plans/).
+wavo is written by AI agents (Claude Code, Codex) following [agents.md](agents.md); I choose what
+to build and review every pull request. Each model's output is checked against transcribe.cpp's
+own ([fixtures](tests/fixtures/)), and every speed change is measured and logged in
+[docs/perf.md](docs/perf.md). Hand-written projects of mine: [macmon](https://github.com/vladkens/macmon),
+[twscrape](https://github.com/vladkens/twscrape).
 
 ## 🧠 Models
 
@@ -252,8 +241,7 @@ including downloading on a thread with progress and cancel, as
 
 ## 🤝 Contributing
 
-Pull requests are welcome, and so are your agents: wavo is made the way [How it's
-made](#-how-its-made) describes, so point them at [agents.md](agents.md).
+Pull requests are welcome, and so are your agents: point them at [agents.md](agents.md).
 
 <details>
 <summary>Installing a branch</summary>
