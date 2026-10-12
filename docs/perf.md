@@ -13,7 +13,9 @@ Numbers a / b / c follow that clip order.
 ## How each family runs
 
 **GigaAM.** Load reads the GGUF header and streams each tensor from the file into weight buffers
-mapped on unified memory (no staging copy); weights stay Q8_0/F16 on the GPU, Q8_0 scales as f16.
+mapped on unified memory (no staging copy), on a discrete GPU into wgpu staging buffers whose
+copies are submitted every 16 MB while the rest loads; weights stay Q8_0/F16 on the GPU, Q8_0
+scales as f16.
 Load runs nothing on the GPU but the fast-kernel probes, in one submission. Metal caches compiled
 pipelines across runs by shader source, so new shaders cost 0.2–0.4 s once. Per call: CPU log-mel
 (own FFT, one frame at a time), then the encoder over an arena sized for the longest input so far,
@@ -115,7 +117,11 @@ tier on AMD (a Radeon 610M's driver crashed, see the Log; RDNA3 and newer driver
 Intel Arc.
 
 Load: compiling the pipelines while the weights upload (~7 ms, but every kernel lookup would
-wait on a thread); starting the device while the GGUF header is read (≤ 3 ms left).
+wait on a thread); starting the device while the GGUF header is read (≤ 3 ms left). On Windows
+(RTX 4060) the Vulkan instance takes ~110 ms of Parakeet V3's ~296 ms load and the device ~35:
+reading the weights into memory meanwhile would hide part of it, at the cost of a copy and the
+weights' size in RAM. Whisper's and Moonshine's first call still compiles the decoder pipelines
+(first − warm: whisper-tiny ~5, moonshine-tiny ~12 ms on the RTX 4060).
 
 Memory: in one pass, peak footprint grows with length faster than the reference's (1 → 10 minutes
 +509 vs +185 MiB for GigaAM, +695 vs +376 MiB for Parakeet); `wavo run` splits by default. Over a
@@ -531,6 +537,28 @@ The reference's `load_ms` covers less than wavo's load: not its first GGUF parse
 runs before the timer) and no Metal pipelines, which ggml compiles in the first call. Compare load
 plus first call.
 
+- 2026-10-12, all models, Windows RTX 4060 (discrete, so weights go through wgpu staging
+  buffers): the first call ran the staging copies of all weights, which wgpu defers to the next
+  submission (~22 ms for Parakeet V3's ~650 MB; after 20–60 s of GPU idle main's first call on
+  `jfk` was 150–166 ms against 75 warm, likely from the GPU's idle clocks; the speed plan's
+  219–264 ms baseline didn't reproduce). Parakeet V3 `jfk` (fresh processes, medians of 8):
+  - Waiting for the copies at the end of load: first 90 → 76.5 ms, but the wait (22 ms) is in
+    load, so load + first stayed the same. Rejected.
+  - `queue.submit([])` after every 16 MB of weights staged (8 and 32 MB the same), so the
+    copies run while the rest uploads: first 97.7 → 76.5 ms, load unchanged. Kept.
+  - Weight buffers written through `Queue::write_buffer_with` instead of mapped at creation:
+    wgpu zeroes a staging buffer it creates for a buffer mapped at creation, not one for
+    `write_buffer_with` (the padding rows stay zero as unwritten ranges of a buffer): load 352 →
+    318 ms. Kept. Unified memory keeps the buffers' own mappings.
+  - Parakeet's CPU decoder (25 ms) loaded on a thread while the GPU starts: load 314 → 296 ms
+    (M2 ~101 → 87). Kept.
+  - Together, A/B/A against main: Parakeet V3 `jfk` load 333 / 296 / 342, first 102.2 / 77.0 /
+    102.2, load + first 436 / 373 / 446 ms; `dots` first 257 / 237 / 256; GigaAM `ru` first 34.0
+    / 19.8 / 33.8, `ru-long` 81.1 / 72.2 / 81.6; whisper-turbo `jfk` first 296 / 198 / 291 ms;
+    whisper-tiny and moonshine-tiny within noise; warm unchanged. After 20 s idle Parakeet `jfk`
+    first 150–166 → 85–87 ms. The reference (Vulkan): load 674, first 99 (100–105 after idle);
+    `dots` first 251; GigaAM `ru` load 339, first 146 ms. M2 and N100 (unified memory): first
+    call unchanged. Fixtures exact (M2, RTX 4060).
 - 2026-10-11, all models, no warm-up at load (the encoder run on 8 silent frames; for Whisper a
   64-frame window and a decoder step), decoder pipelines compiled in the first call: load +
   first call on jfk 5–89 ms lower on every model (GigaAM e2e-rnnt 162.1 → 142.8, Parakeet V3

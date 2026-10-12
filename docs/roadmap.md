@@ -26,7 +26,8 @@ Open:
   (18, optional). [Plan](plans/20261011-moonshine.md)
 - **Fast kernels beyond Apple.** The GEMM on F16 16×16 cooperative matrices runs on NVIDIA
   (#28, [plan](plans/completed/20261011-nvidia-fast.md)): 10–40% faster on an RTX 4060, Parakeet ahead of
-  transcribe.cpp; flash attention on them and a portable one (#36) put Whisper ahead too. Open: the
+  transcribe.cpp; flash attention on them and a portable one (#36) put Whisper ahead too, and the
+  first call after load on a discrete GPU within a few ms of later ones. Open: the
   rest of the [speed plan](plans/20261012-speed.md), the tier on AMD and Intel Arc, and the Linux
   plan's portable-encoder items. On Apple M5 and newer the GEMM runs on the Metal 4 tensor API:
   GigaAM, Parakeet and Whisper 1.5–1.9× faster there, ahead of transcribe.cpp on every model.

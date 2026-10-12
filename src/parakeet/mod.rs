@@ -12,7 +12,7 @@ use encoder::Encoder;
 use frontend::{F_MAX, Frontend, HOP, MELS, N_FFT, PRE_EMPHASIS, WINDOW};
 
 use crate::conformer::{self, Attention};
-use crate::error::{Result, bail};
+use crate::error::{Error, Result, bail};
 use crate::gguf::Gguf;
 use crate::gpu::Gpu;
 use crate::{Token, Transcript};
@@ -82,11 +82,15 @@ impl Parakeet {
       .map(|i| matches!(types[i], 2 | 3) || i == unk || vocab[i] == "<unk>")
       .collect();
 
-    let gpu = Gpu::new(true)?;
     let ch = g.get::<u32>("stt.parakeet.encoder.subsampling_channels")? as usize;
     let joint = g.get::<u32>("stt.parakeet.joint.hidden")? as usize;
-    let encoder = Encoder::new(&gpu, g, cfg, ch, joint)?;
-    let decoder = Decoder::new(g, vocab.len(), blank)?;
+    // The decoder loads on the CPU while the GPU starts and the encoder uploads.
+    let (gpu, encoder, decoder) = std::thread::scope(|s| {
+      let decoder = s.spawn(|| Decoder::new(g, vocab.len(), blank));
+      let gpu = Gpu::new(true)?;
+      let encoder = Encoder::new(&gpu, g, cfg, ch, joint)?;
+      Ok::<_, Error>((gpu, encoder, decoder.join().unwrap()?))
+    })?;
     Ok(Self { gpu, frontend: Frontend::new(), encoder, decoder, vocab, special })
   }
 

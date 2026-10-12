@@ -3,7 +3,7 @@
 //! Each kernel has a portable version; a fast one (subgroups, cooperative matrices) replaces it
 //! when the device supports it and a probe dispatch of that pipeline succeeds.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 
 use wgpu::BindGroup;
@@ -24,7 +24,7 @@ pub struct Gpu {
   device: wgpu::Device,
   queue: wgpu::Queue,
   /// Usage of weight buffers. On unified memory they are also `MAP_WRITE`, so filling their
-  /// mapping writes the buffer itself: no staging copy at load, none queued for the first call.
+  /// mapping writes the buffer itself: no staging copy. Else `COPY_DST`, for those copies.
   weights: wgpu::BufferUsages,
   kernels: Kernels,
   fast: Fast,
@@ -37,6 +37,8 @@ pub struct Gpu {
   marks_read: Buffer,
   /// The last call's number.
   calls: AtomicU32,
+  /// Bytes of weights staged since the last submission (see `Gpu::filled`).
+  pending: AtomicU64,
   /// Held from a call's first submission to its readback: calls share `marks`.
   busy: Mutex<()>,
   /// The first device-lost or uncaptured wgpu error, reported by the next call.
@@ -295,10 +297,8 @@ impl Gpu {
       });
       (Kernels::new(&device), compiled.join().unwrap())
     });
-    let mut weights = wgpu::BufferUsages::STORAGE;
-    if mappable {
-      weights |= wgpu::BufferUsages::MAP_WRITE;
-    }
+    let weights = wgpu::BufferUsages::STORAGE
+      | if mappable { wgpu::BufferUsages::MAP_WRITE } else { wgpu::BufferUsages::COPY_DST };
     let buffer = |size, usage| {
       device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -320,6 +320,7 @@ impl Gpu {
       marks,
       marks_read,
       calls: AtomicU32::new(0),
+      pending: AtomicU64::new(0),
       busy: Mutex::new(()),
       failure,
       halves: Mutex::new(None),
@@ -446,22 +447,56 @@ impl Gpu {
     })
   }
 
-  /// A weight buffer of `size` bytes, mapped for the caller to fill and unmap.
-  fn mapped(&self, size: usize) -> Buffer {
-    self.device.create_buffer(&wgpu::BufferDescriptor {
+  /// A weight buffer of `size` bytes whose first `len` the caller writes through `Fill::slice`,
+  /// then hands to `filled`; the rest stays zero.
+  fn fill(&self, size: usize, len: usize) -> Result<Fill> {
+    let staged = !self.weights.contains(wgpu::BufferUsages::MAP_WRITE);
+    let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
       label: None,
       size: size.max(4).next_multiple_of(4) as u64,
       usage: self.weights,
-      mapped_at_creation: true,
-    })
+      mapped_at_creation: !staged,
+    });
+    if !staged {
+      let view = View::Mapped(buffer.get_mapped_range_mut(..)?);
+      return Ok(Fill { buffer, view });
+    }
+    // A copy is 4-byte aligned: the bytes past `len` up to that are zeros.
+    let aligned = len.max(1).next_multiple_of(4);
+    let size = wgpu::BufferSize::new(aligned as u64).unwrap();
+    let mut view = (self.queue.write_buffer_with(&buffer, 0, size))
+      .ok_or_else(|| Error::Gpu(format!("staging {aligned} bytes for a weight buffer failed")))?;
+    view.slice(len..).copy_from_slice(&[0; 3][..aligned - len]);
+    Ok(Fill { buffer, view: View::Staged(view) })
+  }
+
+  /// The buffer of a `fill` once written. Without unified memory wgpu copies the staging buffer
+  /// into it with the next submission, so every 16 MB of them are submitted right away: the
+  /// copies run while the rest of the model loads, not in the first call.
+  fn filled(&self, f: Fill) -> Buffer {
+    let Fill { buffer, view } = f;
+    match view {
+      View::Mapped(view) => {
+        drop(view);
+        buffer.unmap();
+      }
+      View::Staged(view) => {
+        let len = view.len() as u64;
+        drop(view);
+        if self.pending.fetch_add(len, Ordering::Relaxed) + len >= 16 << 20 {
+          self.pending.store(0, Ordering::Relaxed);
+          self.queue.submit([]);
+        }
+      }
+    }
+    buffer
   }
 
   pub fn upload(&self, data: &[f32]) -> Result<Buffer> {
-    let buffer = self.mapped(data.len() * 4);
     let bytes: &[u8] = bytemuck::cast_slice(data);
-    buffer.get_mapped_range_mut(..)?.slice(..bytes.len()).copy_from_slice(bytes);
-    buffer.unmap();
-    Ok(buffer)
+    let mut f = self.fill(bytes.len(), bytes.len())?;
+    f.slice(0..bytes.len()).copy_from_slice(bytes);
+    Ok(self.filled(f))
   }
 
   pub fn write(&self, buffer: &Buffer, data: &[f32]) {
@@ -496,7 +531,7 @@ impl Gpu {
     if !pad && !k.is_multiple_of(32) {
       bail!("linear layer {k}→{rows}: needs k % 32 == 0");
     }
-    // Buffers start zeroed, so the padding rows only need the space.
+    // Buffers start zeroed, so the padding rows are only left unwritten.
     let n = rows.next_multiple_of(64);
     let cols = if rows.is_multiple_of(32) { rows } else { n };
     let kp = k.next_multiple_of(32);
@@ -504,34 +539,27 @@ impl Gpu {
     const PIECE: usize = 34 << 13;
     let (ty, weight, scales) = match w0.ty {
       _ if kp != k => {
-        let weight = self.mapped(n * kp * 4);
-        let mut view = weight.get_mapped_range_mut(..)?;
-        let rows = weights.iter().map(|w| w.to_f32()).collect::<Result<Vec<_>>>()?;
-        for (i, row) in rows.iter().flat_map(|w| w.chunks(k)).enumerate() {
-          view.slice(i * kp * 4..(i * kp + k) * 4).copy_from_slice(bytemuck::cast_slice(row));
+        let mut padded = vec![0f32; rows * kp];
+        let w = weights.iter().map(|w| w.to_f32()).collect::<Result<Vec<_>>>()?;
+        for (row, w) in padded.chunks_mut(kp).zip(w.iter().flat_map(|w| w.chunks(k))) {
+          row[..k].copy_from_slice(w);
         }
-        drop(view);
-        weight.unmap();
-        (0, weight, None)
+        let mut f = self.fill(n * kp * 4, rows * kp * 4)?;
+        f.slice(0..rows * kp * 4).copy_from_slice(bytemuck::cast_slice(&padded));
+        (0, self.filled(f), None)
       }
       Type::F32 | Type::F16 => {
         let (ty, width) = if w0.ty == Type::F32 { (0, 4) } else { (1, 2) };
-        let weight = self.mapped(n * k * width);
-        let mut view = weight.get_mapped_range_mut(..)?;
+        let mut f = self.fill(n * k * width, rows * k * width)?;
         let mut at = 0;
         for w in weights {
-          w.read(PIECE, |i, piece| {
-            view.slice(at + i..at + i + piece.len()).copy_from_slice(piece)
-          })?;
+          w.read(PIECE, |i, piece| f.slice(at + i..at + i + piece.len()).copy_from_slice(piece))?;
           at += w.len() * width;
         }
-        drop(view);
-        weight.unmap();
-        (ty, weight, None)
+        (ty, self.filled(f), None)
       }
       Type::Q8_0 => {
-        let (data, scales) = (self.mapped(n * k), self.mapped(n * k / 16));
-        let (mut dv, mut sv) = (data.get_mapped_range_mut(..)?, scales.get_mapped_range_mut(..)?);
+        let (mut dv, mut sv) = (self.fill(n * k, rows * k)?, self.fill(n * k / 16, rows * k / 16)?);
         let mut block = 0;
         for w in weights {
           w.read(PIECE, |i, piece| {
@@ -545,10 +573,7 @@ impl Gpu {
           })?;
           block += w.len() / 32;
         }
-        drop((dv, sv));
-        data.unmap();
-        scales.unmap();
-        (2, data, Some(scales))
+        (2, self.filled(dv), Some(self.filled(sv)))
       }
     };
     let dual = bias.len().saturating_sub(rows);
@@ -738,6 +763,28 @@ pub struct Recorded {
   /// Bytes to read back: the output and the marks.
   size: u64,
   marks: u64,
+}
+
+/// A weight buffer being written (see `Gpu::fill`).
+struct Fill {
+  buffer: Buffer,
+  view: View,
+}
+
+/// The buffer's own mapping on unified memory, else a staging buffer for wgpu to copy from. That
+/// one isn't zeroed before it is written, unlike the staging buffer of one mapped at creation.
+enum View {
+  Mapped(wgpu::BufferViewMut),
+  Staged(wgpu::QueueWriteBufferView),
+}
+
+impl Fill {
+  fn slice(&mut self, range: std::ops::Range<usize>) -> wgpu::WriteOnly<'_, [u8]> {
+    match &mut self.view {
+      View::Mapped(v) => v.slice(range),
+      View::Staged(v) => v.slice(range),
+    }
+  }
 }
 
 /// `source` with each function of `fns` (WGSL) in place of the function of the same name.
