@@ -64,94 +64,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  # `dev` builds the archives next to `test` (main and manual runs); on main `dev-release` publishes
-  # them as the `dev` pre-release. Two jobs, so the token that can write to the repo never sits on
-  # the machine that runs the build scripts of every dependency.
-  dev:
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-    runs-on: macos-latest # the macOS binary needs a Mac; Linux and Windows cross-compile
-    steps:
-      - uses: actions/checkout@v7
-      # One cache for the registry, cargo-cross, the targets' dependencies and the cross toolchains.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-directories: ${{ runner.temp }}/cross
-      - run: make dist
-        env:
-          CROSS_COMPILER_DIR: ${{ runner.temp }}/cross
-      - uses: actions/upload-artifact@v7
-        with:
-          name: wavo-dev
-          path: target/distrib/*
-
-  dev-release:
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest # no GPU or build here, and Linux runners start faster
-    needs: [test, dev]
+  # The shared release process: on main the archives (`make dist`) become the `dev` pre-release; a
+  # `release: vX.Y.Z (#N)` commit publishes the crate and the same archives as the version.
+  # Users check an archive with
+  # `gh attestation verify FILE -R vladkens/wavo --signer-repo vladkens/actions`.
+  release:
+    needs: test
+    uses: vladkens/actions/.github/workflows/rust.yml@feat/rust-workflow
+    with:
+      dist: make dist
+      runner: macos-latest # the macOS binary needs a Mac; Linux and Windows cross-compile
+      cache-directories: ~/.cache/cargo-cross
     permissions:
       attestations: write
       contents: write
       id-token: write
-    concurrency:
-      group: dev-${{ github.ref }}
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: wavo-dev
-          path: target/distrib
-      - id: dev
-        uses: vladkens/actions/dev-release@v1
-        with:
-          files: target/distrib/*
-      # Users check an archive with `gh attestation verify FILE -R vladkens/wavo`.
-      - if: steps.dev.outputs.skipped == 'false'
-        uses: actions/attest@v4
-        with:
-          subject-path: ${{ steps.dev.outputs.files }}
-
-  # Split like `dev`: `release-check` builds without write rights, `release` only publishes.
-  release-check:
-    if: github.event_name == 'push' && startsWith(github.event.head_commit.message, 'release:')
-    runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.check.outputs.tag }}
-      notes: ${{ steps.check.outputs.notes }}
-    steps:
-      - uses: actions/checkout@v7
-      - id: check
-        uses: vladkens/actions/release-check@v1
-      - uses: vladkens/actions/crates-publish@v1
-        with:
-          dry-run: true
-
-  release:
-    runs-on: ubuntu-latest
-    needs: [test, dev, release-check]
-    permissions:
-      attestations: write
-      contents: write
-      id-token: write # crates.io Trusted Publishing and attestations
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: wavo-dev
-          path: target/distrib # git-ignored, so cargo publish packs a clean tree
-      # https://crates.io/docs/trusted-publishing
-      - id: auth
-        uses: rust-lang/crates-io-auth-action@v1
-      - uses: vladkens/actions/crates-publish@v1
-        with:
-          token: ${{ steps.auth.outputs.token }}
-          no-verify: true
-      - id: release
-        uses: vladkens/actions/github-release@v1
-        with:
-          tag: ${{ needs.release-check.outputs.tag }}
-          notes: ${{ needs.release-check.outputs.notes }}
-          files: target/distrib/*
-          rename-from: wavo-dev-
-          rename-to: wavo-${{ needs.release-check.outputs.tag }}-
-      - uses: actions/attest@v4
-        with:
-          subject-path: ${{ steps.release.outputs.files }}
