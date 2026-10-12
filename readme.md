@@ -43,9 +43,10 @@ the code, the WGSL kernels, the tests and the docs, following [agents.md](agents
 
 The output is checked, not trusted:
 
-- Fixtures come from transcribe.cpp's own CLI: the text, every token and its start time, for each
-  model on its test clips. `make test` must reproduce them exactly, and CI runs them for the
-  smallest model of each family.
+- Fixtures come from transcribe.cpp's own CLI on its test clips: the text plus every token and its
+  start time for GigaAM and Parakeet, every segment with its times for Whisper, and the text
+  for Moonshine, which has no timestamps. `make test` must reproduce them exactly, and CI runs
+  them for the smallest model of each family.
 - Speed changes are measured A/B/A, back to back, and against the reference on the same model and
   audio files; every attempt, kept or rejected, is logged in [docs/perf.md](docs/perf.md).
 - Plans and their results are in [docs/plans/](docs/plans/).
