@@ -1,19 +1,22 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 // Decoder kernels for one token: attention of one query per head over an F16 K/V cache, split over
-// workgroups of keys, and F32 rows packed into such a cache. A cache row holds f16 pairs: K of all
-// heads, then V.
+// workgroups of keys, and F32 rows packed into such a cache. A cache of `cols` positions with d
+// dims (all heads) holds f16 pairs: K transposed, word i·cols + j for pair i of position j, then
+// V by position, word (d/2)·cols + j·d/2 + i. With K transposed, the threads of `attend` (one key
+// each) read consecutive words.
 
 struct Params {
-  // attend: keys; pack: pairs.
+  // attend: keys; pack: rows.
   n: u32,
-  head_dim: u32,
+  // attend: dims per head; pack: d.
+  dim: u32,
   scale: f32,
-  // attend: words (f16 pairs) per cache row, and V's first word in a row.
-  stride: u32,
-  v_offset: u32,
-  // pack: the first source float and destination word.
+  // The cache's positions.
+  cols: u32,
+  // pack: the position of the first row, and the first source float and floats per source row.
+  col: u32,
   src: u32,
-  dst: u32,
+  stride: u32,
 }
 
 var<immediate> p: Params;
@@ -55,10 +58,17 @@ fn reduce(v: f32, lid: u32, is_max: bool) -> f32 {
 // the sums of V, then m and l. `combine` merges the parts of each head. The query is rounded to
 // f16, as the reference's flash attention stores it.
 @compute @workgroup_size(256)
-fn attend(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
-  let hd = p.head_dim;
+fn attend(
+  @builtin(workgroup_id) wg: vec3<u32>,
+  @builtin(num_workgroups) num_workgroups: vec3<u32>,
+  @builtin(local_invocation_index) lid: u32,
+) {
+  let hd = p.dim;
   let pairs = hd / 2u;
   let h = wg.y;
+  let k0 = h * pairs * p.cols;
+  let v_stride = num_workgroups.y * pairs;
+  let v0 = v_stride * p.cols + h * pairs;
   for (var i = lid; i < hd; i += 256u) {
     q[i] = unpack2x16float(pack2x16float(vec2(at_q[h * hd + i], 0.0))).x;
   }
@@ -67,10 +77,9 @@ fn attend(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index)
   let n = min(p.n - j0, KEYS);
   var x = -3.0e38;
   if (lid < n) {
-    let base = (j0 + lid) * p.stride + h * pairs;
     var acc = 0.0;
     for (var i = 0u; i < pairs; i++) {
-      let k = unpack2x16float(at_kv[base + i]);
+      let k = unpack2x16float(at_kv[k0 + i * p.cols + j0 + lid]);
       acc += q[2u * i] * k.x + q[2u * i + 1u] * k.y;
     }
     x = acc * p.scale;
@@ -89,7 +98,7 @@ fn attend(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index)
   var o = vec2(0.0);
   if (g < groups) {
     for (var j = g; j < n; j += groups) {
-      o += s[j] * unpack2x16float(at_kv[(j0 + j) * p.stride + p.v_offset + h * pairs + c]);
+      o += s[j] * unpack2x16float(at_kv[v0 + (j0 + j) * v_stride + c]);
     }
   }
   rv[lid] = o;
@@ -115,7 +124,7 @@ fn attend(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index)
 // One workgroup per head: attend's parts rescaled to their common maximum, summed and normalized.
 @compute @workgroup_size(64)
 fn combine(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
-  let hd = p.head_dim;
+  let hd = p.dim;
   let parts = (p.n + KEYS - 1u) / KEYS;
   let base = wg.x * parts * (hd + 2u);
   var m = -3.0e38;
@@ -140,11 +149,25 @@ fn combine(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index
 @group(0) @binding(0) var<storage, read> pk_x: array<f32>;
 @group(0) @binding(1) var<storage, read_write> pk_y: array<u32>;
 
-// y[dst + i] = f16 pair of x[src + 2i], x[src + 2i + 1] for i < n.
+// n rows of x, each K then V (2·d floats from src + j·stride), into the cache at positions col..:
+// pair i of row j is x[2i], x[2i + 1] (of V for i ≥ d/2). One row: a thread per pair; more: 64
+// rows × 4 pairs per workgroup, so the transposed K is written in runs of 64 positions.
 @compute @workgroup_size(256)
 fn pack(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
-  let i = wg.x * 256u + lid;
-  if (i < p.n) {
-    pk_y[p.dst + i] = pack2x16float(vec2(pk_x[p.src + 2u * i], pk_x[p.src + 2u * i + 1u]));
+  var i = wg.x * 256u + lid;
+  var j = 0u;
+  if (p.n > 1u) {
+    i = wg.y * 4u + lid / 64u;
+    j = wg.x * 64u + lid % 64u;
   }
+  let half = p.dim / 2u;
+  if (i >= p.dim || j >= p.n) {
+    return;
+  }
+  let x = p.src + j * p.stride + 2u * i;
+  var at = i * p.cols + p.col + j;
+  if (i >= half) {
+    at = half * p.cols + (p.col + j) * half + i - half;
+  }
+  pk_y[at] = pack2x16float(vec2(pk_x[x], pk_x[x + 1u]));
 }

@@ -433,6 +433,22 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### Whisper decoder
 
+- 2026-10-12, Whisper and Moonshine, the decoder caches with K transposed (pair i of position j
+  at word i·cols + j; V stays by position), so `attend`'s threads, one key each, read consecutive
+  words; the cross cache is packed in runs of 64 positions. RTX 4060 (turbo, GPU timestamps):
+  cross `attend` 48 → 35 µs per layer and token, its pack 39 → 116 µs per layer and window.
+  A/B/A turbo `jfk` 200.3 / 199.2 / 200.6, `ru-long` 470.5 / 465.5 / 470.8 ms; M2 whisper-tiny
+  `jfk` 67.5 / 65.0 / 67.1, Moonshine tiny `dots` 238.2 / 226.0 / 238.4, turbo `jfk` 1242 / 1247
+  / 1241 ms (noise); N100 whisper-tiny `jfk` 758 / 749 / 759, `dots` 1992 / 1945 / 1990 ms.
+  Fixtures exact. Kept.
+  - Ablations before it (RTX 4060, timing only): cross `attend` 48 µs, 24 without the K reads,
+    8.5 without K and V. V ran at ~256 GB/s, K (128-byte runs 5 KB apart, a run per thread) at
+    ~160. 16-byte K loads per thread on the old layout: 49 µs, no gain.
+- 2026-10-12, Whisper, gemv with one 16-byte vector of W per thread and row, 1, 2 or 4 rows per
+  32 threads (RTX 4060, turbo, GPU timestamps): every shape within ±3% of the kept kernel
+  (1280×1280 10.8 → 10.9–11.4 µs, 5120×1280 32.4 → 30.8–32.3, 1280×5120 31.3 → 31.0–33.4, the
+  head 274 → 273–275). The head already streams at ~258 GB/s of the 272 peak, the layers at
+  ~200–225 (dispatch ramp and tail). Rejected.
 - 2026-10-10, Whisper, decoder gemv over 4 rows per 32 threads: jfk 1603 → 1563 ms. Kept.
 
 ### Frontend and FFT

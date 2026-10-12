@@ -863,9 +863,8 @@ impl<'a> Pass<'a> {
     self.run(&self.gpu.decoder().embed[l.ty], &buffers, &params, [l.k.div_ceil(256), 1, 1]);
   }
 
-  /// Attention of one query per head, `q` `[heads · head_dim]`, over keys 0..n of an F16 cache
-  /// into `o`, through `part` (`attend_len` floats). A cache row is K of all heads, then V, as f16
-  /// pairs.
+  /// Attention of one query per head, `q` `[heads · head_dim]`, over keys 0..n of an F16 cache of
+  /// `cols` positions (see `pack`) into `o`, through `part` (`attend_len` floats).
   #[allow(clippy::too_many_arguments)]
   pub fn attend(
     &mut self,
@@ -874,20 +873,35 @@ impl<'a> Pass<'a> {
     part: &Buffer,
     o: &Buffer,
     n: usize,
+    cols: usize,
     heads: usize,
     hd: usize,
   ) {
     let scale = (1.0 / (hd as f32).sqrt()).to_bits();
-    let params = [n as u32, hd as u32, scale, (heads * hd) as u32, (heads * hd / 2) as u32];
+    let params = [n as u32, hd as u32, scale, cols as u32];
     let k = self.gpu.decoder();
     self.run(&k.attend, &[q, kv, part], &params, [n.div_ceil(ATTEND_KEYS), heads, 1]);
     self.run(&k.combine, &[part, o], &params, [heads, 1, 1]);
   }
 
-  /// Packs `pairs` pairs of floats from `x[src..]` into f16 pairs at `y[dst..]`.
-  pub fn pack(&mut self, x: &Buffer, y: &Buffer, pairs: usize, src: usize, dst: usize) {
-    let params = [pairs as u32, 0, 0, 0, 0, src as u32, dst as u32];
-    self.run(&self.gpu.decoder().pack, &[x, y], &params, [pairs.div_ceil(256), 1, 1]);
+  /// Packs `rows` rows of `x` from float `src` on, `stride` floats apart, each K then V of `d`
+  /// floats, into the F16 cache `y` of `cols` positions at positions `col..`. The cache holds K
+  /// transposed (pair i of position j at word i·cols + j), then V by position (word d/2·cols +
+  /// j·d/2 + i).
+  #[allow(clippy::too_many_arguments)]
+  pub fn pack(
+    &mut self,
+    x: &Buffer,
+    [src, stride]: [usize; 2],
+    y: &Buffer,
+    rows: usize,
+    d: usize,
+    [cols, col]: [usize; 2],
+  ) {
+    let params = [rows, d, 0, cols, col, src, stride].map(|v| v as u32);
+    let size =
+      if rows == 1 { [d.div_ceil(256), 1, 1] } else { [rows.div_ceil(64), d.div_ceil(4), 1] };
+    self.run(&self.gpu.decoder().pack, &[x, y], &params, size);
   }
 
   /// Columns for a conv1d with `[kernel, stride, pad]` over `x` `[t][ch]`, rows of `ch · kernel`
@@ -1388,28 +1402,32 @@ mod tests {
             }
           }
           let got = run(gpu, &vec![0.0; d], |p, o| {
-            p.pack(&xb, &cache, keys * d, 0, 0);
-            p.attend(&qb, &cache, &part, o, n, heads, hd);
+            p.pack(&xb, [0, 2 * d], &cache, keys, d, [keys, 0]);
+            p.attend(&qb, &cache, &part, o, n, keys, heads, hd);
           });
           assert_close(&got, &want);
         }
       }
     }
-    let kv = random(40, 7);
+    // Rows of K then V (d = 6) from x[3..], 13 floats apart, into a cache of 7 positions; one row
+    // at position 4, or 2 rows at 5 and 6.
+    let x = random(3 + 13 * 2, 7);
+    let h = |x: f32| f16::from_f32(x).to_bits() as u32;
     for gpu in gpus() {
-      let xb = up(gpu, &kv);
-      // Pairs from x[3..] into y[5..].
-      let y = random(5 + 10, 9);
-      let got = run(gpu, &y, |p, out| p.pack(&xb, out, 10, 3, 5));
-      for (i, (g, y)) in got.iter().zip(&y).enumerate() {
-        let want = match i.checked_sub(5) {
-          Some(j) => {
-            let h = |x: f32| f16::from_f32(x).to_bits() as u32;
-            h(kv[3 + 2 * j]) | h(kv[4 + 2 * j]) << 16
+      let xb = up(gpu, &x);
+      for (rows, col) in [(1, 4), (2, 5)] {
+        let y = random(7 * 6, 9);
+        let got = run(gpu, &y, |p, out| p.pack(&xb, [3, 13], out, rows, 6, [7, col]));
+        let mut want: Vec<u32> = y.iter().map(|v| v.to_bits()).collect();
+        for j in 0..rows {
+          let pair = |i: usize| h(x[3 + 13 * j + 2 * i]) | h(x[4 + 13 * j + 2 * i]) << 16;
+          for i in 0..3 {
+            want[i * 7 + col + j] = pair(i);
+            want[3 * 7 + (col + j) * 3 + i] = pair(3 + i);
           }
-          None => y.to_bits(),
-        };
-        assert_eq!(g.to_bits(), want, "pack [{i}]");
+        }
+        let got: Vec<u32> = got.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(got, want, "pack {rows} rows");
       }
     }
   }
