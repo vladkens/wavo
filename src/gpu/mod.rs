@@ -149,8 +149,11 @@ struct Fast {
   gemm: Option<Vec<Pipeline>>,
   layer_norm: Option<Pipeline>,
   conv_glu: Option<Pipeline>,
-  /// Flash attention for head_dim 32..64.
+  /// Flash attention: `flash.wgsl` (F = 8, head_dim 32..64) or `flash_f16.wgsl` (F = 16,
+  /// head_dim ≤ 64), both in steps of 4.
   attention: Option<Pipeline>,
+  /// F of the kept flash attention, independent of the GEMM's probe; 0 without it.
+  attention_size: usize,
   /// Flash attention with relative positions for head_dim ≤ 128.
   relative: Option<Pipeline>,
 }
@@ -348,13 +351,15 @@ impl Gpu {
     // All six GEMMs are taken before any is checked, so the kernels after them stay in place.
     let gemm: Vec<_> = (0..6).map(|_| next()).collect();
     let gemm: Option<Vec<_>> = gemm.into_iter().collect();
+    let (layer_norm, conv_glu, attention, relative) = (next(), next(), next(), next());
     Fast {
       size: if gemm.is_some() { size } else { 0 },
       gemm,
-      layer_norm: next(),
-      conv_glu: next(),
-      attention: next(),
-      relative: next(),
+      layer_norm,
+      conv_glu,
+      attention_size: if attention.is_some() { size } else { 0 },
+      attention,
+      relative,
     }
   }
 
@@ -529,7 +534,7 @@ impl Gpu {
   }
 
   fn flash(&self, head_dim: usize, relative: bool) -> Option<&Pipeline> {
-    let (k, min, max, step) = match (relative, self.fast.size) {
+    let (k, min, max, step) = match (relative, self.fast.attention_size) {
       (true, _) => (&self.fast.relative, 8, 128, 8),
       (false, 8) => (&self.fast.attention, 32, 64, 4),
       (false, _) => (&self.fast.attention, 4, 64, 4),
@@ -1159,6 +1164,8 @@ mod tests {
     gemm[0] = gpu.kernels.gemm[0].clone();
     let fast = gpu.probe(size, (gemm, kernels.clone()));
     assert!(fast.gemm.is_none() && fast.size == 0);
+    // Flash attention keeps its own F, which picks its head sizes.
+    assert_eq!(fast.attention_size, if fast.attention.is_some() { size } else { 0 });
     assert!([fast.layer_norm, fast.conv_glu, fast.attention, fast.relative] == kernels);
   }
 
@@ -1473,7 +1480,8 @@ mod tests {
         let got = run(gpu, &vec![0.0; t * d], |p, o| {
           p.attention(&qb, Some(&vb), None, &s, o, t, heads, hd)
         });
-        assert_near(&got, &want, if gpu.fast.size == 16 { 1e-3 } else { 2e-5 });
+        let wide = gpu.fast.attention_size == 16 && gpu.flash(hd, false).is_some();
+        assert_near(&got, &want, if wide { 1e-3 } else { 2e-5 });
       }
     }
   }
