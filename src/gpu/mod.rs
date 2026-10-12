@@ -606,7 +606,7 @@ impl Gpu {
   ) -> Recorded {
     self.record_call(groups, out, read, len, |p| {
       record(p);
-      assert!(p.queued.is_none(), "a call recorded on its own submitted part of itself");
+      assert!(p.queued.is_none(), "Gpu::record of a call with Pass::layers");
     })
   }
 
@@ -933,7 +933,8 @@ impl<'a> Pass<'a> {
     }
   }
 
-  /// LayerNorm of one row of `cols` from `x` into `y`.
+  /// LayerNorm of one row of `cols` from `x` into `y`: the decoder's, with subgroup sums on the
+  /// fast tier.
   pub fn layer_norm_row(&mut self, x: &Buffer, n: &Channels, y: &Buffer, cols: usize) {
     match &self.gpu.decoder().layer_norm {
       Some(k) => {
