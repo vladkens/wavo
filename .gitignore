@@ -1,4 +1,4 @@
 target/
-3rd/
+/3rd
 .claude/
 .DS_Store
