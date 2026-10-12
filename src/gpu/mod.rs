@@ -54,6 +54,7 @@ struct Kernels {
   im2col: Pipeline,
   conv_glu: Pipeline,
   flash: Pipeline,
+  relative: Pipeline,
   scores: Pipeline,
   softmax: Pipeline,
   values: Pipeline,
@@ -82,6 +83,7 @@ impl Kernels {
       im2col: pipeline(device, &ops, "im2col", &[]),
       conv_glu: pipeline(device, &ops, "conv_glu", &[]),
       flash: pipeline(device, &attention, "flash", &[]),
+      relative: pipeline(device, &attention, "relative", &[]),
       scores: pipeline(device, &attention, "scores", &[]),
       softmax: pipeline(device, &ops, "softmax", &[]),
       values: pipeline(device, &attention, "values", &[]),
@@ -639,7 +641,7 @@ impl Gpu {
 
   /// Whether the portable path has a flash kernel for heads of `head_dim`.
   fn portable_flash(head_dim: usize, relative: bool) -> bool {
-    !relative && head_dim <= 64 && head_dim.is_multiple_of(4)
+    head_dim <= if relative { 128 } else { 64 } && head_dim.is_multiple_of(4)
   }
 
   /// Floats of attention scratch for `t` frames: the portable path without flash attention keeps
@@ -1262,7 +1264,8 @@ impl<'a> Pass<'a> {
     }
     let (k, tiles) = (&self.gpu.kernels, t.div_ceil(16));
     if Gpu::portable_flash(head_dim, d == 1) {
-      return self.run(&k.flash, &[qk, v, o], &params[..7], [t.div_ceil(32), heads, 1]);
+      let (k, buffers) = if d == 1 { (&k.relative, [qk, pos, o]) } else { (&k.flash, [qk, v, o]) };
+      return self.run(k, &buffers, &params[..7], [t.div_ceil(32), heads, 1]);
     }
     self.run(&k.scores, &[qk, pos, s], &params, [tiles, tiles, heads]);
     self.run(&k.softmax, &[s], &params[..1], [t, heads, 1]);

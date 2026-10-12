@@ -4,7 +4,8 @@
 // relative positions. scores writes scale · q·k into s [heads][t][t], softmax (in ops.wgsl)
 // normalizes each row in place, values computes o [t][ch] = s·v. For relative positions, scores
 // adds (q + v)_i·P[j − i + t − 1] before the scale, P being the projected positions [2t − 1][ch]
-// from row 16 on (row 16 + r is position t − 1 − r).
+// from row 16 on (row 16 + r is position t − 1 − r). flash and relative compute the same without
+// the scores in memory, for the head sizes `Gpu::portable_flash` names.
 
 struct Params {
   t: u32,
@@ -266,6 +267,221 @@ fn flash(
     }
     if (8u + l.x < h4) {
       fl_o[o + ch4 + 8u + l.x] = ob1 / total.y;
+    }
+  }
+}
+
+@group(0) @binding(0) var<storage, read> rl_qk: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> rl_pos: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> rl_o: array<vec4<f32>>;
+
+// A chunk of 32 columns of (q + u, q + v) as [column][query pair] quads (q + u of both queries,
+// then q + v of both); later half a block of v, 64 columns as [key][column quad].
+var<workgroup> rq: array<vec4<f32>, 512>;
+// The chunk's k as [column][key pair].
+var<workgroup> rk: array<vec2<f32>, 512>;
+// The chunk's 64 rows of positions as [column][row pair].
+var<workgroup> rr: array<vec2<f32>, 1024>;
+
+// Stages columns 64·half.. of v for keys j0.. into rq.
+fn stage_v(half: u32, j0: u32, head4: u32, lid: u32) {
+  for (var e = lid; e < 512u; e += 128u) {
+    let r = e / 16u;
+    let c = 16u * half + e % 16u;
+    var x = vec4(0.0);
+    if (j0 + r < p.t && c < p.head_dim / 4u) {
+      x = rl_qk[(j0 + r) * p.stride / 4u + 2u * (p.ch / 4u) + head4 + c];
+    }
+    rq[e] = x;
+  }
+  workgroupBarrier();
+}
+
+// With relative positions, head_dim ≤ 128 and a multiple of 4: the flash kernel's layout (32
+// queries of one head, keys in blocks of 32, thread (x, y) on queries 2y, 2y + 1 and keys 4x..4x +
+// 3, columns 4x.. and 32 + 4x.. of each 64-column half), with the scores summed over chunks of 32
+// columns. Query i and key j need position row j − i + t + 15, so a block needs 63 rows from j0 −
+// i0 + t − 16 on (local row j − j0 − (i − i0) + 31), and a thread rows 4x − 2y + 30 to + 35.
+@compute @workgroup_size(8, 16)
+fn relative(
+  @builtin(workgroup_id) wg: vec3<u32>,
+  @builtin(local_invocation_id) l: vec3<u32>,
+  @builtin(local_invocation_index) lid: u32,
+) {
+  let h4 = p.head_dim / 4u;
+  let ch4 = p.ch / 4u;
+  let s4 = p.stride / 4u;
+  let q0 = wg.x * 32u;
+  let head4 = wg.y * h4;
+  let r0 = 2u * l.y;
+  let pair = (4u * l.x + 30u - r0) / 2u;
+  let keys = 4u * l.x + vec4(0u, 1u, 2u, 3u);
+  var m = vec2(-3.0e38);
+  var sum = vec2(0.0);
+  var oa0 = vec4(0.0);
+  var ob0 = vec4(0.0);
+  var oa1 = vec4(0.0);
+  var ob1 = vec4(0.0);
+  var oc0 = vec4(0.0);
+  var od0 = vec4(0.0);
+  var oc1 = vec4(0.0);
+  var od1 = vec4(0.0);
+  for (var j0 = 0u; j0 < p.t; j0 += 32u) {
+    let base = i32(j0 + p.t) - i32(q0) - 16;
+    var a0 = vec4(0.0);
+    var a1 = vec4(0.0);
+    var b0 = vec4(0.0);
+    var b1 = vec4(0.0);
+    for (var c0 = 0u; c0 < h4; c0 += 8u) {
+      {
+        // Query pair lid % 16, column quad lid / 16.
+        let r = q0 + 2u * (lid % 16u);
+        let c = c0 + lid / 16u;
+        var u0 = vec4(0.0);
+        var u1 = vec4(0.0);
+        var v0 = vec4(0.0);
+        var v1 = vec4(0.0);
+        if (c < h4) {
+          if (r < p.t) {
+            u0 = rl_qk[r * s4 + head4 + c];
+            v0 = rl_qk[r * s4 + 3u * ch4 + head4 + c];
+          }
+          if (r + 1u < p.t) {
+            u1 = rl_qk[(r + 1u) * s4 + head4 + c];
+            v1 = rl_qk[(r + 1u) * s4 + 3u * ch4 + head4 + c];
+          }
+        }
+        let o = 4u * (lid / 16u) * 16u + lid % 16u;
+        rq[o] = vec4(u0.x, u1.x, v0.x, v1.x);
+        rq[o + 16u] = vec4(u0.y, u1.y, v0.y, v1.y);
+        rq[o + 32u] = vec4(u0.z, u1.z, v0.z, v1.z);
+        rq[o + 48u] = vec4(u0.w, u1.w, v0.w, v1.w);
+      }
+      {
+        // Key pair lid % 16, column quad lid / 16.
+        let r = j0 + 2u * (lid % 16u);
+        let c = c0 + lid / 16u;
+        var k0 = vec4(0.0);
+        var k1 = vec4(0.0);
+        if (c < h4) {
+          if (r < p.t) {
+            k0 = rl_qk[r * s4 + ch4 + head4 + c];
+          }
+          if (r + 1u < p.t) {
+            k1 = rl_qk[(r + 1u) * s4 + ch4 + head4 + c];
+          }
+        }
+        let o = 4u * (lid / 16u) * 16u + lid % 16u;
+        rk[o] = vec2(k0.x, k1.x);
+        rk[o + 16u] = vec2(k0.y, k1.y);
+        rk[o + 32u] = vec2(k0.z, k1.z);
+        rk[o + 48u] = vec2(k0.w, k1.w);
+      }
+      for (var e = lid; e < 256u; e += 128u) {
+        // Row pair e % 32, column quad e / 32.
+        let r = base + 2 * i32(e % 32u);
+        let c = c0 + e / 32u;
+        var x = vec4(0.0);
+        var y = vec4(0.0);
+        if (c < h4) {
+          if (r >= 0 && u32(r) < 2u * p.t + 15u) {
+            x = rl_pos[u32(r) * ch4 + head4 + c];
+          }
+          if (r + 1 >= 0 && u32(r + 1) < 2u * p.t + 15u) {
+            y = rl_pos[u32(r + 1) * ch4 + head4 + c];
+          }
+        }
+        let o = 4u * (e / 32u) * 32u + e % 32u;
+        rr[o] = vec2(x.x, y.x);
+        rr[o + 32u] = vec2(x.y, y.y);
+        rr[o + 64u] = vec2(x.z, y.z);
+        rr[o + 96u] = vec2(x.w, y.w);
+      }
+      workgroupBarrier();
+      for (var c = 0u; c < 32u; c++) {
+        let q = rq[c * 16u + l.y];
+        let k = vec4(rk[c * 16u + 2u * l.x], rk[c * 16u + 2u * l.x + 1u]);
+        let pa = rr[c * 32u + pair];
+        let pb = rr[c * 32u + pair + 1u];
+        let pc = rr[c * 32u + pair + 2u];
+        a0 += q.x * k;
+        a1 += q.y * k;
+        b0 += q.z * vec4(pa.y, pb.x, pb.y, pc.x);
+        b1 += q.w * vec4(pa.x, pa.y, pb.x, pb.y);
+      }
+      workgroupBarrier();
+    }
+    let valid = keys < vec4(p.t - j0);
+    let x0 = select(vec4(-3.0e38), (a0 + b0) * p.scale, valid);
+    let x1 = select(vec4(-3.0e38), (a1 + b1) * p.scale, valid);
+    fx[l.x * 32u + r0] = max(max(x0.x, x0.y), max(x0.z, x0.w));
+    fx[l.x * 32u + r0 + 1u] = max(max(x1.x, x1.y), max(x1.z, x1.w));
+    workgroupBarrier();
+    var top = m;
+    for (var i = 0u; i < 8u; i++) {
+      top = max(top, vec2(fx[i * 32u + r0], fx[i * 32u + r0 + 1u]));
+    }
+    let alpha = exp(m - top);
+    m = top;
+    let e0 = exp(x0 - top.x);
+    let e1 = exp(x1 - top.y);
+    sum = sum * alpha + vec2(dot(e0, vec4(1.0)), dot(e1, vec4(1.0)));
+    oa0 *= alpha.x;
+    ob0 *= alpha.x;
+    oc0 *= alpha.x;
+    od0 *= alpha.x;
+    oa1 *= alpha.y;
+    ob1 *= alpha.y;
+    oc1 *= alpha.y;
+    od1 *= alpha.y;
+    fp[4u * l.x * 16u + l.y] = vec2(e0.x, e1.x);
+    fp[(4u * l.x + 1u) * 16u + l.y] = vec2(e0.y, e1.y);
+    fp[(4u * l.x + 2u) * 16u + l.y] = vec2(e0.z, e1.z);
+    fp[(4u * l.x + 3u) * 16u + l.y] = vec2(e0.w, e1.w);
+    stage_v(0u, j0, head4, lid);
+    for (var j = 0u; j < 32u; j++) {
+      let pj = fp[j * 16u + l.y];
+      let va = rq[j * 16u + l.x];
+      let vb = rq[j * 16u + 8u + l.x];
+      oa0 += pj.x * va;
+      ob0 += pj.x * vb;
+      oa1 += pj.y * va;
+      ob1 += pj.y * vb;
+    }
+    workgroupBarrier();
+    if (p.head_dim > 64u) {
+      stage_v(1u, j0, head4, lid);
+      for (var j = 0u; j < 32u; j++) {
+        let pj = fp[j * 16u + l.y];
+        let va = rq[j * 16u + l.x];
+        let vb = rq[j * 16u + 8u + l.x];
+        oc0 += pj.x * va;
+        od0 += pj.x * vb;
+        oc1 += pj.y * va;
+        od1 += pj.y * vb;
+      }
+      workgroupBarrier();
+    }
+  }
+  fx[l.x * 32u + r0] = sum.x;
+  fx[l.x * 32u + r0 + 1u] = sum.y;
+  workgroupBarrier();
+  var total = vec2(0.0);
+  for (var i = 0u; i < 8u; i++) {
+    total += vec2(fx[i * 32u + r0], fx[i * 32u + r0 + 1u]);
+  }
+  let o = (q0 + r0) * ch4 + head4;
+  var out = array(oa0 / total.x, ob0 / total.x, oc0 / total.x, od0 / total.x);
+  var out1 = array(oa1 / total.y, ob1 / total.y, oc1 / total.y, od1 / total.y);
+  for (var u = 0u; u < 4u; u++) {
+    let c = 8u * u + l.x;
+    if (c < h4) {
+      if (q0 + r0 < p.t) {
+        rl_o[o + c] = out[u];
+      }
+      if (q0 + r0 + 1u < p.t) {
+        rl_o[o + ch4 + c] = out1[u];
+      }
     }
   }
 }
