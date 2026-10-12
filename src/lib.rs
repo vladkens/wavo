@@ -72,7 +72,9 @@
 //! let model = wavo::Model::load("parakeet-tdt-0.6b-v3-Q8_0.gguf")?;
 //! let pcm = vec![0.0f32; 16_000]; // one second of silence: 16 kHz mono in [-1, 1]
 //! let transcript = model.transcribe(&pcm)?;
+//!
 //! println!("{}", transcript.text);
+//!
 //! for token in &transcript.tokens {
 //!   println!("{:>6} ms  {}", token.start_ms, token.piece);
 //! }
@@ -98,6 +100,7 @@
 //!   Some(path) => path, // no network
 //!   None => hub.pull("gigaam-v3", |_| ControlFlow::Continue(()))?,
 //! };
+//!
 //! let model = wavo::Model::load(path)?;
 //! # Ok(())
 //! # }

@@ -59,8 +59,10 @@ fn main() -> Result<()> {
     return Err(format!("{wav}: not 16 kHz mono 16-bit").into());
   }
   let pcm = reader.samples::<i16>().map(|s| Ok(s? as f32 / 32768.0)).collect::<Result<Vec<_>>>()?;
+
   let model = wavo::Model::load(&path)?;
   let transcript = model.transcribe(&pcm)?;
+
   println!("{}", transcript.text);
   let first = transcript.tokens.first().map_or(0, |t| t.start_ms);
   println!("{} tokens, the first at {first} ms", transcript.tokens.len());

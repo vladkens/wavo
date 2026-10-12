@@ -224,9 +224,12 @@ let path = match hub.find("parakeet-v3") {
     ControlFlow::Continue(()) // Break cancels; the next pull resumes
   })?,
 };
+
 let model = wavo::Model::load(path)?;
 let transcript = model.transcribe(&pcm)?; // pcm: 16 kHz mono f32 in [-1, 1]
+
 println!("{}", transcript.text);
+
 for token in &transcript.tokens {
   println!("{} ms {}", token.start_ms, token.piece);
 }
