@@ -56,8 +56,8 @@ the `Makefile` and `.github/workflows/main.yml`.
 ## External sources
 
 - Keep models only in the shared Hugging Face cache (`make models`), never in the repository.
-  Follow the Hub cache spec as `src/hub/cache.rs` documents it; `rm` never touches `hf`'s shared
-  blob store.
+  Follow the Hub cache spec as `src/hub/cache.rs` documents it; `rm` deletes a file in `hf`'s
+  shared blob store only when no other repo links to it.
 - Keep third-party checkouts in `3rd/` (gitignored) and never modify them. The reference is
   transcribe.cpp at the Makefile's `REFERENCE_REV`, built by `make reference`; use it to read
   source, generate fixtures and benchmark, never as a dependency.

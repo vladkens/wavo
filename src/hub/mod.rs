@@ -262,13 +262,15 @@ impl Hub {
   /// Deletes a model by short or full name from the cache, and returns the bytes freed; `None`
   /// when it wasn't downloaded. Other files in the model's repository folder stay.
   ///
+  /// Newer `hf` versions keep a file's bytes in a store shared across repositories,
+  /// `<root>/blobs/`. As with `hf cache rm`, such a file is deleted only once no other repository
+  /// links to it, and counts as 0 bytes freed while one still does.
+  ///
   /// It waits while another process pulls the same model.
   ///
   /// # Errors
   ///
   /// - [`Error::UnknownModel`]: `name` is not in [`MODELS`].
-  /// - [`Error::Hub`]: newer `hf` versions keep the file in a blob store shared across
-  ///   repositories, which this leaves alone; the message names the `hf cache rm` command to run.
   /// - [`Error::Io`]: deleting failed.
   pub fn remove(&self, name: &str) -> Result<Option<u64>> {
     let m = lookup(name)?;

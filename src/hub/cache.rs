@@ -8,10 +8,14 @@
 //!                             /refs/main                     <commit>
 //! <root>/.locks/models--<org>--<repo>/<etag>.lock            held while downloading
 //!                                    /wavo.lock              wavo's: held by pull and remove
+//! <root>/blobs/<xx>/<hash>                                   newer hf: content shared by repos
+//!             /<xx>/<hash>.refs                              repo blobs linked to it, one a line
+//!             /<xx>/<hash>.lock                              hf's: held to link, publish, delete
 //! ```
 //!
-//! Newer `hf` versions make `blobs/<etag>` a symlink into a shared `<root>/blobs/<xx>/<hash>`
-//! store: reading just follows it, and `remove` leaves such files to `hf cache rm`.
+//! Newer `hf` versions make `blobs/<etag>` a symlink into that shared store (marked by
+//! `<root>/blobs/.huggingface-shared-blobs`): reading just follows it, and `remove` deletes the
+//! shared file only once no repo links to it any more, as `hf cache rm` does.
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -95,9 +99,7 @@ impl Hub {
   fn lock(&self, repo: &str, name: &str) -> Result<File> {
     let dir = self.root.join(".locks").join(self.folder(repo).file_name().unwrap());
     fs::create_dir_all(&dir)?;
-    let lock = File::create(dir.join(format!("{name}.lock")))?;
-    lock.lock()?;
-    Ok(lock)
+    hold(&dir.join(format!("{name}.lock")))
   }
 
   /// Links the file into its snapshot, `fetch`ing the blob into `<etag>.incomplete` first when it
@@ -109,9 +111,6 @@ impl Hub {
     remote: &Remote,
     fetch: impl FnOnce(&Path) -> Result<()>,
   ) -> Result<PathBuf> {
-    let hex = |s: &str, lens: &[usize]| {
-      lens.contains(&s.len()) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-    };
     if !hex(&remote.commit, &[40]) || !hex(&remote.etag, &[40, 64]) {
       let (commit, etag) = (&remote.commit, &remote.etag);
       return Err(Error::Hub(format!(
@@ -149,8 +148,9 @@ impl Hub {
   }
 
   /// Deletes the file from every snapshot along with its blobs, then the snapshots and refs left
-  /// empty, and the repo folder once no snapshot is left; other files stay. Returns the bytes
-  /// freed, or `None` when nothing was cached.
+  /// empty, and the repo folder once no snapshot is left; other files stay. A blob in the shared
+  /// store goes only once no repo links to it. Returns the bytes freed, or `None` when nothing was
+  /// cached.
   pub(super) fn remove_file(&self, repo: &str, file: &str) -> Result<Option<u64>> {
     let dir = self.folder(repo);
     if !dir.exists() {
@@ -165,10 +165,6 @@ impl Hub {
     let blobs: Vec<PathBuf> = (pointers.iter().filter_map(|p| fs::read_link(p).ok()))
       .filter_map(|target| target.file_name().map(|etag| dir.join("blobs").join(etag)))
       .collect();
-    if blobs.iter().any(|b| b.is_symlink()) {
-      let run = format!("hf cache rm hf://models/{repo}/{file}");
-      return Err(Error::Hub(format!("hf keeps {file} in its shared blob store; run: {run}")));
-    }
     let (mut freed, mut emptied) = (0, Vec::new());
     for pointer in &pointers {
       let meta = pointer.symlink_metadata()?;
@@ -180,13 +176,19 @@ impl Hub {
       }
     }
     // Blobs are content-addressed: another file name may still point at the same one. A blob two
-    // snapshots share is listed twice, and no longer a file on its second turn.
-    let used = linked(&dir.join("snapshots"));
-    for blob in blobs.iter().filter(|b| b.is_file()) {
-      if !used.iter().any(|u| Some(u.as_os_str()) == blob.file_name()) {
-        freed += fs::metadata(blob)?.len();
-        fs::remove_file(blob)?;
+    // snapshots share is listed twice, and gone on its second turn.
+    let (used, mut shared) = (linked(&dir.join("snapshots")), Vec::new());
+    for blob in &blobs {
+      let Ok(meta) = blob.symlink_metadata() else { continue };
+      if used.iter().any(|u| Some(u.as_os_str()) == blob.file_name()) {
+        continue;
       }
+      if meta.is_symlink() {
+        shared.extend(self.shared(blob));
+      } else {
+        freed += meta.len();
+      }
+      fs::remove_file(blob)?;
     }
     for r in fs::read_dir(dir.join("refs")).into_iter().flatten().flatten() {
       if fs::read_to_string(r.path()).is_ok_and(|c| emptied.iter().any(|e| e == c.trim())) {
@@ -194,10 +196,60 @@ impl Hub {
       }
     }
     if self.snapshots(repo).next().is_none() {
+      let rest = fs::read_dir(dir.join("blobs")).into_iter().flatten().flatten();
+      shared.extend(rest.filter_map(|b| self.shared(&b.path())));
       fs::remove_dir_all(&dir)?;
+    }
+    for store in &shared {
+      freed += self.sweep(store)?;
     }
     Ok(Some(freed))
   }
+
+  /// The file in the shared store, `<root>/blobs/<xx>/<hash>`, that a repo blob links to.
+  fn shared(&self, blob: &Path) -> Option<PathBuf> {
+    let store = self.root.join("blobs");
+    let hash = fs::read_link(blob).ok()?.file_name()?.to_str()?.to_owned();
+    let target = store.join(hash.get(..2)?).join(&hash);
+    let marked = store.join(".huggingface-shared-blobs").is_file();
+    let same = fs::canonicalize(blob).ok()? == fs::canonicalize(&target).ok()?;
+    (hex(&hash, &[64]) && marked && same).then_some(target)
+  }
+
+  /// Deletes a shared-store file unless a repo still links to it, and returns the bytes freed.
+  /// As in `hf cache rm`, the links its `<hash>.refs` lists are checked under `hf`'s lock for the
+  /// file, so a download that links it meanwhile waits; without the list the file stays. Links in
+  /// every `<root>/*/blobs/` count as well, listed or not.
+  fn sweep(&self, store: &Path) -> Result<u64> {
+    let name = store.file_name().unwrap().to_string_lossy();
+    let _lock = hold(&store.with_file_name(format!("{name}.lock")))?;
+    let refs = store.with_file_name(format!("{name}.refs"));
+    let Ok(listed) = fs::read_to_string(&refs) else { return Ok(0) };
+    let repos = fs::read_dir(&self.root).into_iter().flatten().flatten();
+    let found = repos.flat_map(|r| fs::read_dir(r.path().join("blobs")).into_iter().flatten());
+    let found = found.flatten().map(|b| b.path());
+    let mut links = listed.lines().map(|l| self.root.join(l)).chain(found);
+    let target = fs::canonicalize(store)?;
+    if links.any(|b| b.is_symlink() && fs::canonicalize(b).is_ok_and(|t| t == target)) {
+      return Ok(0);
+    }
+    let size = fs::symlink_metadata(store)?.len();
+    fs::remove_file(store)?;
+    fs::remove_file(&refs)?;
+    Ok(size)
+  }
+}
+
+/// Holds a lock on the file at `path`, created when missing, until the file is dropped.
+fn hold(path: &Path) -> Result<File> {
+  let lock = OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
+  lock.lock()?;
+  Ok(lock)
+}
+
+/// Whether `s` is lowercase hex of one of the lengths.
+fn hex(s: &str, lens: &[usize]) -> bool {
+  lens.contains(&s.len()) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// The blob names the symlinks anywhere under `dir` point at.
@@ -523,22 +575,90 @@ mod tests {
     fs::remove_dir_all(&hub.root).unwrap();
   }
 
+  /// Puts `text` into the shared store, as a newer `hf` does, and links `file` of `repo` to it
+  /// through the repo blob for `etag`; `listed` adds the link to the store's `.refs`. Returns the
+  /// shared file.
+  #[cfg(unix)]
+  fn share(
+    hub: &Hub,
+    repo: &str,
+    file: &str,
+    etag: char,
+    text: &'static str,
+    listed: bool,
+  ) -> PathBuf {
+    let r = remote('a', etag, text.len() as u64);
+    let hash = format!("ab{}", etag.to_string().repeat(62));
+    let store = hub.root.join("blobs/ab").join(&hash);
+    fs::create_dir_all(store.parent().unwrap()).unwrap();
+    fs::write(hub.root.join("blobs/.huggingface-shared-blobs"), "1\n").unwrap();
+    fs::write(&store, text).unwrap();
+    let blobs = hub.folder(repo).join("blobs");
+    fs::create_dir_all(&blobs).unwrap();
+    std::os::unix::fs::symlink(format!("../../blobs/ab/{hash}"), blobs.join(&r.etag)).unwrap();
+    if listed {
+      let refs = store.with_file_name(format!("{hash}.refs"));
+      let mut refs = OpenOptions::new().create(true).append(true).open(refs).unwrap();
+      let folder = hub.folder(repo).file_name().unwrap().to_str().unwrap().to_owned();
+      writeln!(refs, "{folder}/blobs/{}", r.etag).unwrap();
+    }
+    let path = hub.install(repo, file, &r, write("")).unwrap();
+    assert_eq!(fs::read_to_string(path).unwrap(), text);
+    store
+  }
+
   #[cfg(unix)]
   #[test]
-  fn remove_leaves_shared_blobs_to_hf() {
-    let hub = temp("shared");
-    let (dir, hash) = (hub.folder("org/m"), "ab".repeat(32));
-    fs::create_dir_all(hub.root.join("blobs/ab")).unwrap();
-    fs::write(hub.root.join("blobs/ab").join(&hash), "hello").unwrap();
-    fs::create_dir_all(dir.join("blobs")).unwrap();
-    let r = remote('a', '1', 5);
-    std::os::unix::fs::symlink(format!("../../blobs/ab/{hash}"), dir.join("blobs").join(&r.etag))
-      .unwrap();
-    let path = hub.install("org/m", "m.gguf", &r, write("")).unwrap();
-    assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
-    let e = hub.remove_file("org/m", "m.gguf").unwrap_err().to_string();
-    assert!(e.contains("hf cache rm hf://models/org/m/m.gguf"), "{e}");
-    assert_eq!(hub.find_file("org/m", "m.gguf"), Some(path));
+  fn remove_deletes_a_shared_blob_only_it_links() {
+    let hub = temp("shared-sole");
+    let store = share(&hub, "org/m", "m.gguf", '1', "hello", true);
+    assert_eq!(hub.remove_file("org/m", "m.gguf").unwrap(), Some(5));
+    assert!(!store.exists() && !store.with_extension("refs").exists());
+    assert!(!hub.folder("org/m").exists());
+
+    // Without a `.refs` list hf keeps the file, and so does remove.
+    let store = share(&hub, "org/m", "m.gguf", '1', "hello", false);
+    assert_eq!(hub.remove_file("org/m", "m.gguf").unwrap(), Some(0));
+    assert!(store.exists() && !hub.folder("org/m").exists());
+    fs::remove_dir_all(&hub.root).unwrap();
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn remove_keeps_a_shared_blob_another_repo_links() {
+    let hub = temp("shared-other");
+    let store = share(&hub, "org/m", "m.gguf", '1', "hello", true);
+    share(&hub, "org/n", "n.gguf", '1', "hello", true);
+    assert_eq!(hub.remove_file("org/m", "m.gguf").unwrap(), Some(0));
+    assert!(store.exists() && !hub.folder("org/m").exists());
+    assert_eq!(fs::read_to_string(hub.find_file("org/n", "n.gguf").unwrap()).unwrap(), "hello");
+    assert_eq!(hub.remove_file("org/n", "n.gguf").unwrap(), Some(5));
+    assert!(!store.exists());
+
+    // A link the list misses counts too.
+    let store = share(&hub, "org/m", "m.gguf", '1', "hello", true);
+    share(&hub, "org/n", "n.gguf", '1', "hello", false);
+    assert_eq!(hub.remove_file("org/m", "m.gguf").unwrap(), Some(0));
+    assert_eq!(fs::read_to_string(hub.find_file("org/n", "n.gguf").unwrap()).unwrap(), "hello");
+    assert!(store.exists());
+    fs::remove_dir_all(&hub.root).unwrap();
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn remove_mixes_shared_and_own_blobs() {
+    let hub = temp("shared-mixed");
+    let kept = share(&hub, "org/m", "x.gguf", '1', "hello", true);
+    share(&hub, "org/n", "x.gguf", '1', "hello", true);
+    let gone = share(&hub, "org/m", "y.gguf", '2', "four", true);
+    hub.install("org/m", "z.gguf", &remote('a', '3', 3), write("abc")).unwrap();
+    assert_eq!(hub.remove_file("org/m", "x.gguf").unwrap(), Some(0));
+    assert_eq!(hub.remove_file("org/m", "y.gguf").unwrap(), Some(4));
+    assert!(kept.exists() && !gone.exists());
+    assert_eq!(fs::read_to_string(hub.find_file("org/m", "z.gguf").unwrap()).unwrap(), "abc");
+    assert_eq!(hub.remove_file("org/m", "z.gguf").unwrap(), Some(3));
+    assert!(!hub.folder("org/m").exists());
+    assert_eq!(fs::read_to_string(hub.find_file("org/n", "x.gguf").unwrap()).unwrap(), "hello");
     fs::remove_dir_all(&hub.root).unwrap();
   }
 }

@@ -58,8 +58,8 @@ pub enum Error {
     /// What went wrong.
     message: String,
   },
-  /// The Hub's answer or the cache is not as expected: a response without the commit, ETag or
-  /// size headers, a download of the wrong size, or a file `hf` keeps in its shared blob store.
+  /// The Hub's answer is not as expected: a response without the commit, ETag or size headers,
+  /// or a download of the wrong size.
   #[cfg(feature = "hub")]
   #[cfg_attr(docsrs, doc(cfg(feature = "hub")))]
   #[error("{0}")]
