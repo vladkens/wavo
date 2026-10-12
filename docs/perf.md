@@ -169,6 +169,15 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### GEMM
 
+- 2026-10-12, GigaAM, Parakeet V3, Whisper turbo, encoder Q8_0 weights converted to F16 at load
+  (`f16(q·d)`, exact as the GEMM rounds dequantized W to f16; Whisper's decoder stays Q8_0;
+  timing-only ablation): fixtures exact. Warm on the M1 ru 71.7 → 69.1, ru-long 391 → 386, jfk 252.4
+  → 245.5, dots 645 → 642 ms, turbo jfk within noise; on the M2 ru 42.1 → 39.8, ru-long 248.3 →
+  247.2, jfk 147.4 → 138.9, dots 443 → 435, turbo jfk 1256 → 1229 ms. Load 47 → 77, 96 → 190, 110 →
+  220 ms; peak +167 / +474 / +564 MiB (292 → 459, 740 → 1212, 981 → 1545). Rejected: with a load per
+  recording, load plus a call is slower (GigaAM ru 89 → 117, Parakeet jfk 240 → 338 ms on the M2),
+  and writing twice the bytes at load keeps that true even with a faster conversion.
+
 - 2026-10-11, all models, Windows RTX 4060: the fast GEMM on 16×16 F16 cooperative matrices (F32
   accumulators), gemm_fast.wgsl written in F and built with F = 8 or 16 (at 16: 64 or 128 rows ×
   128 columns). GEMMs on turbo `jfk` 536 → 119 ms; warm 10–40% faster on every model (turbo 1082
