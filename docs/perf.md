@@ -552,13 +552,14 @@ plus first call.
     318 ms. Kept. Unified memory keeps the buffers' own mappings.
   - Parakeet's CPU decoder (25 ms) loaded on a thread while the GPU starts: load 314 → 296 ms
     (M2 ~101 → 87). Kept.
-  - Together, A/B/A against main: Parakeet V3 `jfk` load 333 / 296 / 342, first 102.2 / 77.0 /
-    102.2, load + first 436 / 373 / 446 ms; `dots` first 257 / 237 / 256; GigaAM `ru` first 34.0
-    / 19.8 / 33.8, `ru-long` 81.1 / 72.2 / 81.6; whisper-turbo `jfk` first 296 / 198 / 291 ms;
-    whisper-tiny and moonshine-tiny within noise; warm unchanged. After 20 s idle Parakeet `jfk`
-    first 150–166 → 85–87 ms. The reference (Vulkan): load 674, first 99 (100–105 after idle);
-    `dots` first 251; GigaAM `ru` load 339, first 146 ms. M2 and N100 (unified memory): first
-    call unchanged. Fixtures exact (M2, RTX 4060).
+  - Together, A/B/A against main (medians of 6, Whisper and Moonshine of 5): Parakeet V3 `jfk`
+    load 333 / 296 / 342, first 102.2 / 77.0 / 102.2, load + first 436 / 373 / 446 ms; `dots`
+    first 257 / 237 / 256; GigaAM `ru` first 34.0 / 19.8 / 33.8, `ru-long` 81.1 / 72.2 / 81.6;
+    whisper-turbo `jfk` first 296 / 198 / 291 ms; whisper-tiny and moonshine-tiny within noise;
+    warm unchanged. After 20 s idle Parakeet `jfk` first 150–166 → 85–87 ms. The reference
+    (Vulkan): load 674, first 99 (100–105 after idle); `dots` first 251; GigaAM `ru` load 339,
+    first 146 ms. M2 and N100 (unified memory): first call unchanged. Fixtures exact (M2, RTX
+    4060).
 - 2026-10-11, all models, no warm-up at load (the encoder run on 8 silent frames; for Whisper a
   64-frame window and a decoder step), decoder pipelines compiled in the first call: load +
   first call on jfk 5–89 ms lower on every model (GigaAM e2e-rnnt 162.1 → 142.8, Parakeet V3
