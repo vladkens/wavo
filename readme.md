@@ -38,8 +38,8 @@ wavo is written by AI coding agents, Claude Code and Codex, under the direction 
 [vladkens](https://github.com/vladkens), an experienced developer whose hand-written projects
 include [macmon](https://github.com/vladkens/macmon),
 [twscrape](https://github.com/vladkens/twscrape) and [ghstats](https://github.com/vladkens/ghstats).
-He chooses the work, agrees each plan, and reviews and merges every pull request. The agents write
-the code, the WGSL kernels, the tests and the docs, following [agents.md](agents.md).
+The author chooses the work, agrees each plan, and reviews and merges every pull request. The
+agents write the code, the WGSL kernels, the tests and the docs, following [agents.md](agents.md).
 
 The output is checked, not trusted:
 
