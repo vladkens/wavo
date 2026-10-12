@@ -269,8 +269,10 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
   thread scoring 2 queries × 4 keys and summing 2 × 8 output columns, online softmax; no scores
   in memory. RTX 4060 A/B/A: whisper-turbo `jfk` 639 / 260 / 642, `ru-long` 1365 / 603 / 1370,
   GigaAM `ru-long` 124 / 79 / 124, Moonshine tiny `dots` 138 / 115 / 138, base 228 / 194 / 228
-  ms; Parakeet unchanged. M2 Moonshine `dots` tiny 424 → 302, base 687 → 498 ms, peak 187 → 120
-  and 259 → 194 MiB (reference 138 / 236). Fixtures exact (all 21 models on the RTX 4060, M2).
+  ms; Parakeet unchanged. M1 A/B/A (main / this / main), Moonshine `dots` tiny 1021 / 835 / 1005,
+  base 1980 / 1467 / 2030 ms (main's base spread wide; first and last main within 3%); on the M2
+  only a rough A/B on a busy machine: tiny 424 → 302, base 687 → 498 ms, peak 187 → 120 and 259 →
+  194 MiB (reference 138 / 236). Fixtures exact (all 21 models on the RTX 4060, M2).
   Kept. Turbo `jfk` on the RTX 4060 after it, GPU timestamps per call: attention 473 → 86 ms,
   GEMM 122, decoder gemv 23.5 and attend 13 ms. With the split decoder attention below, the N100:
   whisper-tiny `jfk` / `dots` 2269 / 5016 → 759 / 1988 ms (reference Vulkan 1340 / 3052).

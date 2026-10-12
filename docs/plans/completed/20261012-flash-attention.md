@@ -41,8 +41,9 @@ on large-v3 `jfk`: 115 → 65 ms.
 Parakeet's relative attention stays on the portable scores (~58 of ~120 ms of kernels on V3
 `dots`): a flash version is left open in docs/perf.md.
 
-M2: Moonshine `dots` tiny 416 → 236, base 669 → 386 ms (on a busy machine, ±5%), peak footprint
-187 → 122 and 260 → 194 MiB (reference 138 / 236); whisper-tiny `jfk` 70.5 → 64.9 ms; turbo,
+Moonshine `dots`, M1 A/B/A (main / this / main): tiny 1010 / 769 / 1005, base 1980 / 1374 / 1958
+ms; on a busy M2, rough A/B: tiny 416 → 236, base 669 → 386 ms. Peak footprint on the M2 187 → 122
+and 260 → 194 MiB (reference 138 / 236); whisper-tiny `jfk` 70.5 → 64.9 ms; turbo,
 GigaAM and Parakeet unchanged. Fixtures exact for all 21 models on the M2 and the RTX 4060, and
 for whisper-tiny and moonshine-tiny on the N100 (portable kernels), where whisper-tiny `jfk` /
 `dots` went 2269 / 5016 → 759 / 1988 ms (the reference's Vulkan build 1340 / 3052) and
