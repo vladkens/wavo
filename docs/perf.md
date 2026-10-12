@@ -192,12 +192,13 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
   `relaxed_precision` (ggml's form) 5–15% slower and rounding differently, f32 a without it at
   the 8×8 kernel's speed, a staged in threadgroup memory ~2× slower; on the M2 the tensor API ran
   25–30% slower than the 8×8 kernel. A/B/A against main (warm median, ms; reference with its
-  tensor path): GigaAM `ru` 26.3 / 17.3 / 26.3 (20.7), `ru-long` 161.4 / 86.8 / 161.4 (120.1);
-  Parakeet V3 `jfk` 95.5 / 60.2 / 95.7 (93.4), `dots` 303.4 / 185.9 / 303.3 (311.9); whisper-turbo
-  `jfk` 818.9 / 421.4 / 818.7 (571.3); Moonshine `jfk` tiny 21.6 / 20.5 / 21.7 (70.0), base 35.7 /
-  30.9 / 36.0 (118.6). Fixtures exact on the M5 (the 11 models there) and on the M2 with the tier
-  forced (all 21); the M2 without it unchanged (`ru` 41.8 / 41.5 / 41.6, Parakeet `jfk` 146.6 /
-  146.1 / 146.2 ms). Kept.
+  tensor path): GigaAM `ru` 26.3 / 17.3 / 26.3 (20.7), `ru-long` 161.5 / 87.2 / 162.0 (120.0);
+  Parakeet V3 `jfk` 95.8 / 60.2 / 95.9 (93.5), `dots` 302.9 / 185.0 / 302.7 (312.7); whisper-turbo
+  `jfk` 818.4 / 419.5 / 821.6 (573.3); Moonshine `jfk` tiny 21.7 / 20.3 / 21.6 (70.1), base 35.7 /
+  30.9 / 35.6 (120.1); load and first call no slower. Fixtures exact on the M5 (the 11 models
+  there) and on the M2 with the tier forced (all 21). The M2 without it unchanged: `ru` 41.8 /
+  41.5 / 41.6, `ru-long` 249.2 / 249.5 / 250.8, Parakeet `jfk` 146.6 / 146.1 / 146.2, turbo `jfk`
+  1235 / 1234 / 1226, Moonshine tiny `jfk` 53.8 / 53.8 / 54.4 ms. Kept.
   - The `cast` dispatched twice (timing only, same output): `ru` 17.0 → 17.4, `ru-long` 87.0 →
     91.2, turbo `jfk` 420.7 → 434.9 ms, so the cast costs 2–5% of a call. Producers writing f16
     would save at most about two thirds of it, for changes in five kernels and the arenas: not
