@@ -256,7 +256,7 @@ impl Decoder {
     let at = if self.cfg.rot == 0 { pos * d } else { 0 };
     p.embed(&self.embed, &self.positions, &b.x, token, at);
     for (l, (own, cross)) in self.layers.iter().zip(b.own.iter().zip(&b.cross)) {
-      p.layer_norm(&b.x, &l.norm_self, &b.y, 1, d, None);
+      p.layer_norm_row(&b.x, &l.norm_self, &b.y, d);
       p.gemv(&b.y, &l.qkv, &b.qkv, Epilogue::Bias, 0);
       if let Some(table) = rope {
         p.rope(table, &b.qkv, 1, pos, [heads, hd, self.cfg.rot]);
@@ -265,11 +265,11 @@ impl Decoder {
       p.pack(&b.qkv, [d, 0], own, 1, d, [self.context, pos]);
       p.attend(&b.qkv, own, &b.part, &b.att, pos + 1, self.context, heads, hd);
       p.gemv(&b.att, &l.self_out, &b.x, Epilogue::Residual(1.0), 0);
-      p.layer_norm(&b.x, &l.norm_cross, &b.y, 1, d, None);
+      p.layer_norm_row(&b.x, &l.norm_cross, &b.y, d);
       p.gemv(&b.y, &l.cross_q, &b.qkv, Epilogue::Bias, 0);
       p.attend(&b.qkv, cross, &b.part, &b.att, frames, frames, heads, hd);
       p.gemv(&b.att, &l.cross_out, &b.x, Epilogue::Residual(1.0), 0);
-      p.layer_norm(&b.x, &l.norm_ffn, &b.y, 1, d, None);
+      p.layer_norm_row(&b.x, &l.norm_ffn, &b.y, d);
       let act = if self.cfg.gated { Epilogue::Bias } else { Epilogue::Gelu };
       p.gemv(&b.y, &l.fc1, &b.h, act, 0);
       if self.cfg.gated {
@@ -277,7 +277,7 @@ impl Decoder {
       }
       p.gemv(&b.h, &l.fc2, &b.x, Epilogue::Residual(1.0), 0);
     }
-    p.layer_norm(&b.x, &self.norm, &b.y, 1, d, None);
+    p.layer_norm_row(&b.x, &self.norm, &b.y, d);
     p.gemv(&b.y, &self.embed, &b.logits, Epilogue::Bias, 0);
   }
 }

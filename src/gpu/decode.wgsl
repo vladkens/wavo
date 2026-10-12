@@ -31,24 +31,24 @@ const KEYS: u32 = 256u;
 // A key per thread, head_dim up to 128.
 var<workgroup> q: array<f32, 128>;
 var<workgroup> s: array<f32, 256>;
-var<workgroup> rs: array<f32, 256>;
+var<workgroup> red: array<f32, 256>;
 var<workgroup> rv: array<vec2<f32>, 256>;
 
-// Sum (or max) over the 256-thread workgroup.
+// Sum (or max) over the 256-thread workgroup. subgroup.wgsl has the fast version.
 fn reduce(v: f32, lid: u32, is_max: bool) -> f32 {
-  rs[lid] = v;
+  red[lid] = v;
   workgroupBarrier();
   for (var h = 128u; h > 0u; h >>= 1u) {
     if (lid < h) {
       if (is_max) {
-        rs[lid] = max(rs[lid], rs[lid + h]);
+        red[lid] = max(red[lid], red[lid + h]);
       } else {
-        rs[lid] += rs[lid + h];
+        red[lid] += red[lid + h];
       }
     }
     workgroupBarrier();
   }
-  let r = rs[0];
+  let r = red[0];
   workgroupBarrier();
   return r;
 }

@@ -174,19 +174,11 @@ fn dot8(row: u32, j: u32, a0: vec4<f32>, a1: vec4<f32>) -> f32 {
 
 var<workgroup> red: array<f32, 1024>;
 
-// c[offset + n] = epilogue(a·W[n] + bias[n]) for one row of a: 8 groups of 32 threads, 4 rows of W
-// per group, each thread over 8 weights at a time (8 contiguous words per 4 threads and row).
-@compute @workgroup_size(256)
-fn gemv(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+// The sums of s over each group of 32 threads (lid / 32), for all its threads. subgroup.wgsl has
+// the fast version.
+fn group_sums(s: vec4<f32>, lid: u32) -> vec4<f32> {
   let lane = lid % 32u;
-  let row = (wg.x * 8u + lid / 32u) * 4u;
-  var s = vec4(0.0);
-  for (var j = lane; j < p.k / 8u; j += 32u) {
-    let a0 = vec4(a[8u * j], a[8u * j + 1u], a[8u * j + 2u], a[8u * j + 3u]);
-    let a1 = vec4(a[8u * j + 4u], a[8u * j + 5u], a[8u * j + 6u], a[8u * j + 7u]);
-    s += vec4(dot8(row, j, a0, a1), dot8(row + 1u, j, a0, a1), dot8(row + 2u, j, a0, a1), dot8(row + 3u, j, a0, a1));
-  }
-  // Rows [4][32] per group.
+  // [4][32] per group.
   let o = (lid - lane) * 4u + lane;
   red[o] = s.x;
   red[o + 32u] = s.y;
@@ -201,8 +193,24 @@ fn gemv(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
     }
     workgroupBarrier();
   }
+  return vec4(red[o - lane], red[o - lane + 32u], red[o - lane + 64u], red[o - lane + 96u]);
+}
+
+// c[offset + n] = epilogue(a·W[n] + bias[n]) for one row of a: 8 groups of 32 threads, 4 rows of W
+// per group, each thread over 8 weights at a time (8 contiguous words per 4 threads and row).
+@compute @workgroup_size(256)
+fn gemv(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+  let lane = lid % 32u;
+  let row = (wg.x * 8u + lid / 32u) * 4u;
+  var s = vec4(0.0);
+  for (var j = lane; j < p.k / 8u; j += 32u) {
+    let a0 = vec4(a[8u * j], a[8u * j + 1u], a[8u * j + 2u], a[8u * j + 3u]);
+    let a1 = vec4(a[8u * j + 4u], a[8u * j + 5u], a[8u * j + 6u], a[8u * j + 7u]);
+    s += vec4(dot8(row, j, a0, a1), dot8(row + 1u, j, a0, a1), dot8(row + 2u, j, a0, a1), dot8(row + 3u, j, a0, a1));
+  }
+  let t = group_sums(s, lid);
   if (lane < 4u) {
-    store_one(p.offset + row + lane, red[o - lane + lane * 32u] + bias[row + lane]);
+    store_one(p.offset + row + lane, t[lane] + bias[row + lane]);
   }
 }
 

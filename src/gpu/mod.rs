@@ -135,9 +135,11 @@ fn compile_fast(device: &wgpu::Device, f: usize) -> Option<FastPipelines> {
   (errors == 0).then_some((gemm, kernels))
 }
 
-/// Kernels for one decoder token: `gemv` and `embed` per weight type, `attend`, `combine` and
-/// `pack`.
+/// Kernels for one decoder token: `gemv` and `embed` per weight type, `attend`, `combine`, `pack`
+/// and, with the fast tier, a LayerNorm of one row. With the fast tier their reductions are
+/// subgroup.wgsl's.
 struct Decoder {
+  layer_norm: Option<Pipeline>,
   gemv: Vec<Pipeline>,
   embed: Vec<Pipeline>,
   attend: Pipeline,
@@ -511,9 +513,18 @@ impl Gpu {
 
   fn decoder(&self) -> &Decoder {
     self.kernels.decoder.get_or_init(|| {
-      let (device, gemm) = (&self.device, &self.kernels.gemm_module);
-      let decode = module(device, include_str!("decode.wgsl"));
+      let device = &self.device;
+      let fast = self.fast.size != 0;
+      let source =
+        |s: &str| if fast { swap_fns(s, include_str!("subgroup.wgsl")) } else { s.into() };
+      let gemm = match fast {
+        true => &module(device, &source(include_str!("gemm.wgsl"))),
+        false => &self.kernels.gemm_module,
+      };
+      let decode = module(device, &source(include_str!("decode.wgsl")));
+      let ops = fast.then(|| module(device, &source(include_str!("ops.wgsl"))));
       Decoder {
+        layer_norm: ops.map(|ops| pipeline(device, &ops, "layer_norm", &[])),
         gemv: gemms(device, gemm, "gemv"),
         embed: gemms(device, gemm, "embed"),
         attend: pipeline(device, &decode, "attend", &[]),
@@ -672,6 +683,18 @@ pub struct Recorded {
   /// Bytes to read back: the output and the marks.
   size: u64,
   marks: u64,
+}
+
+/// `source` with each function of `fns` (WGSL) in place of the function of the same name.
+fn swap_fns(source: &str, fns: &str) -> String {
+  let mut out = source.to_string();
+  for f in fns.split("\nfn ").skip(1) {
+    let name = &f[..f.find('(').unwrap()];
+    let Some(start) = out.find(&format!("\nfn {name}(")) else { continue };
+    let end = start + out[start..].find("\n}").unwrap() + 2;
+    out.replace_range(start..end, &format!("\nfn {}", &f[..f.find("\n}").unwrap() + 2]));
+  }
+  out
 }
 
 fn fail(failure: &Mutex<Option<String>>, message: String) {
@@ -907,6 +930,16 @@ impl<'a> Pass<'a> {
     match &gpu.fast.layer_norm {
       Some(k) => self.run(k, &buffers, &params, [rows.div_ceil(4), 1, 1]),
       None => self.run(&gpu.kernels.layer_norm, &buffers, &params, [rows, 1, 1]),
+    }
+  }
+
+  /// LayerNorm of one row of `cols` from `x` into `y`.
+  pub fn layer_norm_row(&mut self, x: &Buffer, n: &Channels, y: &Buffer, cols: usize) {
+    match &self.gpu.decoder().layer_norm {
+      Some(k) => {
+        self.run(k, &[x, &n.w, &n.b, y, x, &self.gpu.spare], &[1, cols as u32, 0], [1, 1, 1])
+      }
+      None => self.layer_norm(x, n, y, 1, cols, None),
     }
   }
 
@@ -1342,6 +1375,8 @@ mod tests {
       let (xb, rb) = (up(gpu, &x), up(gpu, &rope));
       let zeros = vec![0.0; rows * cols];
       assert_close(&run(gpu, &zeros, |p, y| p.layer_norm(&xb, &n, y, rows, cols, None)), &y);
+      let got = run(gpu, &zeros[..cols], |p, y| p.layer_norm_row(&xb, &n, y, cols));
+      assert_close(&got, &y[..cols]);
       let yb = gpu.buffer(rows * cols);
       let got =
         run(gpu, &zeros, |p, yr| p.layer_norm(&xb, &n, &yb, rows, cols, Some((&rb, yr, hd))));

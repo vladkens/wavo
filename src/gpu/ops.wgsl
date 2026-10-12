@@ -21,7 +21,8 @@ var<workgroup> red: array<f32, 256>;
 // One row of up to 1024 channels.
 var<workgroup> row: array<f32, 1024>;
 
-// Sum (or max) over a 256-thread workgroup.
+// Sum (or max) over a 256-thread workgroup. subgroup.wgsl has the fast version, which the decoder's
+// LayerNorm uses.
 fn reduce(v: f32, lid: u32, is_max: bool) -> f32 {
   red[lid] = v;
   workgroupBarrier();
