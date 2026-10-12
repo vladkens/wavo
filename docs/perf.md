@@ -15,9 +15,9 @@ Numbers a / b / c follow that clip order.
 **GigaAM.** Load reads the GGUF header and streams each tensor from the file into weight buffers
 mapped on unified memory (no staging copy), on a discrete GPU into wgpu staging buffers whose
 copies are submitted every 16 MB while the rest loads; weights stay Q8_0/F16 on the GPU, Q8_0
-scales as f16.
-Load runs nothing on the GPU but the fast-kernel probes, in one submission. Metal caches compiled
-pipelines across runs by shader source, so new shaders cost 0.2–0.4 s once. Per call: CPU log-mel
+scales as f16. Apart from those copies, load runs nothing on the GPU but the fast-kernel probes,
+in one submission. Metal caches compiled pipelines across runs by shader source, so new shaders
+cost 0.2–0.4 s once. Per call: CPU log-mel
 (own FFT, one frame at a time), then the encoder over an arena sized for the longest input so far,
 bind groups cached per dispatch: one submission with the fast kernels, one per layer on the
 portable path (`Pass::layers`). The fast kernels (cooperative-matrix GEMM on f16 operands with

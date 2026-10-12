@@ -472,7 +472,7 @@ impl Gpu {
 
   /// The buffer of a `fill` once written. Without unified memory wgpu copies the staging buffer
   /// into it with the next submission, so every 16 MB of them are submitted right away: the
-  /// copies run while the rest of the model loads, not in the first call.
+  /// copies run while the rest of the model loads, and at most the last 16 MB in the first call.
   fn filled(&self, f: Fill) -> Buffer {
     let Fill { buffer, view } = f;
     match view {
