@@ -79,6 +79,7 @@ jobs:
           cache-directories: ~/.cache/cargo-cross
 
   publish:
+    if: github.ref == 'refs/heads/main' # write rights only for main's own workflow
     needs: [test, build]
     runs-on: ubuntu-latest # no build here, and Linux runners start faster
     permissions:
