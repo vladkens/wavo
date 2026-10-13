@@ -815,12 +815,21 @@ fn fast_size(adapter: &wgpu::Adapter) -> Option<usize> {
   }
 }
 
-/// Whether `adapter` may take the tensor GEMM: Apple M5 and newer, whose GPU cores have neural
-/// accelerators (ggml's rule). On an M2 the tensor API ran 25–30% slower than the 8×8 GEMM.
+/// Whether `adapter` may take the tensor GEMM: Apple M5 / A19 and newer, whose GPU cores have
+/// neural accelerators (ggml's rule). On an M2 the tensor API ran 25–30% slower than the 8×8 GEMM.
+/// The compile check and the probe guard the rest.
 fn tensor_gpu(adapter: &wgpu::Adapter) -> bool {
-  let name = adapter.get_info().name;
   adapter.features().contains(wgpu::Features::PASSTHROUGH_SHADERS)
-    && ["M5", "M6", "A19", "A20"].iter().any(|chip| name.contains(chip))
+    && tensor_chip(&adapter.get_info().name)
+}
+
+/// Whether an adapter name's first `M<n>` or `A<n>` word ("Apple M5 Pro") is M5 / A19 or newer.
+fn tensor_chip(name: &str) -> bool {
+  let chip = name.split_whitespace().find_map(|w| {
+    let (family, n) = w.split_at_checked(1)?;
+    Some((family, n.parse::<u32>().ok()?)).filter(|(f, _)| *f == "M" || *f == "A")
+  });
+  matches!(chip, Some(("M", 5..)) | Some(("A", 19..)))
 }
 
 /// Compiles `gemm_tensor.metal` from source; `None` if it fails.
@@ -1401,6 +1410,16 @@ mod tests {
       })
       .collect();
     [(Type::F32, f32s), (Type::F16, f16s), (Type::Q8_0, q8)]
+  }
+
+  #[test]
+  fn tensor_chips() {
+    let names = ["Apple M5", "Apple M5 Pro", "Apple M7 Max", "Apple A19 Pro", "Apple A20"];
+    assert!(names.iter().all(|n| tensor_chip(n)));
+    let names = ["Apple M2", "Apple M1 Ultra", "Apple A18 Pro", "NVIDIA GeForce RTX 4060", ""];
+    assert!(!names.iter().any(|n| tensor_chip(n)));
+    // Only the first chip word counts.
+    assert!(!tensor_chip("Apple M2 A19"));
   }
 
   #[test]

@@ -185,8 +185,9 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
   wgpu's MSL passthrough (`PASSTHROUGH_SHADERS`, explicit pipeline layouts, wgpu-hal's Metal
   slots). A tile is 128 rows × 64 columns, K step 32: a as f16 from device memory (a `cast`
   dispatch per GEMM), W dequantized to half in threadgroup memory, F32 accumulators, the epilogue
-  on the cooperative tensor's elements. Gate: adapter name with M5/M6/A19/A20 (ggml's rule), the
-  module compiles, a 130×32×64 probe GEMM is right; an f16 scratch grows to the largest input,
+  on the cooperative tensor's elements. Gate: the adapter name's chip is M5 / A19 or newer (ggml
+  lists M5/M6/A19/A20), the module compiles, a 130×32×64 probe GEMM is right; an f16 scratch
+  grows to the largest input,
   and cached bind groups are now checked against their buffers too. Research before it, one GEMM
   through wgpu: 750×1024×4096 Q8_0 1.89 → 0.60 ms, 1500×1280×5120 5.78 → 1.79 ms; f32 a with
   `relaxed_precision` (ggml's form) 5–15% slower and rounding differently, f32 a without it at
