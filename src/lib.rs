@@ -15,9 +15,9 @@
 //! wavo runs the open ASR models that [transcribe.cpp] publishes as GGUF files on Hugging Face:
 //! NVIDIA's Parakeet, Sber's GigaAM, OpenAI's Whisper and Useful Sensors' Moonshine, with the same
 //! text and timestamps as transcribe.cpp. The encoder runs on the GPU through wgpu (Metal on Apple
-//! Silicon, Vulkan on Linux and Windows) with wavo's own kernels; the audio frontend runs on the
-//! CPU, and so does the decoder except Whisper's and Moonshine's. It builds with a plain `cargo
-//! build`: no C++ toolchain, Python or ONNX Runtime.
+//! Silicon, Vulkan on Linux and Windows, DX12 on Windows without a Vulkan driver) with wavo's own
+//! kernels; the audio frontend runs on the CPU, and so does the decoder except Whisper's and
+//! Moonshine's. It builds with a plain `cargo build`: no C++ toolchain, Python or ONNX Runtime.
 //!
 //! [transcribe.cpp]: https://github.com/handy-computer/transcribe.cpp
 //!

@@ -15,7 +15,7 @@ pub enum Error {
   /// `parakeet`, `whisper` and `moonshine`, or a missing or mismatched tensor or metadata key.
   #[error("invalid model: {0}")]
   Model(String),
-  /// No GPU adapter (Metal, Vulkan) is available.
+  /// No GPU adapter (Metal, Vulkan, or DX12 on Windows) is available.
   #[error("no GPU adapter: {0}")]
   Adapter(#[from] wgpu::RequestAdapterError),
   /// The GPU adapter refused a device with the limits the model needs.
