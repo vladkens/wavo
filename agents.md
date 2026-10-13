@@ -17,9 +17,11 @@ the `Makefile` and `.github/workflows/main.yml`.
 - Keep the build fast, also for crates that depend on wavo: prefer a small own routine to a
   generic dependency that compiles far more code than wavo uses (`cargo build --timings`). Change
   dependencies only with `cargo add` / `cargo remove` / `cargo upgrade`, never by hand.
-- Target Apple Silicon / Metal; Linux and Windows run through Vulkan. Every kernel has one simple
-  portable version; a fast tier per hardware class, chosen at load from adapter features, stays
-  only with a measured gain on that class.
+- Target Apple Silicon / Metal; Linux and Windows run through Vulkan. Windows falls back to DX12
+  when no Vulkan adapter exists: portable kernels only, compiled by FXC, or by `dxcompiler.dll`
+  when it sits next to the exe. Every kernel has one simple portable version; a fast tier per
+  hardware class, chosen at load from adapter features, stays only with a measured gain on that
+  class.
 - The public API is what the rustdoc documents, and the CLI is what `wavo --help` shows: change
   either only with the person's approval. Every public struct and enum is `#[non_exhaustive]`.
 - Only `wavo pull`, `wavo run` and `Hub::pull` use the network: `run` downloads a missing model
