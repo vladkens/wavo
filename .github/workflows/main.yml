@@ -69,11 +69,11 @@ jobs:
   # the crate and the same archives as the version. `publish` never compiles. Users check an
   # archive with `gh attestation verify FILE -R vladkens/wavo`.
   build:
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest # the macOS binary needs a Mac; Linux and Windows cross-compile
     steps:
       - uses: actions/checkout@v7
-      - uses: vladkens/actions/rust-build@feat/rust-workflow
+      - uses: vladkens/actions/rust-build@v1
         with:
           dist: make dist
           cache-directories: ~/.cache/cargo-cross
@@ -87,4 +87,4 @@ jobs:
       id-token: write # crates.io Trusted Publishing and attestations
     steps:
       - uses: actions/checkout@v7
-      - uses: vladkens/actions/rust-publish@feat/rust-workflow
+      - uses: vladkens/actions/rust-publish@v1
