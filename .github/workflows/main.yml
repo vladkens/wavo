@@ -64,18 +64,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  # The shared release process: on main the archives (`make dist`) become the `dev` pre-release; a
-  # `release: vX.Y.Z (#N)` commit publishes the crate and the same archives as the version.
-  # Users check an archive with
-  # `gh attestation verify FILE -R vladkens/wavo --signer-repo vladkens/actions`.
-  release:
-    needs: test
-    uses: vladkens/actions/.github/workflows/rust.yml@feat/rust-workflow
-    with:
-      dist: make dist
-      runner: macos-latest # the macOS binary needs a Mac; Linux and Windows cross-compile
-      cache-directories: ~/.cache/cargo-cross
+  # The shared release steps: `build` runs `make dist` read-only (beside `test`); on main `publish`
+  # puts the archives up as the `dev` pre-release, and a `release: vX.Y.Z (#N)` commit publishes
+  # the crate and the same archives as the version. `publish` never compiles. Users check an
+  # archive with `gh attestation verify FILE -R vladkens/wavo`.
+  build:
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest # the macOS binary needs a Mac; Linux and Windows cross-compile
+    steps:
+      - uses: actions/checkout@v7
+      - uses: vladkens/actions/rust-build@feat/rust-workflow
+        with:
+          dist: make dist
+          cache-directories: ~/.cache/cargo-cross
+
+  publish:
+    needs: [test, build]
+    runs-on: ubuntu-latest # no build here, and Linux runners start faster
     permissions:
       attestations: write
       contents: write
-      id-token: write
+      id-token: write # crates.io Trusted Publishing and attestations
+    steps:
+      - uses: actions/checkout@v7
+      - uses: vladkens/actions/rust-publish@feat/rust-workflow
