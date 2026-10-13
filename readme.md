@@ -212,10 +212,15 @@ unchanged. Clips: `jfk` 11 s, `ru` 4.5 s, `ru-long` 34 s, `dots` 35 s.
 | `moonshine-base` | `dots` | **141** | 227 |
 
 **Intel N100** (integrated GPU, Linux, portable kernels) against transcribe.cpp's Vulkan build,
-2026-10-12: GigaAM is faster (`ru-long` 7414 / 7994 ms), `whisper-tiny` too since #36 (`jfk` 759 /
-1340 ms), Parakeet is 1.1–1.35× slower, and `whisper-turbo`, last measured before #36, 1.6× slower
-than the reference's CPU build (its Vulkan build times out there). Details in the [speed
-plan](docs/plans/20261012-speed.md).
+2026-10-12, wavo main. `whisper-turbo` against the reference's CPU build, as its Vulkan build times
+out there. Details in the [speed plan](docs/plans/20261012-speed.md).
+
+| Model | Clip | wavo, ms | transcribe.cpp, ms |
+|---|---|---|---|
+| `gigaam-v3` | `ru` / `ru-long` | **524 / 4170** | 1091 / 7994 |
+| `parakeet-v3` | `jfk` / `dots` | **2199 / 5702** | 3271 / 8830 |
+| `whisper-tiny` | `jfk` / `dots` | **649 / 1696** | 1340 / 3052 |
+| `whisper-turbo` | `jfk` | **23224** | 41676 (CPU) |
 
 [#24]: https://github.com/vladkens/wavo/pull/24
 [#36]: https://github.com/vladkens/wavo/pull/36
