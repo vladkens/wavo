@@ -70,7 +70,7 @@ fn attend(
   let v_stride = num_workgroups.y * pairs;
   let v0 = v_stride * p.cols + h * pairs;
   for (var i = lid; i < hd; i += 256u) {
-    q[i] = unpack2x16float(pack2x16float(vec2(at_q[h * hd + i], 0.0))).x;
+    q[i] = to_half(at_q[h * hd + i]);
   }
   workgroupBarrier();
   let j0 = wg.x * KEYS;
@@ -169,5 +169,12 @@ fn pack(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
   if (i >= half) {
     at = half * p.cols + (p.col + j) * half + i - half;
   }
-  pk_y[at] = pack2x16float(vec2(pk_x[x], pk_x[x + 1u]));
+  pk_y[at] = pack2x16float(vec2(to_half(pk_x[x]), to_half(pk_x[x + 1u])));
+}
+
+// gemm.wgsl's rounding to the nearest f16: pack2x16float truncates on DX12 (RTX 4060).
+fn to_half(x: f32) -> f32 {
+  let b = bitcast<u32>(x);
+  let normal = bitcast<f32>((b + 0xfffu + ((b >> 13u) & 1u)) & 0xffffe000u);
+  return select(normal, round(x * 0x1p24) * 0x1p-24, abs(x) < 0x1p-14);
 }

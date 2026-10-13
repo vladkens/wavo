@@ -93,12 +93,17 @@ fn values(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l:
       pv = va_s[(h * p.t + i) * p.t + j0 + l.x];
     }
     ps[l.y * 17u + l.x] = pv;
-    for (var e = l.y * 16u + l.x; e < 16u * hd; e += 256u) {
-      var x = 0.0;
-      if (j0 + e / hd < p.t) {
-        x = va_v[(j0 + e / hd) * p.v_stride + p.v_offset + h * hd + e % hd];
+    // The same trip count for all threads: FXC (DX12) rejects the barrier below after a loop whose
+    // length varies.
+    for (var e0 = 0u; e0 < 16u * hd; e0 += 256u) {
+      let e = e0 + l.y * 16u + l.x;
+      if (e < 16u * hd) {
+        var x = 0.0;
+        if (j0 + e / hd < p.t) {
+          x = va_v[(j0 + e / hd) * p.v_stride + p.v_offset + h * hd + e % hd];
+        }
+        vs[e] = x;
       }
-      vs[e] = x;
     }
     workgroupBarrier();
     for (var jj = 0u; jj < 16u; jj++) {

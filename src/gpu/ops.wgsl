@@ -74,10 +74,11 @@ fn layer_norm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_in
       row[i] = v;
     }
   }
+  // Before the return: FXC (DX12) rejects a barrier after a return under a loop it deems varying.
+  workgroupBarrier();
   if (p.head_dim == 0u) {
     return;
   }
-  workgroupBarrier();
   let half = p.head_dim / 2u;
   for (var i = lid; i < p.ch; i += 256u) {
     let d = i % p.head_dim;

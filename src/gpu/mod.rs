@@ -840,12 +840,22 @@ const COOP: wgpu::Features = wgpu::Features::SUBGROUP
   .union(wgpu::Features::SHADER_F16)
   .union(wgpu::Features::EXPERIMENTAL_COOPERATIVE_MATRIX);
 
+/// A Vulkan or Metal adapter, else DX12 (Windows without a Vulkan driver), which has no fast tier.
+/// `WGPU_BACKEND` (e.g. `dx12`) and wgpu's other `WGPU_*` variables override the choice.
 fn adapter() -> Result<wgpu::Adapter> {
-  let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-  Ok(pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-    power_preference: wgpu::PowerPreference::HighPerformance,
-    ..Default::default()
-  }))?)
+  let request = |backends| {
+    let desc = wgpu::InstanceDescriptor {
+      backends,
+      ..wgpu::InstanceDescriptor::new_without_display_handle()
+    };
+    let instance = wgpu::Instance::new(desc.with_env());
+    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+      power_preference: wgpu::PowerPreference::HighPerformance,
+      ..Default::default()
+    }))
+  };
+  let primary = request(wgpu::Backends::VULKAN | wgpu::Backends::METAL);
+  Ok(primary.or_else(|e| request(wgpu::Backends::DX12).map_err(|_| e))?)
 }
 
 /// F of the F×F cooperative matrices the fast kernels use on `adapter`, which needs 32-lane

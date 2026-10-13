@@ -24,7 +24,7 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
   your side
 - 🎧 Any common format: wav, mp3, m4a, flac, ogg (Vorbis), resampled for you
 - 🦀 Pure Rust library: no CMake, C++ toolchain, Python or ONNX Runtime to install
-- ⚡ Runs on the GPU: Metal on Apple Silicon, Vulkan on Linux and Windows
+- ⚡ Runs on the GPU: Metal on Apple Silicon, Vulkan on Linux and Windows (DX12 without Vulkan)
 - 🏎️ Faster than transcribe.cpp on the same model files on Apple Silicon and NVIDIA (see
   [Speed](#-speed)), and loads in about 0.1 s on an M2
 - 🎯 Same text, tokens and timestamps as transcribe.cpp on its test clips
@@ -122,6 +122,9 @@ wavo uses the GPU through its Vulkan driver (NVIDIA, AMD and Intel ship one); on
 two GPUs it takes the discrete one. GPUs other than Apple's use simpler kernels for now, apart
 from matrix multiplication and attention on NVIDIA's tensor cores: an RTX 4060 laptop transcribes
 11 s of audio in 42 ms (`gigaam-v3`), 79 ms (`parakeet-v3`) or 0.2 s (`whisper-turbo`).
+
+Without a Vulkan driver (e.g. a VM) wavo falls back to DirectX 12 with the simpler kernels only;
+`WGPU_BACKEND=dx12` forces it.
 
 </details>
 
