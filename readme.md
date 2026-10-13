@@ -37,8 +37,11 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
 wavo is written by AI agents (Claude Code, Codex) following [agents.md](agents.md); I choose what
 to build and review every pull request. Each model's output is checked against transcribe.cpp's
 own ([fixtures](tests/fixtures/)), and every speed change is measured and logged in
-[docs/perf.md](docs/perf.md). Hand-written projects of mine: [macmon](https://github.com/vladkens/macmon),
-[twscrape](https://github.com/vladkens/twscrape).
+[docs/perf.md](docs/perf.md). This isn't a weekend prompt: I've written software by hand for years
+— [macmon](https://github.com/vladkens/macmon) (Rust, Apple Silicon system monitor),
+[twscrape](https://github.com/vladkens/twscrape) (Python, X/Twitter scraping) and
+[ecloop](https://github.com/vladkens/ecloop) (C, low-level elliptic-curve math) — and agents are
+how I build now.
 
 ## 🧠 Models
 
