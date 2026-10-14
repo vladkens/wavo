@@ -1,3 +1,25 @@
+## v0.3.0 – 2026-10-14
+
+### Features
+
+- Added a fast path for Apple M5 and newer GPUs that runs matrix math on their neural accelerators through the Metal 4 tensor API, about twice as fast as before on GigaAM, Parakeet and Whisper (#43)
+- `wavo rm` and `Hub::remove` now also delete models that `hf` keeps in its shared blob store, once no other model uses the file (#41)
+
+### Improvements
+
+- Improved Whisper speed on NVIDIA GPUs about 3× and Moonshine's speed and memory everywhere with flash attention (#36)
+- Improved Whisper decoding speed on NVIDIA GPUs (#38)
+- Improved the first transcription after loading a model on discrete GPUs, e.g. Parakeet on an RTX 4060 from ~100 to ~77 ms (#44)
+- Improved speed on integrated and other GPUs without fast kernels: Parakeet about 1.6–2× faster on an Intel N100 (#45)
+
+### Docs
+
+- Updated the readme with per-machine speed numbers (Apple M2 and M5, RTX 4060, Intel N100), how wavo is made and tested, and credits (#42)
+
+**Full Changelog**: https://github.com/vladkens/wavo/compare/v0.2.0...v0.3.0
+
+---
+
 ## v0.2.0 – 2026-10-12
 
 ### Breaking Changes
