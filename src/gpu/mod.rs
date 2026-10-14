@@ -50,9 +50,10 @@ pub struct Gpu {
 struct Kernels {
   /// One per weight type.
   gemm: Vec<Pipeline>,
-  /// Rows of the GEMM's tile: 32 on the 16×16 tier, whose GEMMs that come here are too small
-  /// for its tiles and run faster with more workgroups, else 64.
-  gemm_rows: usize,
+  /// Columns and rows of the GEMM's tile: 128 × 32 on the 16×16 tier, whose GEMMs that come here
+  /// are too small for its tiles and run faster with more workgroups, 64 × 64 on a CPU adapter
+  /// (`gemm_cpu.wgsl`), else 128 × 64.
+  gemm_tile: [usize; 2],
   layer_norm: Pipeline,
   im2col: Pipeline,
   conv_glu: Pipeline,
@@ -75,19 +76,26 @@ struct Kernels {
 }
 
 impl Kernels {
-  fn new(device: &wgpu::Device, gemm_rows: usize) -> Self {
-    let gemm = module(device, include_str!("gemm.wgsl"));
+  fn new(device: &wgpu::Device, gemm_tile: [usize; 2]) -> Self {
+    let cpu = gemm_tile[0] == 64;
+    let gemm = match cpu {
+      true => module(device, &[include_str!("gemm.wgsl"), include_str!("gemm_cpu.wgsl")].concat()),
+      false => module(device, include_str!("gemm.wgsl")),
+    };
     let ops = module(device, include_str!("ops.wgsl"));
     let attention = module(device, include_str!("attention.wgsl"));
     let spatial = module(device, include_str!("spatial.wgsl"));
     Self {
       gemm: (0..3)
-        .map(|ty| {
-          let constants = [("WTYPE", ty as f64), ("ROWS", gemm_rows as f64)];
-          pipeline(device, &gemm, "gemm", &constants)
+        .map(|ty| match cpu {
+          true => pipeline(device, &gemm, "gemm64", &[("WTYPE", ty as f64)]),
+          false => {
+            let constants = [("WTYPE", ty as f64), ("ROWS", gemm_tile[1] as f64)];
+            pipeline(device, &gemm, "gemm", &constants)
+          }
         })
         .collect(),
-      gemm_rows,
+      gemm_tile,
       layer_norm: pipeline(device, &ops, "layer_norm", &[]),
       im2col: pipeline(device, &ops, "im2col", &[]),
       conv_glu: pipeline(device, &ops, "conv_glu", &[]),
@@ -261,6 +269,7 @@ impl Gpu {
     let size = if fast { fast_size(&adapter) } else { None };
     let fast = size.is_some();
     let tensor = size == Some(8) && tensor_gpu(&adapter);
+    let cpu = adapter.get_info().device_type == wgpu::DeviceType::Cpu;
     let mappable = adapter.get_info().device_type == wgpu::DeviceType::IntegratedGpu
       && adapter.features().contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
     let mut features = wgpu::Features::IMMEDIATES;
@@ -306,8 +315,12 @@ impl Gpu {
         let fast = size.and_then(|f| compile_fast(&device, f));
         (fast, if tensor { compile_tensor(&device) } else { None })
       });
-      let rows = if size == Some(16) { 32 } else { 64 };
-      (Kernels::new(&device, rows), compiled.join().unwrap())
+      let tile = match (size, cpu) {
+        (_, true) => [64, 64],
+        (Some(16), _) => [128, 32],
+        _ => [128, 64],
+      };
+      (Kernels::new(&device, tile), compiled.join().unwrap())
     });
     let weights = wgpu::BufferUsages::STORAGE
       | if mappable { wgpu::BufferUsages::MAP_WRITE } else { wgpu::BufferUsages::COPY_DST };
@@ -1114,7 +1127,8 @@ impl<'a> Pass<'a> {
         )
       }
       _ => {
-        let size = [l.n.div_ceil(128), m.div_ceil(gpu.kernels.gemm_rows), 1];
+        let [cols, rows] = gpu.kernels.gemm_tile;
+        let size = [l.n.div_ceil(cols), m.div_ceil(rows), 1];
         self.run(&gpu.kernels.gemm[l.ty], &buffers, &params, size)
       }
     }
