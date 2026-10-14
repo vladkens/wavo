@@ -300,10 +300,11 @@ impl Model {
   ///
   /// [`Model::load`] looks for an adapter through Vulkan and Metal first (Metal on macOS, Vulkan
   /// on Linux and Windows), and through DX12 only when neither has one (Windows without a Vulkan
-  /// driver). It asks for the high-performance adapter, so a laptop with two GPUs uses the
-  /// discrete one. wgpu's `WGPU_BACKEND` environment variable (`vulkan`, `metal` or `dx12`)
-  /// overrides the API. The adapter may be a [`SoftwareGpu`](DeviceKind::SoftwareGpu), such as
-  /// WARP or llvmpipe, when no hardware driver is installed.
+  /// driver). It prefers the high-performance adapter, usually the discrete one on a laptop with
+  /// two GPUs, though the driver decides. wgpu's `WGPU_BACKEND` environment variable (`vulkan`,
+  /// `metal` or `dx12`) overrides the API. The adapter may be a
+  /// [`SoftwareGpu`](DeviceKind::SoftwareGpu), such as WARP or llvmpipe, when no hardware driver
+  /// is installed.
   ///
   /// One model runs on one device for its lifetime. To use several GPUs, load several models;
   /// choosing the device is not supported yet.
