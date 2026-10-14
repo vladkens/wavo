@@ -1,3 +1,18 @@
+## v0.3.1 – 2026-10-14
+
+### Features
+
+- Added `Model::device()`, which tells which API (Metal, Vulkan, DX12) and which GPU a loaded model runs on; `wavo bench` prints it (#49)
+- Added a DirectX 12 fallback on Windows machines without a Vulkan driver, such as virtual machines; it shipped in 0.3.0 but was missing from its notes (#46)
+
+### Fixes
+
+- Fixed a crash at the first transcription on software renderers such as WARP in Windows virtual machines (#48)
+
+**Full Changelog**: https://github.com/vladkens/wavo/compare/v0.3.0...v0.3.1
+
+---
+
 ## v0.3.0 – 2026-10-14
 
 ### Features
