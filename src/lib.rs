@@ -83,7 +83,8 @@
 //! ```
 //!
 //! Load a model once and call `transcribe` as often as needed; loading takes about 0.1–0.2 s on
-//! an Apple M2.
+//! an Apple M2. [`Model::device`] names the GPU and API it runs on, for a log line or a settings
+//! screen.
 //!
 //! # Download a model
 //!
@@ -178,6 +179,7 @@ use std::path::Path;
 
 use error::bail;
 pub use error::{Error, Result};
+pub use gpu::{Api, Device, DeviceKind};
 
 /// A speech-to-text model loaded on the GPU.
 ///
@@ -293,13 +295,45 @@ impl Model {
       Family::Parakeet(_) => None,
     }
   }
+
+  /// The GPU the model runs on, and the API it reaches it through, as chosen at load.
+  ///
+  /// [`Model::load`] looks for an adapter through Vulkan and Metal first (Metal on macOS, Vulkan
+  /// on Linux and Windows), and through DX12 only when neither has one (Windows without a Vulkan
+  /// driver). It asks for the high-performance adapter, so a laptop with two GPUs uses the
+  /// discrete one. wgpu's `WGPU_BACKEND` environment variable (`vulkan`, `metal` or `dx12`)
+  /// overrides the API. The adapter may be a [`SoftwareGpu`](DeviceKind::SoftwareGpu), such as
+  /// WARP or llvmpipe, when no hardware driver is installed.
+  ///
+  /// One model runs on one device for its lifetime. To use several GPUs, load several models;
+  /// choosing the device is not supported yet.
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// let model = wavo::Model::load("gigaam-v3-e2e-rnnt-Q8_0.gguf")?;
+  /// println!("running on {}", model.device()); // running on Apple M2 (Metal, integrated)
+  /// if model.device().kind == wavo::DeviceKind::SoftwareGpu {
+  ///   eprintln!("no GPU driver found: transcription will be slow");
+  /// }
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn device(&self) -> &Device {
+    match &self.0 {
+      Family::Gigaam(m) => m.gpu.info(),
+      Family::Parakeet(m) => m.gpu.info(),
+      Family::Whisper(m) => m.gpu.info(),
+      Family::Moonshine(m) => m.gpu.info(),
+    }
+  }
 }
 
 #[cfg(test)]
 mod tests {
   #[test]
-  fn model_is_send_and_sync() {
+  fn model_and_device_are_send_and_sync() {
     fn check<T: Send + Sync>() {}
     check::<super::Model>();
+    check::<super::Device>();
   }
 }

@@ -27,7 +27,7 @@ const NO_SPEECH: f32 = 0.6;
 const LOGPROB: f32 = -1.0;
 
 pub struct Whisper {
-  gpu: Gpu,
+  pub gpu: Gpu,
   frontend: Frontend,
   tok: Tokenizer,
   ids: Ids,

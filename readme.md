@@ -242,6 +242,7 @@ let path = match hub.find("parakeet-v3") {
 };
 
 let model = wavo::Model::load(path)?;
+eprintln!("running on {}", model.device()); // e.g. Apple M2 (Metal, integrated)
 let transcript = model.transcribe(&pcm)?; // pcm: 16 kHz mono f32 in [-1, 1]
 
 println!("{}", transcript.text);

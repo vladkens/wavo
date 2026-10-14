@@ -20,7 +20,98 @@ pub type Groups = Vec<(Pipeline, Vec<Buffer>, BindGroup)>;
 /// Submissions a call may make (slots in `Gpu::marks`).
 const MARKS: u64 = 256;
 
+/// The GPU a [`Model`](crate::Model) runs on, and the graphics API it reaches it through, as the
+/// driver reports them when the model loads. See [`Model::device`](crate::Model::device).
+///
+/// `Display` gives a line for logs and settings screens, such as
+/// `NVIDIA GeForce RTX 4060 Laptop GPU (Vulkan, discrete)`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct Device {
+  /// The adapter's name, such as `Apple M2` or `NVIDIA GeForce RTX 4060 Laptop GPU`. The driver
+  /// chooses it: no format is promised, and it may change with a driver update.
+  pub name: String,
+  /// The graphics API the model runs through.
+  pub api: Api,
+  /// Whether the adapter is a discrete, integrated or software GPU.
+  pub kind: DeviceKind,
+  /// The driver's name and version as the driver reports them, such as `NVIDIA 591.44` on Vulkan
+  /// or `32.0.15.9144` on DX12. No format is promised; empty when the driver reports neither, as
+  /// on Metal.
+  pub driver: String,
+}
+
+/// The graphics API a [`Device`] is reached through.
+///
+/// wavo picks it as [`Model::device`](crate::Model::device) describes; wgpu's `WGPU_BACKEND`
+/// environment variable (`vulkan`, `metal` or `dx12`) overrides the choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Api {
+  /// Apple's Metal, on macOS.
+  Metal,
+  /// Vulkan, on Linux and Windows.
+  Vulkan,
+  /// Direct3D 12, on Windows without a Vulkan driver.
+  Dx12,
+}
+
+/// The kind of adapter a [`Device`] is, as the driver reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DeviceKind {
+  /// A GPU with its own memory, such as a desktop or laptop graphics card.
+  DiscreteGpu,
+  /// A GPU that shares the system's memory, such as Apple Silicon's or an Intel iGPU.
+  IntegratedGpu,
+  /// A GPU emulated on the CPU, such as WARP on Windows or llvmpipe on Linux: it works, but much
+  /// slower than a real GPU.
+  SoftwareGpu,
+  /// A virtual GPU (in a virtual machine) or one the driver doesn't classify.
+  OtherGpu,
+}
+
+impl Device {
+  /// The device of an adapter from `adapter()`.
+  fn new(info: &wgpu::AdapterInfo) -> Self {
+    let api = match info.backend {
+      wgpu::Backend::Metal => Api::Metal,
+      wgpu::Backend::Vulkan => Api::Vulkan,
+      wgpu::Backend::Dx12 => Api::Dx12,
+      backend => unreachable!("adapter() doesn't request {backend:?}"),
+    };
+    let kind = match info.device_type {
+      wgpu::DeviceType::DiscreteGpu => DeviceKind::DiscreteGpu,
+      wgpu::DeviceType::IntegratedGpu => DeviceKind::IntegratedGpu,
+      wgpu::DeviceType::Cpu => DeviceKind::SoftwareGpu,
+      wgpu::DeviceType::VirtualGpu | wgpu::DeviceType::Other => DeviceKind::OtherGpu,
+    };
+    let driver = [info.driver.trim(), info.driver_info.trim()];
+    let driver = driver.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+    Self { name: info.name.clone(), api, kind, driver }
+  }
+}
+
+impl std::fmt::Display for Device {
+  fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    let api = match self.api {
+      Api::Metal => "Metal",
+      Api::Vulkan => "Vulkan",
+      Api::Dx12 => "DX12",
+    };
+    let kind = match self.kind {
+      DeviceKind::DiscreteGpu => "discrete",
+      DeviceKind::IntegratedGpu => "integrated",
+      DeviceKind::SoftwareGpu => "software",
+      DeviceKind::OtherGpu => "other",
+    };
+    write!(f, "{} ({api}, {kind})", self.name)
+  }
+}
+
 pub struct Gpu {
+  /// What `Model::device` reports.
+  info: Device,
   device: wgpu::Device,
   queue: wgpu::Queue,
   /// Usage of weight buffers. On unified memory they are also `MAP_WRITE`, so filling their
@@ -258,6 +349,7 @@ impl Gpu {
   /// The device with the fast kernels that pass their probes, or only the portable ones.
   pub fn new(fast: bool) -> Result<Self> {
     let adapter = adapter()?;
+    let info = Device::new(&adapter.get_info());
     let size = if fast { fast_size(&adapter) } else { None };
     let fast = size.is_some();
     let tensor = size == Some(8) && tensor_gpu(&adapter);
@@ -323,6 +415,7 @@ impl Gpu {
     let marks = buffer(MARKS * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
     let marks_read = buffer(MARKS * 4, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
     let mut gpu = Self {
+      info,
       device,
       queue,
       weights,
@@ -345,6 +438,11 @@ impl Gpu {
       gpu.fast.tensor = None;
     }
     Ok(gpu)
+  }
+
+  /// The adapter this runs on.
+  pub fn info(&self) -> &Device {
+    &self.info
   }
 
   /// Whether the tensor GEMM computes a small product right, over two tiles of rows: c[r][j] =
@@ -841,14 +939,13 @@ const COOP: wgpu::Features = wgpu::Features::SUBGROUP
   .union(wgpu::Features::EXPERIMENTAL_COOPERATIVE_MATRIX);
 
 /// A Vulkan or Metal adapter, else DX12 (Windows without a Vulkan driver), which has no fast tier.
-/// `WGPU_BACKEND` (e.g. `dx12`) and wgpu's other `WGPU_*` variables override the choice.
+/// `WGPU_BACKEND` (e.g. `dx12`) and wgpu's other `WGPU_*` variables override the choice, within
+/// these three: `Api` names no other.
 fn adapter() -> Result<wgpu::Adapter> {
   let request = |backends| {
-    let desc = wgpu::InstanceDescriptor {
-      backends,
-      ..wgpu::InstanceDescriptor::new_without_display_handle()
-    };
-    let instance = wgpu::Instance::new(desc.with_env());
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle().with_env();
+    desc.backends &= backends;
+    let instance = wgpu::Instance::new(desc);
     pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
       power_preference: wgpu::PowerPreference::HighPerformance,
       ..Default::default()
@@ -1493,6 +1590,21 @@ mod tests {
     assert!(!names.iter().any(|n| tensor_chip(n)));
     // Only the first chip word counts.
     assert!(!tensor_chip("Apple M2 A19"));
+  }
+
+  #[test]
+  fn device() {
+    let device = gpus()[0].info();
+    assert!(!device.name.is_empty(), "{device:?}");
+    let apis: &[Api] = match std::env::consts::OS {
+      "macos" => &[Api::Metal],
+      "windows" => &[Api::Vulkan, Api::Dx12],
+      _ => &[Api::Vulkan],
+    };
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+      assert!(apis.contains(&device.api), "{device:?}");
+    }
+    assert_eq!(gpus()[1].info(), device);
   }
 
   #[test]

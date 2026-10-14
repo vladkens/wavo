@@ -301,6 +301,7 @@ fn bench(model: &str, audio: &str, n: usize) -> Result<()> {
   let t = Instant::now();
   let model = load(&path)?;
   let load = ms(t);
+  eprintln!("device: {}", model.device());
   let mut calls = (0..=n).map(|_| {
     let t = Instant::now();
     model.transcribe(&pcm).map(|_| ms(t))

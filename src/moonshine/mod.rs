@@ -20,7 +20,7 @@ use crate::transformer::{self, Decoder, Steps};
 use crate::{Token, Transcript};
 
 pub struct Moonshine {
-  gpu: Gpu,
+  pub gpu: Gpu,
   tok: Tokenizer,
   bos: usize,
   eos: usize,

@@ -28,7 +28,7 @@ enum Head {
 }
 
 pub struct Gigaam {
-  gpu: Gpu,
+  pub gpu: Gpu,
   frontend: Frontend,
   encoder: Encoder,
   head: Head,

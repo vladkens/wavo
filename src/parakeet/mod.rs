@@ -21,7 +21,7 @@ use crate::{Token, Transcript};
 const FRAME_MS: u32 = 80;
 
 pub struct Parakeet {
-  gpu: Gpu,
+  pub gpu: Gpu,
   frontend: Frontend,
   encoder: Encoder,
   decoder: Decoder,
