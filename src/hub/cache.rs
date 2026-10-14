@@ -19,7 +19,7 @@
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -314,22 +314,25 @@ fn head(repo: &str, file: &str) -> Result<Remote> {
   })
 }
 
-/// Appends to `part` from where an interrupted pull stopped, calling `progress` before every chunk.
+/// Continues `part` from where an interrupted pull stopped, calling `progress` before every chunk.
 fn download(
   url: &str,
   part: &Path,
   size: u64,
   progress: &mut impl FnMut(Progress<'_>) -> ControlFlow<()>,
 ) -> Result<()> {
-  let mut out = OpenOptions::new().create(true).append(true).open(part)?;
+  // Write access, not append: on Windows an append-only handle can't be truncated.
+  let mut out = OpenOptions::new().create(true).truncate(false).write(true).open(part)?;
   let have = out.metadata()?.len();
   let Some(mut done) = resume_at(have, size) else { return Ok(()) };
   let resp = ureq::get(url).header("Range", format!("bytes={done}-")).call();
   let resp = resp.map_err(|e| http(url, e))?;
+  // A server that ignores Range answers 200 with the whole file.
   if resp.status() != 206 || done != have {
     out.set_len(0)?;
     done = 0;
   }
+  out.seek(SeekFrom::Start(done))?;
   copy(resp.into_body().into_reader(), &mut out, done, size, url, progress)
 }
 
@@ -709,6 +712,56 @@ mod tests {
     assert_eq!(hub.remove_file("org/m", "z.gguf").unwrap(), Some(3));
     assert!(!hub.folder("org/m").exists());
     assert_eq!(fs::read_to_string(hub.find_file("org/n", "x.gguf").unwrap()).unwrap(), "hello");
+    fs::remove_dir_all(&hub.root).unwrap();
+  }
+
+  /// Serves `body` to one request: honours `Range: bytes=N-` with 206, or always 200 when `range`
+  /// is false, like a mirror that ignores it.
+  fn serve_once(body: &'static [u8], range: bool) -> String {
+    use std::io::{BufRead, BufReader};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/f", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+      let (stream, _) = listener.accept().unwrap();
+      let mut reader = BufReader::new(stream.try_clone().unwrap());
+      let mut from = 0;
+      loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        if line.trim().is_empty() {
+          break;
+        }
+        if let Some(v) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
+          from = v.trim().trim_end_matches('-').parse().unwrap();
+        }
+      }
+      let (status, part) =
+        if range { ("206 Partial Content", &body[from..]) } else { ("200 OK", body) };
+      let mut out = stream;
+      let head =
+        format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", part.len());
+      out.write_all(head.as_bytes()).unwrap();
+      out.write_all(part).unwrap();
+    });
+    url
+  }
+
+  #[test]
+  fn download_resumes_or_restarts() {
+    let hub = temp("download");
+    fs::create_dir_all(&hub.root).unwrap();
+    let part = hub.root.join("f.incomplete");
+    let body: &[u8] = b"hello, world";
+    let go = |range| {
+      fs::write(&part, b"hello").unwrap();
+      download(&serve_once(body, range), &part, body.len() as u64, &mut |_| {
+        ControlFlow::Continue(())
+      })
+      .unwrap();
+      assert_eq!(fs::read(&part).unwrap(), body, "range: {range}");
+    };
+    go(true); // 206: continues after the 5 bytes already there
+    go(false); // 200: the server ignored Range, so the part starts over
     fs::remove_dir_all(&hub.root).unwrap();
   }
 }
