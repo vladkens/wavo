@@ -1,4 +1,4 @@
-.PHONY: prepare check test build dist update clean
+.PHONY: prepare check test test-all build dist update clean
 
 CARGO_FLAGS := --release --locked
 
@@ -16,7 +16,11 @@ check:
 	RUSTDOCFLAGS="-D warnings" cargo doc $(CARGO_FLAGS) --no-deps --no-default-features
 	RUSTDOCFLAGS="-D warnings" cargo doc $(CARGO_FLAGS) --no-deps --no-default-features --features hub
 
-test:
+# The smoke run: unit tests and the smallest model of each family.
+test: test-unit
+	cargo test $(CARGO_FLAGS) --test models -- --exact $(SMOKE_TESTS)
+
+test-all:
 	cargo test $(CARGO_FLAGS)
 
 build:
@@ -51,17 +55,17 @@ clean:
 	cargo clean
 
 # wavo
-.PHONY: test-unit test-ci models models-ci samples reference fixtures compare bench-compare
+.PHONY: test-unit models models-all samples reference fixtures compare bench-compare
 
-MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
+ALL_MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
 	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 \
 	whisper-large-v3-turbo whisper-tiny whisper-base whisper-small whisper-medium whisper-large-v3 whisper-tiny.en whisper-base.en whisper-small.en whisper-medium.en whisper-large whisper-large-v2 Breeze-ASR-25 \
 	moonshine-tiny moonshine-base
-# CI downloads and tests (by these names in tests/models.rs) only the smallest model of each
-# family; switch when a smaller one is added. `make test` covers them all.
+# `make models` and `make test` (and CI) take only the smallest model of each family, by these
+# names in tests/models.rs; switch when a smaller one is added. `make test-all` covers them all.
 # CI caches the downloads under a key made from this line, so keep it on one line.
-CI_MODELS := gigaam-v3-e2e-rnnt parakeet-tdt-0.6b-v3 whisper-tiny moonshine-tiny
-CI_TESTS := gigaam_v3_e2e_rnnt parakeet_tdt_v3 whisper_tiny moonshine_tiny
+MODELS := gigaam-v3-e2e-rnnt parakeet-tdt-0.6b-v3 whisper-tiny moonshine-tiny
+SMOKE_TESTS := gigaam_v3_e2e_rnnt parakeet_tdt_v3 whisper_tiny moonshine_tiny
 REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
 # Whisper has segment timestamps only: TIMESTAMPS=segment; Moonshine none: TIMESTAMPS=none.
 TIMESTAMPS := token
@@ -72,15 +76,12 @@ test-unit:
 	cargo test $(CARGO_FLAGS) --doc --no-default-features
 	cargo test $(CARGO_FLAGS) --doc --no-default-features --features hub
 
-test-ci: test-unit
-	cargo test $(CARGO_FLAGS) --test models -- --exact $(CI_TESTS)
-
 # All at once with our own `wavo pull`. A second run waits on the first one's locks.
 models: build
 	target/release/wavo pull $(MODELS)
 
-models-ci:
-	$(MAKE) models MODELS="$(CI_MODELS)"
+models-all:
+	$(MAKE) models MODELS="$(ALL_MODELS)"
 
 # Only the reference's samples/, for `make test` without building it.
 samples:

@@ -346,7 +346,7 @@ mod tests {
   }
 
   /// Every other list of the models names exactly `MODELS`: the model tables of the crate docs
-  /// and the readme (in order), `MODELS` in the Makefile and the tests in `tests/models.rs`.
+  /// and the readme (in order), `ALL_MODELS` in the Makefile and the tests in `tests/models.rs`.
   #[test]
   fn model_lists_match() {
     let read = |path: &str| fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path));
@@ -385,14 +385,16 @@ mod tests {
     let mut full: Vec<&str> = MODELS.iter().map(|m| m.full_name).collect();
     full.sort();
     let mut make = Vec::new();
-    for line in makefile.lines().skip_while(|l| !l.starts_with("MODELS := ")) {
-      make.extend(line.trim_start_matches("MODELS := ").split_whitespace().filter(|w| *w != "\\"));
+    for line in makefile.lines().skip_while(|l| !l.starts_with("ALL_MODELS := ")) {
+      make.extend(
+        line.trim_start_matches("ALL_MODELS := ").split_whitespace().filter(|w| *w != "\\"),
+      );
       if !line.ends_with('\\') {
         break;
       }
     }
     make.sort();
-    assert_eq!(make, full, "MODELS in the Makefile");
+    assert_eq!(make, full, "ALL_MODELS in the Makefile");
 
     let mut tested: Vec<&str> = (tests.lines())
       .filter_map(|l| l.trim_start().strip_prefix("check(\"")?.split('"').next())

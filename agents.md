@@ -74,22 +74,22 @@ the `Makefile` and `.github/workflows/main.yml`.
 ## Adding a model
 
 1. Find the variant in `3rd/transcribe.cpp/catalog/<variant>.json` and add it to `hub::MODELS`;
-   `make test-unit` then names every other list to update. Run `make models`.
+   `make test-unit` then names every other list to update. Run `make models MODELS=<name>`.
 2. Read `scripts/convert-<family>.py`, `src/arch/<family>/` and `docs/models/<variant>.md` in the
    reference.
 3. Generate fixtures with `make fixtures MODEL=<name> SAMPLES="..."`: 2–4 clips in the model's
    language (short, ~11 s, long, plus silence where relevant).
 4. Implement it: config + head in an existing family, or a new `src/<family>/`.
-5. Pass the fixtures exactly, then benchmark against the reference. If wavo is slower, work
-   through `docs/perf.md`, or report the gap to the person.
+5. Pass the fixtures of every model in the family exactly, then benchmark against the reference.
+   If wavo is slower, work through `docs/perf.md`, or report the gap to the person.
 6. Put the baseline in the plan's Result and the PR body, and update `docs/roadmap.md`.
 
 ## Correctness
 
 - Every model has fixtures in `tests/fixtures/<model>.txt`, one block per clip, written from the
-  reference CLI by `make fixtures` (`scripts/fixtures.sh` is the format's spec). `make test` must
-  reproduce text, tokens and start times exactly, and must fail (not skip) when a model, sample
-  or block is missing.
+  reference CLI by `make fixtures` (`scripts/fixtures.sh` is the format's spec). `make test-all`
+  must reproduce text, tokens and start times exactly, and must fail (not skip) when a model,
+  sample or block is missing; `make test` does the same for the smallest model of each family.
 - Treat any fixture change as a bug. Changing arithmetic (e.g. F16 operands) is fine while the
   fixtures stay exact. If a speed or memory gain changes a fixture, show the person the fixture
   diff and the gain before committing. A PR may add blocks but must not change an existing one
@@ -113,12 +113,16 @@ the `Makefile` and `.github/workflows/main.yml`.
 - Compare `wavo bench` with the reference `transcribe-bench` on the same GGUF and WAV: at least 10
   warm calls, median and min. Measure a change A/B/A back to back. When the two A runs differ by
   more than 3%, rerun later instead of concluding. Run one GPU job at a time.
-- Keep a speed change only when fixtures still match and the gain is clear. Delete rejected code.
+- Keep a speed change only when `make test-all` passes and the gain is clear. Delete rejected code.
 - For text agreement and speed on many recordings, use `make compare`.
 
 ## Workflow
 
-- Before committing, run `make check` and `make test`. `make prepare` rewrites files: not a check.
+- Before committing, run `make check` and `make test` (the smoke run). `make prepare` rewrites
+  files: not a check.
+- Run `make test-all` (every model, after `make models-all`) before a release and before merging
+  speed work or a PR that touches GPU kernels, `src/gpu/`, the GGUF reader, or shared frontend or
+  decoder numerics. A PR that touches one model family runs at least that family's models.
 - Every change reaches `main` through a pull request, one per feature or roadmap phase:
   1. Agree the plan with the person. For multi-step work keep a checklist in
      `docs/plans/yyyymmdd-<name>.md` and during the work only tick its checkboxes, with no
@@ -133,9 +137,9 @@ the `Makefile` and `.github/workflows/main.yml`.
   4. Push and open the PR with `gh pr create`. The title is the squash commit, one short
      lowercase line; the body says what changed, the checks run and numbers for speed work.
   5. The orchestrating agent reviews the diff, reruns the checks and sends findings back until
-     the PR is clean, then hands it to the person. CI runs only the smallest model of each family,
-     so `make test` and benchmarks stay local. Copilot reviews every PR: fix what is right, answer
-     the rest in the thread. Once the orchestrator accepts the solution, the implementing agent
+     the PR is clean, then hands it to the person. CI runs only `make test`, so `make test-all`
+     and benchmarks stay local. Copilot reviews every PR: fix what is right, answer the rest in
+     the thread. Once the orchestrator accepts the solution, the implementing agent
      runs `codex -C <worktree> review -c model_reasoning_effort=xhigh "Review the changes on the
      current branch against origin/main (git diff origin/main...HEAD). Do not run GPU tests or
      benchmarks; they were run."` if available (`--base` can't be combined with a prompt; the GPU
@@ -147,7 +151,8 @@ the `Makefile` and `.github/workflows/main.yml`.
   written by the person's skill, version bumped), squash-merged; CI then tags it, publishes to
   crates.io and creates the GitHub release.
 - An orchestrating agent writes each task, verifies every report itself (`make check`, `make test`,
-  the diff, benchmarks) instead of trusting it, and keeps the person informed.
+  `make test-all` where required, the diff, benchmarks) instead of trusting it, and keeps the
+  person informed.
 - Report a blocker as soon as you hit it: an unreachable machine, a missing permission or tool, a
   failing service, or anything else that stops the task. Tell whoever delegated the task right
   away (a subagent messages the orchestrator), say what can still be done without it, and keep

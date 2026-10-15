@@ -21,7 +21,7 @@ fn model_path(name: &str) -> PathBuf {
   let hub = hub.unwrap_or_else(|| home().join("hub"));
   let repo = hub.join(format!("models--handy-computer--{name}-gguf"));
   let rev = std::fs::read_to_string(repo.join("refs/main"))
-    .unwrap_or_else(|e| panic!("{name} is not downloaded, run `make models`: {e}"));
+    .unwrap_or_else(|e| panic!("{name} is not downloaded, run `make models MODELS={name}`: {e}"));
   repo.join("snapshots").join(rev.trim()).join(format!("{name}-Q8_0.gguf"))
 }
 
