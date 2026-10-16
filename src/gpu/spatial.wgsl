@@ -108,11 +108,17 @@ fn first_depthwise(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocati
 @group(0) @binding(0) var<storage, read> fl_x: array<f32>;
 @group(0) @binding(1) var<storage, read_write> fl_y: array<f32>;
 
-// [t][f][ch] to [t][ch·f]: y[t][c·f + j] = x[t][j][c]. One workgroup per row t.
+// [t][f][ch] to [t][ch·f]: y[t][c·f + j] = x[t][j][c]. A workgroup per row t, t + workgroups, ….
 @compute @workgroup_size(256)
-fn flatten(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+fn flatten(
+  @builtin(workgroup_id) wg: vec3<u32>,
+  @builtin(num_workgroups) groups: vec3<u32>,
+  @builtin(local_invocation_index) lid: u32,
+) {
   let n = p.f * p.ch;
-  for (var e = lid; e < n; e += 256u) {
-    fl_y[wg.x * n + e] = fl_x[wg.x * n + (e % p.f) * p.ch + e / p.f];
+  for (var t = wg.x; t < p.t; t += groups.x) {
+    for (var e = lid; e < n; e += 256u) {
+      fl_y[t * n + e] = fl_x[t * n + (e % p.f) * p.ch + e / p.f];
+    }
   }
 }

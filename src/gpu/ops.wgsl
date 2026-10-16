@@ -41,9 +41,9 @@ fn reduce(v: f32, lid: u32, is_max: bool) -> f32 {
   return r;
 }
 
-// LayerNorm (eps 1e-5) of row t, one workgroup per row. With head_dim > 0 it also writes the
-// normalized row with rotary embedding: NEOX split-half rotation inside each head, using a
-// [t][cos | sin] table of head_dim / 2 frequencies each.
+// LayerNorm (eps 1e-5) of each row, a workgroup per row t, t + workgroups, …. With head_dim > 0 it
+// also writes the normalized row with rotary embedding: NEOX split-half rotation inside each head,
+// using a [t][cos | sin] table of head_dim / 2 frequencies each.
 
 @group(0) @binding(0) var<storage, read> norm_x: array<f32>;
 @group(0) @binding(1) var<storage, read> norm_g: array<f32>;
@@ -53,8 +53,17 @@ fn reduce(v: f32, lid: u32, is_max: bool) -> f32 {
 @group(0) @binding(5) var<storage, read_write> norm_yr: array<f32>;
 
 @compute @workgroup_size(256)
-fn layer_norm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
-  let t = wg.x;
+fn layer_norm(
+  @builtin(workgroup_id) wg: vec3<u32>,
+  @builtin(num_workgroups) n: vec3<u32>,
+  @builtin(local_invocation_index) lid: u32,
+) {
+  for (var t = wg.x; t < p.t; t += n.x) {
+    norm_row(t, lid);
+  }
+}
+
+fn norm_row(t: u32, lid: u32) {
   let base = t * p.ch;
   var s = 0.0;
   for (var i = lid; i < p.ch; i += 256u) {
@@ -74,13 +83,10 @@ fn layer_norm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_in
       row[i] = v;
     }
   }
-  // Before the return: FXC (DX12) rejects a barrier after a return under a loop it deems varying.
+  // No return: FXC (DX12) rejects a barrier after a return under a loop it deems varying.
   workgroupBarrier();
-  if (p.head_dim == 0u) {
-    return;
-  }
   let half = p.head_dim / 2u;
-  for (var i = lid; i < p.ch; i += 256u) {
+  for (var i = lid; i < p.ch && p.head_dim != 0u; i += 256u) {
     let d = i % p.head_dim;
     let f = d % half;
     let sn = rope[t * p.head_dim + half + f];
@@ -96,31 +102,37 @@ fn layer_norm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_in
 
 // im2col for a conv1d over x [t][ch]: col[i][c · kernel + k] = x[stride · i + k − pad][c], matching
 // a ggml conv weight [kernel, ch, out]. Rows are padded with zeros to a multiple of 32 columns, as
-// `Gpu::conv` pads the weight (80 mels: 240 → 256).
+// `Gpu::conv` pads the weight (80 mels: 240 → 256). Rows i, i + workgroups.y, … per workgroup.
 
 @group(0) @binding(0) var<storage, read> col_x: array<f32>;
 @group(0) @binding(1) var<storage, read_write> col_y: array<f32>;
 
 @compute @workgroup_size(256)
-fn im2col(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
-  let i = wg.y;
+fn im2col(
+  @builtin(workgroup_id) wg: vec3<u32>,
+  @builtin(num_workgroups) n: vec3<u32>,
+  @builtin(local_invocation_index) lid: u32,
+) {
   let e = wg.x * 256u + lid;
   let width = (p.ch * p.kernel + 31u) / 32u * 32u;
   if (e >= width) {
     return;
   }
-  // Source frame plus the padding.
-  let s = p.stride * i + e % p.kernel;
-  var v = 0.0;
-  if (e < p.ch * p.kernel && s >= p.pad && s - p.pad < p.t) {
-    v = col_x[(s - p.pad) * p.ch + e / p.kernel];
+  let rows = (p.t + 2u * p.pad - p.kernel) / p.stride + 1u;
+  for (var i = wg.y; i < rows; i += n.y) {
+    // Source frame plus the padding.
+    let s = p.stride * i + e % p.kernel;
+    var v = 0.0;
+    if (e < p.ch * p.kernel && s >= p.pad && s - p.pad < p.t) {
+      v = col_x[(s - p.pad) * p.ch + e / p.kernel];
+    }
+    col_y[i * width + e] = v;
   }
-  col_y[i * width + e] = v;
 }
 
-// Conformer conv module between the pointwise convs, one workgroup per frame: GLU (first half ·
-// sigmoid(second half)) of h [t][2·ch], depthwise conv (odd kernel, centred, weight [ch][kernel])
-// plus bias, LayerNorm over channels or a per-channel affine, SiLU.
+// Conformer conv module between the pointwise convs, a workgroup per frame t, t + workgroups, …:
+// GLU (first half · sigmoid(second half)) of h [t][2·ch], depthwise conv (odd kernel, centred,
+// weight [ch][kernel]) plus bias, LayerNorm over channels or a per-channel affine, SiLU.
 
 @group(0) @binding(0) var<storage, read> conv_h: array<f32>;
 @group(0) @binding(1) var<storage, read> conv_w: array<f32>;
@@ -130,8 +142,17 @@ fn im2col(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index)
 @group(0) @binding(5) var<storage, read_write> conv_y: array<f32>;
 
 @compute @workgroup_size(256)
-fn conv_glu(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
-  let t = wg.x;
+fn conv_glu(
+  @builtin(workgroup_id) wg: vec3<u32>,
+  @builtin(num_workgroups) n: vec3<u32>,
+  @builtin(local_invocation_index) lid: u32,
+) {
+  for (var t = wg.x; t < p.t; t += n.x) {
+    conv_row(t, lid);
+  }
+}
+
+fn conv_row(t: u32, lid: u32) {
   let pad = p.kernel / 2u;
   var s = 0.0;
   for (var i = lid; i < p.ch; i += 256u) {
@@ -196,19 +217,25 @@ fn softmax(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index
 @group(0) @binding(1) var<storage, read_write> rp_x: array<f32>;
 
 @compute @workgroup_size(256)
-fn rotary(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+fn rotary(
+  @builtin(workgroup_id) wg: vec3<u32>,
+  @builtin(num_workgroups) n: vec3<u32>,
+  @builtin(local_invocation_index) lid: u32,
+) {
   let half = p.kernel / 2u;
   let e = wg.x * 256u + lid;
   if (e >= p.stride * half) {
     return;
   }
   let i = e % half;
-  let o = wg.y * p.ch + e / half * p.head_dim + 2u * i;
-  let row = (p.pad + wg.y) * p.kernel;
-  let cs = vec2(rp_table[row + i], rp_table[row + half + i]);
-  let x = vec2(rp_x[o], rp_x[o + 1u]);
-  rp_x[o] = x.x * cs.x - x.y * cs.y;
-  rp_x[o + 1u] = x.x * cs.y + x.y * cs.x;
+  for (var r = wg.y; r < p.t; r += n.y) {
+    let o = r * p.ch + e / half * p.head_dim + 2u * i;
+    let row = (p.pad + r) * p.kernel;
+    let cs = vec2(rp_table[row + i], rp_table[row + half + i]);
+    let x = vec2(rp_x[o], rp_x[o + 1u]);
+    rp_x[o] = x.x * cs.x - x.y * cs.y;
+    rp_x[o + 1u] = x.x * cs.y + x.y * cs.x;
+  }
 }
 
 // GroupNorm with one group, in place over x [t][ch] as one workgroup: the mean and variance of all

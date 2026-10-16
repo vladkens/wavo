@@ -15,8 +15,8 @@ struct Params {
 
 var<immediate> p: Params;
 
-// LayerNorm, four rows per workgroup. The rotary output recomputes the normalized partner element
-// instead of exchanging it.
+// LayerNorm, four rows per workgroup, then the four a dispatch's width later. The rotary output
+// recomputes the normalized partner element instead of exchanging it.
 
 @group(0) @binding(0) var<storage, read> norm_x: array<f32>;
 @group(0) @binding(1) var<storage, read> norm_g: array<f32>;
@@ -32,6 +32,7 @@ fn normalized(t: u32, i: u32, st: vec2<f32>) -> f32 {
 @compute @workgroup_size(128)
 fn layer_norm(
   @builtin(workgroup_id) wg: vec3<u32>,
+  @builtin(num_workgroups) n: vec3<u32>,
   @builtin(local_invocation_index) lane: u32,
   @builtin(subgroup_id) sg: u32,
   @builtin(subgroup_invocation_id) sl: u32,
@@ -45,8 +46,13 @@ fn layer_norm(
     }
     return;
   }
-  // Rows past the end compute on the last row and skip the stores.
-  let r = wg.x * 4u + sg;
+  for (var b = wg.x; b * 4u < p.t; b += n.x) {
+    norm_row(b * 4u + sg, sl);
+  }
+}
+
+// Rows past the end compute on the last row and skip the stores.
+fn norm_row(r: u32, sl: u32) {
   let t = min(r, p.t - 1u);
   var s = 0.0;
   for (var i = sl; i < p.ch; i += 32u) {
@@ -83,7 +89,7 @@ fn layer_norm(
   }
 }
 
-// Conformer conv module middle (see ops.wgsl), four frames per workgroup.
+// Conformer conv module middle (see ops.wgsl), four frames per workgroup as layer_norm.
 
 @group(0) @binding(0) var<storage, read> conv_h: array<f32>;
 @group(0) @binding(1) var<storage, read> conv_w: array<f32>;
@@ -98,6 +104,7 @@ var<workgroup> rows: array<f32, 4096>;
 @compute @workgroup_size(128)
 fn conv_glu(
   @builtin(workgroup_id) wg: vec3<u32>,
+  @builtin(num_workgroups) n: vec3<u32>,
   @builtin(local_invocation_index) lane: u32,
   @builtin(subgroup_id) sg: u32,
   @builtin(subgroup_invocation_id) sl: u32,
@@ -111,7 +118,12 @@ fn conv_glu(
     }
     return;
   }
-  let r = wg.x * 4u + sg;
+  for (var b = wg.x; b * 4u < p.t; b += n.x) {
+    conv_row(b * 4u + sg, sg, sl);
+  }
+}
+
+fn conv_row(r: u32, sg: u32, sl: u32) {
   let t = min(r, p.t - 1u);
   let row = sg * 1024u;
   let pad = p.kernel / 2u;

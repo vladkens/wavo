@@ -20,6 +20,10 @@ pub type Groups = Vec<(Pipeline, Vec<Buffer>, BindGroup)>;
 /// Submissions a call may make (slots in `Gpu::marks`).
 const MARKS: u64 = 256;
 
+/// Workgroups a dispatch takes per dimension (wgpu's default limit); kernels over more rows loop
+/// over them in steps of the dispatch's width.
+const MAX_GROUPS: usize = 65535;
+
 /// The GPU a [`Model`](crate::Model) runs on, and the graphics API it reaches it through, as the
 /// driver reports them when the model loads. See [`Model::device`](crate::Model::device).
 ///
@@ -1207,7 +1211,7 @@ impl<'a> Pass<'a> {
     if let Some(t) = &gpu.fast.tensor {
       // The tensor GEMM reads a as f16 from device memory (k is a multiple of 32 by `linear`).
       let (h, n4) = (gpu.halves(m * l.k), m * l.k / 4);
-      self.run(&t.cast, &[a, &h], &[n4 as u32], [n4.div_ceil(256).min(65535), 1, 1]);
+      self.run(&t.cast, &[a, &h], &[n4 as u32], [n4.div_ceil(256).min(MAX_GROUPS), 1, 1]);
       let size = [l.n / 64, m.div_ceil(128), 1];
       return self.run(&t.gemm[l.ty], &[&h, &l.bias, c, &l.weight, scales], &params, size);
     }
@@ -1248,8 +1252,8 @@ impl<'a> Pass<'a> {
     let params = [rows as u32, cols as u32, head_dim as u32];
     let buffers = [x, &n.w, &n.b, y, table, yr];
     match &gpu.fast.layer_norm {
-      Some(k) => self.run(k, &buffers, &params, [rows.div_ceil(4), 1, 1]),
-      None => self.run(&gpu.kernels.layer_norm, &buffers, &params, [rows, 1, 1]),
+      Some(k) => self.run(k, &buffers, &params, [rows.div_ceil(4).min(MAX_GROUPS), 1, 1]),
+      None => self.run(&gpu.kernels.layer_norm, &buffers, &params, [rows.min(MAX_GROUPS), 1, 1]),
     }
   }
 
@@ -1335,7 +1339,8 @@ impl<'a> Pass<'a> {
     let rows = (t + 2 * pad - kernel) / stride + 1;
     let params = [t, ch, 0, 0, kernel, 0, stride, pad].map(|v| v as u32);
     let width = (ch * kernel).next_multiple_of(32);
-    self.run(&self.gpu.kernels.im2col, &[x, col], &params, [width.div_ceil(256), rows, 1]);
+    let size = [width.div_ceil(256), rows.min(MAX_GROUPS), 1];
+    self.run(&self.gpu.kernels.im2col, &[x, col], &params, size);
   }
 
   /// Conformer conv module between the pointwise convs: GLU, depthwise conv (odd `kernel`,
@@ -1357,8 +1362,8 @@ impl<'a> Pass<'a> {
     let layer_norm = (norm == ConvNorm::LayerNorm) as u32;
     let params = [t as u32, ch as u32, 0, 0, kernel as u32, layer_norm];
     match &gpu.fast.conv_glu {
-      Some(k) => self.run(k, &buffers, &params, [t.div_ceil(4), 1, 1]),
-      None => self.run(&gpu.kernels.conv_glu, &buffers, &params, [t, 1, 1]),
+      Some(k) => self.run(k, &buffers, &params, [t.div_ceil(4).min(MAX_GROUPS), 1, 1]),
+      None => self.run(&gpu.kernels.conv_glu, &buffers, &params, [t.min(MAX_GROUPS), 1, 1]),
     }
   }
 
@@ -1440,7 +1445,7 @@ impl<'a> Pass<'a> {
   pub fn rope(&mut self, table: &Buffer, qkv: &Buffer, rows: usize, pos: usize, shape: [usize; 3]) {
     let [heads, hd, rot] = shape;
     let params = [rows, 3 * heads * hd, hd, 0, rot, 0, 2 * heads, pos].map(|v| v as u32);
-    let size = [(heads * rot).div_ceil(256), rows, 1];
+    let size = [(heads * rot).div_ceil(256), rows.min(MAX_GROUPS), 1];
     self.run(&self.gpu.kernels.rope, &[table, qkv], &params, size);
   }
 
@@ -1464,7 +1469,7 @@ impl<'a> Pass<'a> {
   /// `x` `[t][f][ch]` to `y` `[t][ch · f]`, channel-major.
   pub fn flatten(&mut self, x: &Buffer, y: &Buffer, t: usize, f: usize, ch: usize) {
     let k = &self.gpu.kernels.flatten;
-    self.run(k, &[x, y], &[t as u32, f as u32, ch as u32], [t, 1, 1]);
+    self.run(k, &[x, y], &[t as u32, f as u32, ch as u32], [t.min(MAX_GROUPS), 1, 1]);
   }
 }
 
@@ -2104,6 +2109,70 @@ mod tests {
       assert_eq!(got[0].to_bits(), 300);
       let got = run(gpu, &[0.0], |p, out| p.argmax(&lb, out, 500));
       assert_eq!(got[0].to_bits(), 300);
+    }
+  }
+
+  #[test]
+  fn long() {
+    // More rows than a dispatch dimension takes (65535), also in fours as the fast kernels group
+    // them. Fresh devices: a failed dispatch fails its device.
+    let (t, ch, kernel, f) = (4 * 65535 + 5, 4, 3, 2);
+    let x = random(t * ch, 40);
+    let (g, b) = (random(ch, 41), random(ch, 42));
+    let width = (ch * kernel).next_multiple_of(32);
+    let col: Vec<f32> = (0..t * width)
+      .map(|i| {
+        let (r, c, k) = (i / width, i % width / kernel, i % width % kernel);
+        let s = (r + k).wrapping_sub(1);
+        if s < t && c < ch { x[s * ch + c] } else { 0.0 }
+      })
+      .collect();
+    let norm = layer_norm(&x, &g, &b);
+    let h = random(t * 2 * ch, 43);
+    let (w, wb) = (random(ch * kernel, 44), random(ch, 45));
+    let glu = |s: usize, c: usize| h[s * 2 * ch + c] / (1.0 + (-h[s * 2 * ch + ch + c]).exp());
+    let dw: Vec<f32> = (0..t * ch)
+      .map(|i| {
+        let (r, c) = (i / ch, i % ch);
+        let taps = (0..kernel).filter(|k| (r + k).wrapping_sub(1) < t);
+        wb[c] + taps.map(|k| w[c * kernel + k] * glu(r + k - 1, c)).sum::<f32>()
+      })
+      .collect();
+    let conv: Vec<f32> =
+      dw.iter().enumerate().map(|(i, v)| silu(v * g[i % ch] + b[i % ch])).collect();
+    // Rows [q | k | v] of one head of 2, rotating fully.
+    let qkv = random(t * 6, 46);
+    let table = random(t * 2, 47);
+    let rotated: Vec<f32> = (0..qkv.len())
+      .map(|e| {
+        let (r, i) = (e / 6, e % 6);
+        let (c, s) = (table[r * 2], table[r * 2 + 1]);
+        match i {
+          0 | 2 => qkv[e] * c - qkv[e + 1] * s,
+          1 | 3 => qkv[e - 1] * s + qkv[e] * c,
+          _ => qkv[e],
+        }
+      })
+      .collect();
+    let (fc, frames) = (ch / f, t);
+    let flat: Vec<f32> =
+      (0..frames * f * fc).map(|e| x[(e / (f * fc) * f + e % f) * fc + e % (f * fc) / f]).collect();
+    for fast in [false, true] {
+      let gpu = &Gpu::new(fast).unwrap();
+      let (xb, hb) = (up(gpu, &x), up(gpu, &h));
+      let (n, dwc) = (gpu.channels(&g, &b).unwrap(), gpu.channels(&w, &wb).unwrap());
+      let got = run(gpu, &vec![0.0; col.len()], |p, y| p.im2col(&xb, y, t, ch, [kernel, 1, 1]));
+      assert_close(&got, &col);
+      let got = run(gpu, &vec![0.0; t * ch], |p, y| p.layer_norm(&xb, &n, y, t, ch, None));
+      assert_close(&got, &norm);
+      let affine = ConvNorm::Affine;
+      let got =
+        run(gpu, &vec![0.0; t * ch], |p, y| p.conv_glu(&hb, &dwc, kernel, &n, affine, y, t, ch));
+      assert_close(&got, &conv);
+      let tb = up(gpu, &table);
+      assert_close(&run(gpu, &qkv, |p, y| p.rope(&tb, y, t, 0, [1, 2, 2])), &rotated);
+      let got = run(gpu, &vec![0.0; flat.len()], |p, y| p.flatten(&xb, y, frames, f, fc));
+      assert_close(&got, &flat);
     }
   }
 }
