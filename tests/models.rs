@@ -1,10 +1,28 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Transcripts must match the reference fixtures (`make fixtures`) exactly: text, every token piece
-//! and its start time (for Whisper every segment's text and start). Missing models or samples fail
-//! the test.
+//! and its start time (for Whisper every segment's text and start). Every GGUF must list the
+//! languages `hub::MODELS` gives its model. Missing models or samples fail the test.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
+
+/// The library's GGUF reader, to read metadata the API doesn't expose. It fails through `error`.
+#[cfg(feature = "hub")]
+#[path = "../src/gguf.rs"]
+#[allow(dead_code)]
+mod gguf;
+
+#[cfg(feature = "hub")]
+mod error {
+  pub use wavo::Result;
+
+  macro_rules! bail {
+    ($($arg:tt)*) => {
+      return Err(wavo::Error::Model(format!($($arg)*)))
+    };
+  }
+  pub(crate) use bail;
+}
 
 /// One model at a time: they share the GPU anyway, and several large ones at once overrun the
 /// memory of an 8 GB card.
@@ -67,10 +85,21 @@ fn read_fixture(name: &str, sample: &str) -> (String, Option<Vec<(String, u32)>>
   (text.to_string(), Some(tokens), segments)
 }
 
+/// The GGUF's `general.languages` is the model's `langs` in `hub::MODELS`.
+#[cfg(feature = "hub")]
+fn check_languages(name: &str, path: &Path) {
+  let g = gguf::Gguf::open(path).unwrap();
+  let codes: Vec<&str> = g.array("general.languages").unwrap();
+  assert_eq!(codes, wavo::hub::lookup(name).unwrap().langs, "{name}: general.languages");
+}
+
 fn check(name: &str, samples: &[&str]) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
   let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-  let model = wavo::Model::load(model_path(name)).unwrap();
+  let path = model_path(name);
+  #[cfg(feature = "hub")]
+  check_languages(name, &path);
+  let model = wavo::Model::load(&path).unwrap();
   for sample in samples {
     let pcm = read_wav(&root.join(format!("3rd/transcribe.cpp/samples/{sample}.wav")));
     let (text, tokens, segments) = read_fixture(name, sample);

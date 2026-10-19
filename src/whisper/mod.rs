@@ -105,7 +105,9 @@ impl Whisper {
     if tok.len() != vocab {
       bail!("vocabulary of {} tokens, decoder.vocab_size {vocab}", tok.len());
     }
-    let list = |key: &str| g.array::<i32>(key).map(|v| v.iter().map(|&i| i as usize).collect());
+    // transcribe.cpp's converter writes a suppress list only when it isn't empty.
+    let list =
+      |key: &str| g.optional_array::<i32>(key).map(|v| v.iter().map(|&i| i as usize).collect());
     let no_timestamps = u("no_timestamps_token_id")?;
     let ids = Ids {
       eot: g.get::<u32>("tokenizer.ggml.eos_token_id")? as usize,
