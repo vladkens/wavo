@@ -156,7 +156,8 @@ When the model isn't downloaded yet, `wavo run` asks before downloading it, in a
 downloads without asking, for scripts. Without a terminal and `-y` it fails with the `wavo pull`
 command to run, and `wavo bench` never downloads. Long recordings are split at their quietest
 moments and transcribed piece by piece, so an hour of audio works as well as a minute;
-`--segment SECS` sets the piece length, `--segment 0` runs one pass. Models are stored in the
+`--segment SECS` sets the piece length, `--segment 0` runs one pass (up to 37.5 s for
+GigaAM and 45 s for Moonshine). Models are stored in the
 Hugging Face cache (`~/.cache/huggingface/hub`), so a model fetched with `hf download` is found by
 `wavo` and the other way round.
 
@@ -255,7 +256,8 @@ for token in &transcript.tokens {
 The `hub` feature downloads models by name (it adds an HTTP client); leave it out to load `.gguf`
 files you fetch yourself, with a pure Rust build. Decoding and resampling audio and splitting long
 recordings are up to you: `model.max_audio_ms()` tells how long a piece the model was trained on
-(25 s for GigaAM, 30 s for Whisper and Moonshine). The [API docs](https://docs.rs/wavo) have the details,
+(25 s for GigaAM, 30 s for Whisper and Moonshine), and GigaAM and Moonshine return
+`Error::AudioTooLong` past 1.5 times that. The [API docs](https://docs.rs/wavo) have the details,
 including downloading on a thread with progress and cancel, as
 [examples/hub.rs](examples/hub.rs) does.
 
