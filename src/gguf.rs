@@ -222,6 +222,14 @@ impl Gguf {
     Ok(items)
   }
 
+  /// The metadata array `key` as `T`s, empty when the file has no `key`.
+  pub fn optional_array<'a, T: Meta<'a>>(&'a self, key: &str) -> Result<Vec<T>> {
+    if !self.meta.contains_key(key) {
+      return Ok(Vec::new());
+    }
+    self.array(key)
+  }
+
   /// The tensor `name`, which must have exactly the ggml-order `dims`.
   pub fn tensor(&self, name: &str, dims: &[usize]) -> Result<Tensor<'_>> {
     let Some(t) = self.tensors.get(name) else { bail!("missing tensor {name}") };
@@ -445,6 +453,9 @@ mod tests {
     assert!(g.get::<u32>("a.left").is_err());
     assert_eq!(g.array::<i32>("a.durations").unwrap(), [0, 2, -4]);
     assert!(g.array::<u32>("a.durations").is_err());
+    assert_eq!(g.optional_array::<i32>("a.durations").unwrap(), [0, 2, -4]);
+    assert!(g.optional_array::<i32>("missing").unwrap().is_empty());
+    assert!(g.optional_array::<u32>("a.durations").is_err());
     assert_eq!(g.get::<f32>("a.alpha").unwrap(), 0.97);
 
     assert_eq!(g.tensor("w", &[2, 1]).unwrap().to_f32().unwrap(), [1.5, -2.0]);
