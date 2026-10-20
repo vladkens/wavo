@@ -16,6 +16,9 @@ pub fn print() {
     println!("{key:<18} {value}");
   }
 
+  println!("{:<18} {}", "cpu features", cpu_features());
+  println!("{:<18} {}", "cpu kernels", wavo::cpu_path());
+
   divider("GPU");
   // vars_os: `vars` panics on any variable that isn't UTF-8.
   for (key, value) in std::env::vars_os() {
@@ -162,6 +165,28 @@ fn shapes(matrices: &[Matrix]) -> String {
   if all.is_empty() { "none".into() } else { all.join(", ") }
 }
 
+/// The SIMD features the CPU reports at run time, of those that matter for matrix products.
+fn cpu_features() -> String {
+  #[cfg(target_arch = "aarch64")]
+  let all = {
+    use std::arch::is_aarch64_feature_detected as has;
+    let all = [("neon", has!("neon")), ("fp16", has!("fp16")), ("dotprod", has!("dotprod"))];
+    [all.to_vec(), vec![("i8mm", has!("i8mm")), ("sve", has!("sve"))]].concat()
+  };
+  #[cfg(target_arch = "x86_64")]
+  let all = {
+    use std::arch::is_x86_feature_detected as has;
+    let all = [("sse4.2", has!("sse4.2")), ("avx", has!("avx")), ("avx2", has!("avx2"))];
+    let more = [("fma", has!("fma")), ("f16c", has!("f16c")), ("avx512f", has!("avx512f"))];
+    let wide = [("avx512bw", has!("avx512bw")), ("avx512vl", has!("avx512vl"))];
+    [&all[..], &more, &wide, &[("avx-vnni", has!("avxvnni"))]].concat()
+  };
+  #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+  let all: Vec<(&str, bool)> = Vec::new();
+  let all: Vec<_> = all.iter().filter(|x| x.1).map(|x| x.0).collect();
+  if all.is_empty() { "-".into() } else { all.join(" ") }
+}
+
 fn divider(name: &str) {
   println!("\n--- {name} {}", "-".repeat(80 - name.len() - 5));
 }
@@ -185,10 +210,9 @@ fn field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
   })
 }
 
-/// A command's stdout, empty when it can't run.
-#[cfg(any(target_os = "macos", windows))]
+/// A command's stdout, in English, empty when it can't run.
 fn output(cmd: &str, args: &[&str]) -> String {
-  let out = std::process::Command::new(cmd).args(args).output();
+  let out = std::process::Command::new(cmd).args(args).env("LC_ALL", "C").output();
   out.map(|x| String::from_utf8_lossy(&x.stdout).into_owned()).unwrap_or_default()
 }
 
@@ -235,8 +259,17 @@ fn system() -> System {
     "" => ["sys_vendor", "product_name"].map(|x| read(&format!("/sys/class/dmi/id/{x}"))).join(" "),
     tree => tree.into(),
   };
-  let cpuinfo = read("/proc/cpuinfo");
-  let cpu = field(&cpuinfo, "model name").or_else(|| field(&cpuinfo, "Hardware")).unwrap_or("-");
+  // An ARM CPU has no model name in /proc/cpuinfo, but lscpu names its cores: ARM Cortex-A55 +
+  // Cortex-A76.
+  let cpu = match field(&read("/proc/cpuinfo"), "model name") {
+    Some(cpu) => cpu.into(),
+    None => {
+      let lscpu = output("lscpu", &[]);
+      let cores = lscpu.lines().filter_map(|x| field(x, "Model name")).filter(|x| *x != "-");
+      let cores = cores.collect::<Vec<_>>().join(" + ");
+      format!("{} {cores}", field(&lscpu, "Vendor ID").unwrap_or("-")).trim().to_string()
+    }
+  };
   let memory = read("/proc/meminfo");
   let memory = field(&memory, "MemTotal").and_then(|x| x.trim_end_matches(" kB").parse().ok());
   let memory = memory.map_or("-".into(), |kb: u64| bytes(kb * 1024));

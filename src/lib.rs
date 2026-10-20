@@ -182,6 +182,13 @@ use error::bail;
 pub use error::{Error, Result};
 pub use gpu::{Api, Device, DeviceKind, Kernels, devices};
 
+/// The code path of the CPU matrix products (`NEON`, `AVX2+FMA` or `portable`), for `wavo debug`;
+/// not part of the API.
+#[doc(hidden)]
+pub fn cpu_path() -> &'static str {
+  cpu::path()
+}
+
 /// A speech-to-text model loaded on the GPU.
 ///
 /// Load it once with [`Model::load`], then call [`Model::transcribe`] for each recording. It is
