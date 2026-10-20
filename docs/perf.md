@@ -514,6 +514,11 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### Whisper decoder
 
+- 2026-10-20, Whisper, the logits only for the last token of a pass (the punctuation prompt's
+  13–41 tokens before SOT, the language token before the task token): M2 A/B/A `jfk` with the
+  English prompt, turbo 1259 / 1249 / 1307, whisper-tiny 91.3 / 67.9 / 69.2 ms (noisy, another GPU
+  job ran); without the prompt unchanged (tiny 59.1 / 58.4 / 58.6 ms). The prompt then costs turbo
+  ~10–30 ms of ~1240 and whisper-tiny ~7 of 58 ms per window. Fixtures exact. Kept.
 - 2026-10-12, Whisper and Moonshine, the decoder's reductions on subgroups with the fast tier
   (Apple, NVIDIA: `subgroupAdd` for the gemv's 32-lane sums, subgroup sums and maxima across the 8
   subgroups of `attend`'s and the one-row LayerNorm's 256 threads; subgroup.wgsl's functions put

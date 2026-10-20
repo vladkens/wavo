@@ -147,6 +147,7 @@ wavo pull parakeet-v3                 # download a model
 wavo pull gigaam-v3 whisper-turbo     # or several at once
 wavo run talk.wav --json              # text and every token with its start time
 wavo run talk.wav --srt > talk.srt    # subtitles
+wavo run whisper-turbo book.mp3 --punctuate  # Whisper: more casing and punctuation
 wavo list                             # downloaded models
 wavo rm parakeet-v3                   # delete one
 wavo bench gigaam-v3 talk.wav         # load time and speed on your machine
@@ -157,7 +158,10 @@ downloads without asking, for scripts. Without a terminal and `-y` it fails with
 command to run, and `wavo bench` never downloads. Long recordings are split at their quietest
 moments and transcribed piece by piece, so an hour of audio works as well as a minute;
 `--segment SECS` sets the piece length, `--segment 0` runs one pass (up to 37.5 s for
-GigaAM and 45 s for Moonshine). Models are stored in the
+GigaAM and 45 s for Moonshine). Whisper large-v3-turbo often writes long readings in lowercase
+without punctuation; `--punctuate` starts each piece after a short punctuated sentence in its
+language, which brings casing and punctuation back (it doesn't help whisper-tiny, and now and then
+changes a word). Models are stored in the
 Hugging Face cache (`~/.cache/huggingface/hub`), so a model fetched with `hf download` is found by
 `wavo` and the other way round.
 

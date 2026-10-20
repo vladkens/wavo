@@ -98,9 +98,9 @@ reference:
 		"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=$(CURDIR)/3rd/transcribe.cpp/build/bin"
 	cmake --build 3rd/transcribe.cpp/build --config Release --target transcribe-cli transcribe-bench -j
 
-# make fixtures MODEL=gigaam-v3-e2e-rnnt SAMPLES="ru ru-short ru-long" (see the script)
+# make fixtures MODEL=gigaam-v3-e2e-rnnt SAMPLES="ru ru-short ru-long" [PROMPT=...] (see the script)
 fixtures:
-	scripts/fixtures.sh "$(MODEL)" "$(TIMESTAMPS)" $(SAMPLES)
+	PROMPT="$(PROMPT)" scripts/fixtures.sh "$(MODEL)" "$(TIMESTAMPS)" $(SAMPLES)
 
 # make compare MODEL=gigaam-v3-e2e-rnnt LIST=wavs.txt OUT=dir (see the script)
 compare:
