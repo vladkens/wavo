@@ -6,7 +6,7 @@ use std::sync::{Mutex, PoisonError};
 use half::f16;
 
 use crate::error::Result;
-use crate::gguf::Tensor;
+use crate::gguf::{Tensor, Type};
 
 /// Dot product with 16 independent accumulators (four FMA vectors in flight), summed pairwise so
 /// the final reduction also vectorizes.
@@ -104,6 +104,56 @@ fn tile<const R: usize, const F: usize>(w: &[f32], z: &[f32], k: usize) -> [[f32
   std::array::from_fn(|f| std::array::from_fn(|r| dot(&w[r * k..][..k], &z[f * k..][..k])))
 }
 
+/// Weights `[rows][k]` for `matvecs`, kept as Q8_0 or, from an F32 or F16 tensor, as f32 (exact,
+/// as the reference reads them).
+pub enum Matrix {
+  Q8(Q8),
+  F32 { k: usize, w: Vec<f32> },
+}
+
+impl Matrix {
+  pub fn new(t: &Tensor) -> Result<Self> {
+    let k = t.dims[0];
+    Ok(match t.ty {
+      Type::F32 | Type::F16 => Self::F32 { k, w: t.to_f32()? },
+      Type::Q8_0 => {
+        let mut b = Vec::new();
+        t.read(1 << 20, |_, piece| b.extend_from_slice(piece))?;
+        let blocks = b.as_chunks::<34>().0;
+        let d = blocks.iter().map(|b| f16::from_le_bytes([b[0], b[1]]).to_f32()).collect();
+        let q = blocks.iter().flat_map(|b| b[2..].iter().map(|&v| v as i8)).collect();
+        Self::Q8(Q8 { k, q, d })
+      }
+    })
+  }
+
+  pub fn row(&self, r: usize) -> Vec<f32> {
+    match self {
+      Self::Q8(q8) => q8.row(r),
+      Self::F32 { k, w } => w[r * k..][..*k].to_vec(),
+    }
+  }
+
+  fn len(&self) -> usize {
+    match self {
+      Self::Q8(q8) => q8.q.len() / q8.k,
+      Self::F32 { k, w } => w.len() / k,
+    }
+  }
+
+  /// Rows from `r0` times `x` into `out`.
+  fn rows(&self, r0: usize, x: &[f32], out: &mut [f32]) {
+    match self {
+      Self::Q8(q8) => q8.rows(r0, x, out),
+      Self::F32 { k, w } => {
+        for (o, w) in out.iter_mut().zip(w[r0 * k..].chunks_exact(*k)) {
+          *o = dot(w, x);
+        }
+      }
+    }
+  }
+}
+
 /// Q8_0 weights `[rows][k]` (k a multiple of 32) as int8 values and one f32 scale per 32. A
 /// weight is `q · d`, exact in f32, so every product below equals `dot` on the dequantized row.
 pub struct Q8 {
@@ -113,16 +163,7 @@ pub struct Q8 {
 }
 
 impl Q8 {
-  pub fn new(t: &Tensor) -> Result<Self> {
-    let mut b = Vec::new();
-    t.read(1 << 20, |_, piece| b.extend_from_slice(piece))?;
-    let blocks = b.as_chunks::<34>().0;
-    let d = blocks.iter().map(|b| f16::from_le_bytes([b[0], b[1]]).to_f32()).collect();
-    let q = blocks.iter().flat_map(|b| b[2..].iter().map(|&v| v as i8)).collect();
-    Ok(Self { k: t.dims[0], q, d })
-  }
-
-  pub fn row(&self, r: usize) -> Vec<f32> {
+  fn row(&self, r: usize) -> Vec<f32> {
     let (q, d) = (&self.q[r * self.k..][..self.k], &self.d[r * self.k / 32..]);
     q.iter().enumerate().map(|(i, &q)| q as f32 * d[i / 32]).collect()
   }
@@ -258,8 +299,8 @@ mod x86 {
 
 /// `w · x` for each job `(w, x)`. Blocks of 64 rows go to four scoped threads (an M1/M2 has four
 /// performance cores) as they come free, so a thread on an efficiency core takes fewer.
-pub fn matvecs<const N: usize>(jobs: [(&Q8, &[f32]); N]) -> [Vec<f32>; N] {
-  let mut out = jobs.map(|(w, _)| vec![0.0; w.q.len() / w.k]);
+pub fn matvecs<const N: usize>(jobs: [(&Matrix, &[f32]); N]) -> [Vec<f32>; N] {
+  let mut out = jobs.map(|(w, _)| vec![0.0; w.len()]);
   let blocks = out.iter_mut().zip(jobs).flat_map(|(out, (w, x))| {
     out.chunks_mut(64).enumerate().map(move |(i, out)| (w, x, 64 * i, out))
   });
@@ -281,6 +322,10 @@ pub fn matvecs<const N: usize>(jobs: [(&Q8, &[f32]); N]) -> [Vec<f32>; N] {
 
 #[cfg(test)]
 mod tests {
+  use half::f16;
+
+  use crate::gguf::{Gguf, Type};
+
   #[test]
   fn matmul_matches_dot() {
     let (k, rows, frames) = (333, 8, 5);
@@ -300,11 +345,35 @@ mod tests {
     let (k, rows) = (96, 70);
     let q = (0..rows * k).map(|i| (i * 7919 % 255) as u8 as i8).collect();
     let d = (0..rows * k / 32).map(|i| (i % 7 + 1) as f32 * 1e-3).collect();
-    let w = super::Q8 { k, q, d };
+    let w = super::Matrix::Q8(super::Q8 { k, q, d });
     let x: Vec<f32> = (0..k).map(|i| (i * 31 % 17) as f32 / 8.0 - 1.0).collect();
     let want: Vec<u32> = (0..rows).map(|r| super::dot(&w.row(r), &x).to_bits()).collect();
     let [got, again] = super::matvecs([(&w, &x), (&w, &x)]);
     assert_eq!(got.into_iter().map(f32::to_bits).collect::<Vec<_>>(), want);
     assert_eq!(again.into_iter().map(f32::to_bits).collect::<Vec<_>>(), want);
+  }
+
+  #[test]
+  fn matrices_load_every_tensor_type() {
+    // 70 rows of 64 weights q/8 with q in -15..=15: exact in all three types, Q8_0 with scale 1/8.
+    let (k, rows) = (64, 70);
+    let v: Vec<f32> = (0..rows * k).map(|i| (i * 7919 % 31) as f32 / 8.0 - 15.0 / 8.0).collect();
+    let f32s: Vec<u8> = v.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let f16s: Vec<u8> = v.iter().flat_map(|&v| f16::from_f32(v).to_le_bytes()).collect();
+    let mut q8 = Vec::new();
+    for b in v.as_chunks::<32>().0 {
+      q8.extend(f16::from_f32(0.125).to_le_bytes());
+      q8.extend(b.map(|v| (v * 8.0) as i8 as u8));
+    }
+
+    let x: Vec<f32> = (0..k).map(|i| (i * 31 % 17) as f32 / 8.0 - 1.0).collect();
+    let want: Vec<u32> = v.chunks_exact(k).map(|r| super::dot(r, &x).to_bits()).collect();
+    for (ty, bytes) in [(Type::F32, f32s), (Type::F16, f16s), (Type::Q8_0, q8)] {
+      let g = Gguf::with_tensors(&[("w", &[k, rows], ty, &bytes)]);
+      let w = super::Matrix::new(&g.tensor("w", &[k, rows]).unwrap()).unwrap();
+      assert_eq!(w.row(69), v[69 * k..], "{ty:?}");
+      let [got] = super::matvecs([(&w, &x)]);
+      assert_eq!(got.into_iter().map(f32::to_bits).collect::<Vec<_>>(), want, "{ty:?}");
+    }
   }
 }

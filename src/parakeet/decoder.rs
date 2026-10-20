@@ -2,10 +2,10 @@
 //! TDT greedy decoding on the CPU: a predictor of stacked LSTM layers over the last emitted token,
 //! and a joint `out(relu(enc + pred(h)))` whose outputs are the token logits, then one logit per
 //! duration (how many frames to advance). The encoder side of the joint is projected on the GPU.
-//! Weights stay Q8_0, so an LSTM step and a joint (V3's: 13.5 MB) stay in the performance cores'
-//! L2.
+//! Q8_0 weights stay Q8_0, so an LSTM step and a joint (V3's: 13.5 MB) stay in the performance
+//! cores' L2; F32 and F16 ones (some converted models) are kept as f32.
 
-use crate::cpu::{Q8, matvecs};
+use crate::cpu::{Matrix, matvecs};
 use crate::error::{Result, bail};
 use crate::gguf::Gguf;
 
@@ -18,20 +18,20 @@ pub struct Decoder {
   durations: Vec<usize>,
   max_symbols: usize,
   /// `[classes][hidden]`
-  embed: Q8,
+  embed: Matrix,
   lstm: Vec<Lstm>,
   /// `[joint][hidden]`
-  pred_w: Q8,
+  pred_w: Matrix,
   pred_b: Vec<f32>,
   /// `[classes + durations][joint]`
-  out_w: Q8,
+  out_w: Matrix,
   out_b: Vec<f32>,
 }
 
 struct Lstm {
   /// `[4·hidden][hidden]`, gates i, f, g, o.
-  wx: Q8,
-  wh: Q8,
+  wx: Matrix,
+  wh: Matrix,
   /// `bias_ih + bias_hh`
   bias: Vec<f32>,
 }
@@ -51,7 +51,7 @@ impl Decoder {
       bail!("stt.parakeet.tdt.max_symbols is 0");
     }
     let t = |name: &str, dims: &[usize]| g.tensor(name, dims).and_then(|t| t.to_f32());
-    let q = |name: &str, dims: &[usize]| g.tensor(name, dims).and_then(|t| Q8::new(&t));
+    let q = |name: &str, dims: &[usize]| g.tensor(name, dims).and_then(|t| Matrix::new(&t));
     let lstm = (0..u("predictor.n_layers")?)
       .map(|l| {
         Ok(Lstm {

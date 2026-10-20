@@ -1,10 +1,9 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! SentencePiece BPE with byte fallback, decoding only, as transcribe.cpp's `decode_sentencepiece`
-//! (`src/transcribe-tokenizer.cpp`): a piece `<0xHH>` is that raw byte, `▁` is a space, and control
-//! pieces (`<s>`, `</s>`, `<<ST_N>>`) print as they are spelled.
+//! SentencePiece pieces with byte fallback, decoding only, as transcribe.cpp's
+//! `decode_sentencepiece` (`src/transcribe-tokenizer.cpp`): a piece `<0xHH>` is that raw byte, `▁`
+//! is a space, and other pieces (`<s>`, `</s>`, `<<ST_N>>`) print as they are spelled. Parakeet,
+//! GigaAM and Moonshine vocabularies; a character vocabulary has no byte pieces.
 
-use crate::error::{Result, bail};
-use crate::gguf::Gguf;
 use crate::whisper::tokenizer::pieces;
 
 pub struct Tokenizer {
@@ -15,10 +14,10 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
-  pub fn new(g: &Gguf) -> Result<Self> {
-    g.check("tokenizer.ggml.model", &["bpe"])?;
+  /// The vocabulary `tokenizer.ggml.tokens`.
+  pub fn new(vocab: &[&str]) -> Self {
     let (mut bytes, mut ends) = (Vec::new(), Vec::new());
-    for piece in g.array::<&str>("tokenizer.ggml.tokens")? {
+    for piece in vocab {
       let hex = piece.strip_prefix("<0x").and_then(|h| h.strip_suffix('>'));
       match hex.filter(|h| h.len() == 2).and_then(|h| u8::from_str_radix(h, 16).ok()) {
         Some(b) => bytes.push(b),
@@ -26,10 +25,7 @@ impl Tokenizer {
       }
       ends.push(bytes.len());
     }
-    if ends.is_empty() {
-      bail!("empty vocabulary");
-    }
-    Ok(Self { bytes, ends })
+    Self { bytes, ends }
   }
 
   pub fn len(&self) -> usize {
@@ -57,15 +53,14 @@ mod tests {
 
   #[test]
   fn byte_fallback_and_spaces() {
-    // "й" is D0 B9 over two byte tokens; a control token prints as spelled.
-    let mut t = Tokenizer { bytes: Vec::new(), ends: Vec::new() };
-    for piece in [&b"\xe2\x96\x81And"[..], b"\xe2\x96\x81so", b"\xd0", b"\xb9", b"</s>"] {
-      t.bytes.extend_from_slice(piece);
-      t.ends.push(t.bytes.len());
-    }
+    // "й" is D0 B9 over two byte tokens, "ש" D7 A9 over two more after a word piece; a control
+    // token prints as spelled, and a piece that only looks like a byte stays text.
+    let vocab = ["▁And", "▁so", "<0xD0>", "<0xB9>", "</s>", "▁שלום", "<0xD7>", "<0xA9>", "<0xZZ>"];
+    let t = Tokenizer::new(&vocab);
     let pieces = t.pieces(&[0, 1, 2, 3, 4]);
     assert_eq!(pieces, ["▁And", "▁so", "", "й", "</s>"]);
     assert_eq!(text(&pieces), "And soй</s>");
+    assert_eq!(t.pieces(&[5, 6, 7, 8]), ["▁שלום", "", "ש", "<0xZZ>"]);
     // Only one leading space goes.
     assert_eq!(text(&t.pieces(&[1, 1])), "so so");
   }

@@ -15,6 +15,7 @@ use crate::conformer::{self, Attention};
 use crate::error::{Error, Result, bail};
 use crate::gguf::Gguf;
 use crate::gpu::Gpu;
+use crate::sentencepiece::Tokenizer;
 use crate::{Token, Transcript};
 
 /// Encoder frame length: 10 ms hop × subsampling 8.
@@ -25,7 +26,7 @@ pub struct Parakeet {
   frontend: Frontend,
   encoder: Encoder,
   decoder: Decoder,
-  vocab: Vec<String>,
+  tok: Tokenizer,
   /// Tokens left out of the result: unknown and control ones.
   special: Vec<bool>,
 }
@@ -69,8 +70,7 @@ impl Parakeet {
       g.check(&format!("stt.parakeet.encoder.{key}"), &[want])?;
     }
 
-    let vocab: Vec<String> =
-      g.array::<&str>("tokenizer.ggml.tokens")?.into_iter().map(String::from).collect();
+    let vocab = g.array::<&str>("tokenizer.ggml.tokens")?;
     let types = g.array::<i32>("tokenizer.ggml.token_type")?;
     let unk = g.get::<u32>("tokenizer.ggml.unknown_token_id")? as usize;
     let blank = g.get::<u32>("tokenizer.ggml.blank_token_id")? as usize;
@@ -91,7 +91,8 @@ impl Parakeet {
       let encoder = Encoder::new(&gpu, g, cfg, ch, joint)?;
       Ok::<_, Error>((gpu, encoder, decoder.join().unwrap()?))
     })?;
-    Ok(Self { gpu, frontend: Frontend::new(), encoder, decoder, vocab, special })
+    let tok = Tokenizer::new(&vocab);
+    Ok(Self { gpu, frontend: Frontend::new(), encoder, decoder, tok, special })
   }
 
   pub fn transcribe(&self, pcm: &[f32]) -> Result<Transcript> {
@@ -100,13 +101,12 @@ impl Parakeet {
       return Ok(Transcript::default());
     }
     let (enc, width) = self.encoder.run(&self.gpu, &mel)?;
-    let tokens: Vec<Token> = (self.decoder.decode(&enc, width).into_iter())
+    let (ids, frames): (Vec<usize>, Vec<u32>) = (self.decoder.decode(&enc, width).into_iter())
       .filter(|&(id, _)| !self.special[id as usize])
-      .map(|(id, frame)| Token {
-        id,
-        piece: self.vocab[id as usize].clone(),
-        start_ms: frame * FRAME_MS,
-      })
+      .map(|(id, frame)| (id as usize, frame))
+      .unzip();
+    let tokens: Vec<Token> = (ids.iter().zip(frames).zip(self.tok.pieces(&ids)))
+      .map(|((&id, frame), piece)| Token { id: id as u32, piece, start_ms: frame * FRAME_MS })
       .collect();
     let text = tokens.iter().map(|t| t.piece.as_str()).collect::<String>().replace('▁', " ");
     // Runs of spaces collapse to one, and the ends are trimmed.
