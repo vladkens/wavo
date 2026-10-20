@@ -150,6 +150,7 @@ wavo run talk.wav --srt > talk.srt    # subtitles
 wavo list                             # downloaded models
 wavo rm parakeet-v3                   # delete one
 wavo bench gigaam-v3 talk.wav         # load time and speed on your machine
+wavo debug                            # your system, GPUs and models, to paste into an issue
 ```
 
 When the model isn't downloaded yet, `wavo run` asks before downloading it, in a terminal; `-y`
@@ -263,7 +264,9 @@ including downloading on a thread with progress and cancel, as
 
 ## 🤝 Contributing
 
-Pull requests are welcome, and so are your agents: point them at [agents.md](agents.md).
+Pull requests are welcome, and so are your agents: point them at [agents.md](agents.md). When
+reporting a bug, include the output of `wavo debug`: it shows the GPU wavo runs on and which of
+its kernels the GPU allows.
 
 <details>
 <summary>Installing a branch</summary>

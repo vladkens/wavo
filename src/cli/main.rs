@@ -2,6 +2,7 @@
 //! `wavo`: speech to text with models pulled by name into the Hugging Face cache.
 
 mod audio;
+mod debug;
 mod models;
 mod output;
 mod split;
@@ -25,6 +26,7 @@ Commands:
   list                         list downloaded models
   rm MODEL                     delete a downloaded model
   bench MODEL AUDIO [-n N]     time the model load, the first call and N more calls (10)
+  debug                        print the system, its GPUs and the models, for a bug report
 
 Quick start:
   wavo AUDIO [OPTIONS]         the same as wavo run AUDIO: transcribe with parakeet-v3,
@@ -70,7 +72,7 @@ fn main() -> ExitCode {
 }
 
 /// Win over a file of the same name in `wavo FILE`.
-const COMMANDS: &[&str] = &["help", "run", "pull", "list", "ls", "rm", "bench"];
+const COMMANDS: &[&str] = &["help", "run", "pull", "list", "ls", "rm", "bench", "debug"];
 
 fn cli(args: &[&str]) -> Result<()> {
   let help = matches!(args, [] | ["help"]) || args.iter().any(|a| matches!(*a, "-h" | "--help"));
@@ -83,6 +85,7 @@ fn cli(args: &[&str]) -> Result<()> {
     ["rm", name] => rm(name)?,
     ["bench", model, audio] => bench(model, audio, 10)?,
     ["bench", model, audio, "-n", n] => bench(model, audio, n.parse().context("-n")?)?,
+    ["debug"] => debug::print(),
     // wavo AUDIO, also with run options first: wavo -y AUDIO
     [arg, ..] if arg.starts_with('-') || (!COMMANDS.contains(arg) && Path::new(arg).is_file()) => {
       run(args)?
@@ -177,6 +180,10 @@ fn run(args: &[&str]) -> Result<()> {
   let pcm = audio::read(audio)?;
   bar.set_message("loading the model");
   let model = load(&path)?;
+  if let Some(warning) = debug::software(model.device()) {
+    bar.suspend(|| eprintln!("warning: {warning}"));
+  }
+
   let max_ms = segment.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
   let ranges = split::segments(&pcm, if max_ms == 0 { usize::MAX } else { max_ms as usize * 16 });
   let n = ranges.len();
@@ -270,10 +277,13 @@ fn pull_one(hub: &Hub, m: &hub::ModelInfo, bars: &MultiProgress) -> Result<PathB
   Ok(path)
 }
 
+/// The models in `hub`'s cache, in `MODELS` order.
+fn downloaded(hub: &Hub) -> Vec<(&'static hub::ModelInfo, PathBuf)> {
+  MODELS.iter().filter_map(|m| hub.find(m.name).map(|path| (m, path))).collect()
+}
+
 fn list() -> Result<()> {
-  let hub = Hub::new();
-  let found: Vec<_> =
-    MODELS.iter().filter_map(|m| hub.find(m.name).map(|path| (m, path))).collect();
+  let found = downloaded(&Hub::new());
   if found.is_empty() {
     eprintln!("no models downloaded; try: wavo pull {}", models::DEFAULT);
   } else {

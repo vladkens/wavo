@@ -39,6 +39,11 @@ pub struct Device {
   /// or `32.0.15.9144` on DX12. No format is promised; empty when the driver reports neither, as
   /// on Metal.
   pub driver: String,
+  /// The kernels wavo runs on the adapter: from [`devices`], those its features allow; from
+  /// [`Model::device`](crate::Model::device), the GEMM's after its probe at load, which falls
+  /// back to [`Kernels::Portable`] when the driver computes it wrong (other fast kernels fall
+  /// back one by one).
+  pub kernels: Kernels,
 }
 
 /// The graphics API a [`Device`] is reached through.
@@ -71,9 +76,65 @@ pub enum DeviceKind {
   OtherGpu,
 }
 
+/// The kernels wavo runs on a [`Device`], chosen at load from the adapter's features: a fast tier
+/// replaces portable kernels on the hardware it targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Kernels {
+  /// Portable WGSL, which runs on any adapter.
+  Portable,
+  /// Subgroup kernels on 8×8 cooperative matrices of F32 and F16: Apple GPUs.
+  Matrix8,
+  /// The GEMM and flash attention on 16×16 F16 cooperative matrices: NVIDIA GPUs.
+  Matrix16,
+  /// [`Matrix8`](Self::Matrix8) with the GEMM on the Metal 4 tensor API: Apple M5 / A19 and newer.
+  Tensor,
+}
+
+/// Every GPU adapter wavo can run a model on, through Vulkan, Metal or DX12, starting with the
+/// one [`Model::load`](crate::Model::load) picks (see [`Model::device`](crate::Model::device)
+/// for how). Their [`kernels`](Device::kernels) are those the adapter's features allow.
+///
+/// Only the adapters' info and features are read: no device is created and no kernel compiles, so
+/// it takes milliseconds and works without a model, for example to warn about a
+/// [`SoftwareGpu`](DeviceKind::SoftwareGpu) before downloading one.
+///
+/// # Errors
+///
+/// [`Error::Adapter`]: no adapter, so `Model::load` would fail too.
+///
+/// # Examples
+///
+/// ```no_run
+/// for device in wavo::devices()? {
+///   println!("{device}: {:?}", device.kernels); // Apple M2 (Metal, integrated): Matrix8
+/// }
+/// # Ok::<(), wavo::Error>(())
+/// ```
+pub fn devices() -> Result<Vec<Device>> {
+  let first = adapter()?;
+  let info = first.get_info();
+  let mut desc = wgpu::InstanceDescriptor::new_without_display_handle().with_env();
+  desc.backends &= wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12;
+  let backends = desc.backends;
+  let all = pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(backends));
+  let rest = all.into_iter().filter(|a| a.get_info() != info);
+  Ok(std::iter::once(first).chain(rest).map(|a| Device::new(&a.get_info(), kernels(&a))).collect())
+}
+
+/// The kernels `adapter`'s features allow, before their probes.
+fn kernels(adapter: &wgpu::Adapter) -> Kernels {
+  match fast_size(adapter) {
+    Some(8) if tensor_gpu(adapter) => Kernels::Tensor,
+    Some(8) => Kernels::Matrix8,
+    Some(_) => Kernels::Matrix16,
+    None => Kernels::Portable,
+  }
+}
+
 impl Device {
-  /// The device of an adapter from `adapter()`.
-  fn new(info: &wgpu::AdapterInfo) -> Self {
+  /// The device of an adapter from `adapter()` or `devices()`.
+  fn new(info: &wgpu::AdapterInfo, kernels: Kernels) -> Self {
     let api = match info.backend {
       wgpu::Backend::Metal => Api::Metal,
       wgpu::Backend::Vulkan => Api::Vulkan,
@@ -88,7 +149,7 @@ impl Device {
     };
     let driver = [info.driver.trim(), info.driver_info.trim()];
     let driver = driver.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
-    Self { name: info.name.clone(), api, kind, driver }
+    Self { name: info.name.clone(), api, kind, driver, kernels }
   }
 }
 
@@ -117,7 +178,7 @@ pub struct Gpu {
   /// Usage of weight buffers. On unified memory they are also `MAP_WRITE`, so filling their
   /// mapping writes the buffer itself: no staging copy. Else `COPY_DST`, for those copies.
   weights: wgpu::BufferUsages,
-  kernels: Kernels,
+  kernels: Portable,
   fast: Fast,
   /// Bound for a writable output a dispatch doesn't use, so no writable binding aliases another.
   spare: Buffer,
@@ -138,7 +199,8 @@ pub struct Gpu {
   halves: Mutex<Option<Buffer>>,
 }
 
-struct Kernels {
+/// The portable kernels, which every adapter runs; `Fast` replaces some of them.
+struct Portable {
   /// One per weight type.
   gemm: Vec<Pipeline>,
   /// Columns and rows of the GEMM's tile: 128 × 32 on the 16×16 tier, whose GEMMs that come here
@@ -166,7 +228,7 @@ struct Kernels {
   decoder: OnceLock<Decoder>,
 }
 
-impl Kernels {
+impl Portable {
   fn new(device: &wgpu::Device, gemm_tile: [usize; 2]) -> Self {
     let cpu = gemm_tile[0] == 64;
     let gemm = match cpu {
@@ -357,7 +419,7 @@ impl Gpu {
   /// The device with the fast kernels that pass their probes, or only the portable ones.
   pub fn new(fast: bool) -> Result<Self> {
     let adapter = adapter()?;
-    let info = Device::new(&adapter.get_info());
+    let info = Device::new(&adapter.get_info(), Kernels::Portable);
     let size = if fast { fast_size(&adapter) } else { None };
     let fast = size.is_some();
     let tensor = size == Some(8) && tensor_gpu(&adapter);
@@ -412,7 +474,7 @@ impl Gpu {
         (Some(16), _) => [128, 32],
         _ => [128, 64],
       };
-      (Kernels::new(&device, tile), compiled.join().unwrap())
+      (Portable::new(&device, tile), compiled.join().unwrap())
     });
     let weights = wgpu::BufferUsages::STORAGE
       | if mappable { wgpu::BufferUsages::MAP_WRITE } else { wgpu::BufferUsages::COPY_DST };
@@ -450,6 +512,13 @@ impl Gpu {
     if gpu.fast.tensor.is_some() && !gpu.probe_tensor() {
       gpu.fast.tensor = None;
     }
+
+    gpu.info.kernels = match gpu.fast.size {
+      8 if gpu.fast.tensor.is_some() => Kernels::Tensor,
+      8 => Kernels::Matrix8,
+      16 => Kernels::Matrix16,
+      _ => Kernels::Portable,
+    };
     Ok(gpu)
   }
 
@@ -1618,7 +1687,10 @@ mod tests {
     if std::env::var_os("WGPU_BACKEND").is_none() {
       assert!(apis.contains(&device.api), "{device:?}");
     }
-    assert_eq!(gpus()[1].info(), device);
+    // `gpus` checks that every fast kernel the features allow passes its probe.
+    assert_eq!(device.kernels, Kernels::Portable);
+    assert_eq!(*gpus()[1].info(), Device { kernels: gpus()[1].info().kernels, ..device.clone() });
+    assert_eq!(devices().unwrap()[0], *gpus()[1].info());
   }
 
   #[test]
