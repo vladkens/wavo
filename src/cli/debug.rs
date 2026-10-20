@@ -248,7 +248,8 @@ fn system() -> System {
 #[cfg(windows)]
 fn system() -> System {
   // Single quotes only: double ones would need escaping on powershell.exe's command line.
-  let script = "$o = Get-CimInstance Win32_OperatingSystem; \
+  let script = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
+    $o = Get-CimInstance Win32_OperatingSystem; \
     $c = Get-CimInstance Win32_ComputerSystem; \
     'os=' + $o.Caption + ' ' + $o.Version; 'model=' + $c.Manufacturer + ' ' + $c.Model; \
     'cpu=' + @(Get-CimInstance Win32_Processor)[0].Name; 'memory=' + $c.TotalPhysicalMemory";
