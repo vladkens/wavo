@@ -224,7 +224,7 @@ fn system() -> System {
 /// Linux, and other Unix systems as far as they share its files.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn system() -> System {
-  let read = |path| std::fs::read_to_string(path).unwrap_or_default();
+  let read = |path: &str| std::fs::read_to_string(path).unwrap_or_default();
   let (release, kernel) = (read("/etc/os-release"), read("/proc/sys/kernel/osrelease"));
   let os = field(&release, "PRETTY_NAME").unwrap_or(std::env::consts::OS);
   // A board's device tree names it (Orange Pi 5); a PC's DMI its vendor and product.
