@@ -270,11 +270,16 @@ fn output(cmd: &str, args: &[&str], timeout: Duration) -> Result<String, String>
   // Read on a thread, so a full pipe can't stall the command.
   let mut stdout = child.stdout.take().ok_or(format!("{cmd}: no stdout"))?;
   let (tx, rx) = std::sync::mpsc::channel();
-  std::thread::spawn(move || {
+  let reader = std::thread::Builder::new().spawn(move || {
     let mut out = Vec::new();
     let _ = std::io::Read::read_to_end(&mut stdout, &mut out);
     let _ = tx.send(out);
   });
+  if let Err(e) = reader {
+    let _ = child.kill();
+    let _ = child.wait();
+    return Err(format!("{cmd}: {e}"));
+  }
 
   let start = Instant::now();
   while matches!(child.try_wait(), Ok(None)) && start.elapsed() < timeout {
