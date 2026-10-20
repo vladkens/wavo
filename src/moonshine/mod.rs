@@ -6,16 +6,15 @@
 
 mod encoder;
 mod repeat;
-mod tokenizer;
 
 use std::sync::{Mutex, PoisonError};
 
 use encoder::{Encoder, STEM, frames};
-use tokenizer::Tokenizer;
 
 use crate::error::{Result, bail};
 use crate::gguf::Gguf;
 use crate::gpu::{Buffer, Gpu, Groups, Pass};
+use crate::sentencepiece::{self, Tokenizer};
 use crate::transformer::{self, Decoder, Steps};
 use crate::{Token, Transcript};
 
@@ -95,7 +94,8 @@ impl Moonshine {
       bail!("conv stem channels {channels:?}, expected [d, 2·d, d] for d_model {}", enc.d);
     }
     let (vocab, context) = (u("decoder.vocab_size")?, u("decoder.max_position_embeddings")?);
-    let tok = Tokenizer::new(g)?;
+    g.check("tokenizer.ggml.model", &["bpe"])?;
+    let tok = Tokenizer::new(&g.array("tokenizer.ggml.tokens")?);
     let (bos, eos) = (u("decoder_start_token_id")?, u("eos_token_id")?);
     if tok.len() != vocab {
       bail!("vocabulary of {} tokens, decoder.vocab_size {vocab}", tok.len());
@@ -166,7 +166,7 @@ impl Moonshine {
       token = run(steps, &|p| self.decoder.record_step(p, dec, (next, 0), pos, t, Some(rope)))?;
     }
     let pieces = self.tok.pieces(&ids);
-    let text = tokenizer::text(&pieces);
+    let text = sentencepiece::text(&pieces);
     let token = |(&id, piece): (&usize, String)| Token { id: id as u32, piece, start_ms: 0 };
     Ok(Transcript { text, tokens: ids.iter().zip(pieces).map(token).collect() })
   }

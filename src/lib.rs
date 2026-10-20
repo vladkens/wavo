@@ -173,6 +173,7 @@ mod gpu;
 pub mod hub;
 mod moonshine;
 mod parakeet;
+mod sentencepiece;
 mod transformer;
 mod whisper;
 
@@ -212,9 +213,9 @@ pub struct Transcript {
 pub struct Token {
   /// Id in the model's vocabulary.
   pub id: u32,
-  /// Vocabulary piece: a SentencePiece piece (`▁` marks a word start), a character, or for
-  /// Whisper and Moonshine's byte tokens the text the token completes (its bytes may end inside a
-  /// character).
+  /// Vocabulary piece: a SentencePiece piece (`▁` marks a word start), a character, or for byte
+  /// tokens (Whisper's, and SentencePiece's `<0xHH>` fallback) the text the token completes (its
+  /// bytes may end inside a character, leaving the piece empty).
   pub piece: String,
   /// Start time in milliseconds from the start of the audio: the encoder frame where the token
   /// was emitted times the frame length (40 ms for GigaAM, 80 ms for Parakeet); for Whisper the
