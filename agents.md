@@ -89,7 +89,8 @@ the `Makefile` and `.github/workflows/main.yml`.
 - Every model has fixtures in `tests/fixtures/<model>.txt`, one block per clip, written from the
   reference CLI by `make fixtures` (`scripts/fixtures.sh` is the format's spec). `make test-all`
   must reproduce text, tokens and start times exactly, and must fail (not skip) when a model,
-  sample or block is missing; `make test` does the same for the smallest model of each family.
+  sample or block is missing; `make test` does the same for the smoke models (the Makefile's
+  `MODELS`).
 - Treat any fixture change as a bug. Changing arithmetic (e.g. F16 operands) is fine while the
   fixtures stay exact. If a speed or memory gain changes a fixture, show the person the fixture
   diff and the gain before committing. A PR may add blocks but must not change an existing one
@@ -122,7 +123,7 @@ the `Makefile` and `.github/workflows/main.yml`.
   files: not a check.
 - Run `make test-all` (every model, after `make models-all`) before a release and before merging
   speed work or a PR that touches GPU kernels, `src/gpu/`, the GGUF reader, or shared frontend or
-  decoder numerics. A PR that touches one model family runs at least that family's models.
+  decoder numerics. Otherwise the smoke run is enough.
 - Every change reaches `main` through a pull request, one per feature or roadmap phase:
   1. Agree the plan with the person. For multi-step work keep a checklist in
      `docs/plans/yyyymmdd-<name>.md` and during the work only tick its checkboxes, with no
