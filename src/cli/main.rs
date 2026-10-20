@@ -1,6 +1,13 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! `wavo`: speech to text with models pulled by name into the Hugging Face cache.
 
+/// `println!` that returns the error instead of panicking, as on a closed pipe (`wavo ls | head`).
+macro_rules! out {
+  ($($arg:tt)*) => {
+    std::io::Write::write_fmt(&mut std::io::stdout(), format_args!("{}\n", format_args!($($arg)*)))
+  };
+}
+
 mod audio;
 mod debug;
 mod models;
@@ -64,11 +71,18 @@ fn main() -> ExitCode {
   let args: Vec<String> = std::env::args().skip(1).collect();
   match cli(&args.iter().map(String::as_str).collect::<Vec<_>>()) {
     Ok(()) => ExitCode::SUCCESS,
+    Err(e) if broken_pipe(&e) => ExitCode::SUCCESS,
     Err(e) => {
       eprintln!("error: {e:#}");
       ExitCode::FAILURE
     }
   }
+}
+
+/// Whether `e` comes from a closed stdout, as in `wavo list | head`: a quiet exit then.
+fn broken_pipe(e: &anyhow::Error) -> bool {
+  let pipe = |x: &std::io::Error| x.kind() == std::io::ErrorKind::BrokenPipe;
+  e.chain().any(|x| x.downcast_ref::<std::io::Error>().is_some_and(pipe))
 }
 
 /// Win over a file of the same name in `wavo FILE`.
@@ -77,15 +91,15 @@ const COMMANDS: &[&str] = &["help", "run", "pull", "list", "ls", "rm", "bench", 
 fn cli(args: &[&str]) -> Result<()> {
   let help = matches!(args, [] | ["help"]) || args.iter().any(|a| matches!(*a, "-h" | "--help"));
   match args {
-    _ if help => println!("{}", usage()),
-    ["-V" | "--version"] => println!("wavo {}", env!("CARGO_PKG_VERSION")),
+    _ if help => out!("{}", usage())?,
+    ["-V" | "--version"] => out!("wavo {}", env!("CARGO_PKG_VERSION"))?,
     ["run", args @ ..] => run(args)?,
     ["pull", names @ ..] if !names.is_empty() => pull(names)?,
     ["list" | "ls"] => list()?,
     ["rm", name] => rm(name)?,
     ["bench", model, audio] => bench(model, audio, 10)?,
     ["bench", model, audio, "-n", n] => bench(model, audio, n.parse().context("-n")?)?,
-    ["debug"] => debug::print(),
+    ["debug"] => debug::print()?,
     // wavo AUDIO, also with run options first: wavo -y AUDIO
     [arg, ..] if arg.starts_with('-') || (!COMMANDS.contains(arg) && Path::new(arg).is_file()) => {
       run(args)?
@@ -194,16 +208,16 @@ fn run(args: &[&str]) -> Result<()> {
   let (transcript, starts) = split::join(parts.collect::<Result<Vec<_>>>()?);
   bar.finish_and_clear();
   let (tokens, ms) = (&transcript.tokens, (pcm.len() / 16) as u32);
-  match format {
-    Some("--json") => println!("{}", output::json(&transcript)),
+  let text = match format {
+    Some("--json") => output::json(&transcript) + "\n",
     // Whisper times segments, not tokens, and Moonshine neither.
     Some(_) if matches!(models::architecture(&path).as_deref(), Some("whisper" | "moonshine")) => {
-      print!("{}", output::srt_segments(tokens, ms))
+      output::srt_segments(tokens, ms)
     }
-    Some(_) => print!("{}", output::srt(tokens, &starts, ms)),
-    None => println!("{}", transcript.text),
-  }
-  Ok(())
+    Some(_) => output::srt(tokens, &starts, ms),
+    None => format!("{}\n", transcript.text),
+  };
+  Ok(std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())?)
 }
 
 /// A model by name, for the commands that manage the cache.
@@ -227,7 +241,7 @@ fn pull(args: &[&str]) -> Result<()> {
   });
   for (m, result) in models.iter().zip(&results) {
     match result {
-      Ok(path) => println!("{}", path.display()),
+      Ok(path) => out!("{}", path.display())?,
       Err(e) => eprintln!("error: pulling {}: {e:#}", m.name),
     }
   }
@@ -287,10 +301,10 @@ fn list() -> Result<()> {
   if found.is_empty() {
     eprintln!("no models downloaded; try: wavo pull {}", models::DEFAULT);
   } else {
-    println!("{:<18} {:>7}  PATH", "NAME", "SIZE");
+    out!("{:<18} {:>7}  PATH", "NAME", "SIZE")?;
   }
   for (m, path) in found {
-    println!("{:<18} {}  {}", m.name, models::gb(std::fs::metadata(&path)?.len()), path.display());
+    out!("{:<18} {}  {}", m.name, models::gb(std::fs::metadata(&path)?.len()), path.display())?;
   }
   Ok(())
 }
@@ -321,9 +335,9 @@ fn bench(model: &str, audio: &str, n: usize) -> Result<()> {
   let mut warm = calls.collect::<Result<Vec<_>, _>>()?;
   warm.sort_by(f64::total_cmp);
   let median = (warm[(n - 1) / 2] + warm[n / 2]) / 2.0;
-  println!(
+  out!(
     "load {load:.1} ms, first {first:.1} ms, warm median {median:.1} ms, min {:.1} ms",
     warm[0]
-  );
+  )?;
   Ok(())
 }
