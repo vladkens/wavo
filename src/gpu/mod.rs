@@ -117,8 +117,12 @@ pub fn devices() -> Result<Vec<Device>> {
   let mut desc = wgpu::InstanceDescriptor::new_without_display_handle().with_env();
   desc.backends &= wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12;
   let backends = desc.backends;
-  let all = pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(backends));
-  let rest = all.into_iter().filter(|a| a.get_info() != info);
+  let mut rest = pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(backends));
+  // One of them: two identical GPUs may report the same info.
+  if let Some(i) = rest.iter().position(|a| a.get_info() == info) {
+    rest.remove(i);
+  }
+
   Ok(std::iter::once(first).chain(rest).map(|a| Device::new(&a.get_info(), kernels(&a))).collect())
 }
 
@@ -513,8 +517,9 @@ impl Gpu {
       gpu.fast.tensor = None;
     }
 
+    // The tensor GEMM runs even when the 8×8 one failed its probe.
     gpu.info.kernels = match gpu.fast.size {
-      8 if gpu.fast.tensor.is_some() => Kernels::Tensor,
+      _ if gpu.fast.tensor.is_some() => Kernels::Tensor,
       8 => Kernels::Matrix8,
       16 => Kernels::Matrix16,
       _ => Kernels::Portable,

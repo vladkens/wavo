@@ -17,8 +17,12 @@ pub fn print() {
   }
 
   divider("GPU");
-  for (key, value) in std::env::vars().filter(|(k, _)| k.starts_with("WGPU_")) {
-    println!("{:<18} {key}={value}", "env");
+  // vars_os: `vars` panics on any variable that isn't UTF-8.
+  for (key, value) in std::env::vars_os() {
+    let (key, value) = (key.to_string_lossy(), value.to_string_lossy());
+    if key.starts_with("WGPU_") {
+      println!("{:<18} {key}={value}", "env");
+    }
   }
 
   let mut warnings = Vec::new();
