@@ -64,10 +64,13 @@ fn adapters(devices: &[Device], warnings: &mut Vec<String>) {
     println!("[{i}] {d}{}", if i == 0 { "  <- wavo uses this" } else { "" });
     let row = |key: &str, value: String| println!("  {key:<16} {value}");
     row("driver", if d.driver.is_empty() { "-".into() } else { d.driver.clone() });
-    // The same adapter in wgpu's list: its name, and its API, which both name alike (`Dx12`).
+    // The same adapter in wgpu's list: its name, driver (two Vulkan drivers may share a GPU) and
+    // API, which both name alike (`Dx12`).
     let api = format!("{:?}", d.api);
     let same = |a: &wgpu::Adapter| {
-      a.get_info().name == d.name && format!("{:?}", a.get_info().backend) == api
+      let info = a.get_info();
+      let driver = format!("{} {}", info.driver.trim(), info.driver_info.trim());
+      info.name == d.name && driver.trim() == d.driver && format!("{:?}", info.backend) == api
     };
     let Some(a) = raw.iter().position(same).map(|i| raw.remove(i)) else { continue };
 
