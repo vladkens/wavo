@@ -84,7 +84,7 @@
 //!
 //! Load a model once and call `transcribe` as often as needed; loading takes about 0.1–0.2 s on
 //! an Apple M2. [`Model::device`] names the GPU and API it runs on, for a log line or a settings
-//! screen.
+//! screen, and [`devices`] lists the GPUs before any model is loaded.
 //!
 //! # Download a model
 //!
@@ -181,7 +181,14 @@ use std::path::Path;
 
 use error::bail;
 pub use error::{Error, Result};
-pub use gpu::{Api, Device, DeviceKind};
+pub use gpu::{Api, Device, DeviceKind, Kernels, devices};
+
+/// The code path of the CPU matrix products (`NEON`, `AVX2+FMA` or `portable`), for `wavo debug`;
+/// not part of the API.
+#[doc(hidden)]
+pub fn cpu_path() -> &'static str {
+  cpu::path()
+}
 
 /// A speech-to-text model loaded on the GPU.
 ///

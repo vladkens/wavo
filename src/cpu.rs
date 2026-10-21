@@ -27,6 +27,16 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
   acc[0] + a_tail.iter().zip(b_tail).map(|(x, y)| x * y).sum::<f32>()
 }
 
+/// The code path `tile` and `Q8::rows` take on this CPU: `NEON`, `AVX2+FMA` or `portable`.
+pub fn path() -> &'static str {
+  #[cfg(target_arch = "x86_64")]
+  if x86::avx2() {
+    return "AVX2+FMA";
+  }
+
+  if cfg!(target_arch = "aarch64") { "NEON" } else { "portable" }
+}
+
 /// `w` (`k`-long rows) padded with zero rows to a multiple of 4, as `matmul` takes it.
 pub fn rows4(mut w: Vec<f32>, k: usize) -> Vec<f32> {
   w.resize((w.len() / k).next_multiple_of(4) * k, 0.0);
