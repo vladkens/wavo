@@ -22,6 +22,8 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **Hebrew:** ivrit.ai's Whisper turbo and Yakov Kolani's Parakeet v3 fine-tunes, converted
       and published under `vladkens` on Hugging Face (#64).
 - [x] **Server:** `wavo serve`, OpenAI's transcription API on `std::net`.
+- [x] **19. Parakeet Ultra and Parakeet Unified EN** on the Parakeet family, correct and faster
+      than transcribe.cpp: `jfk` on an M2 in 145 / 203 ms and 146 / 205 ms (best of 20).
 
 Open:
 

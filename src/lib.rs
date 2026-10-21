@@ -39,6 +39,8 @@
 //! |---|---|---|---|---|
 //! | `parakeet-v3` | `parakeet-tdt-0.6b-v3` | 0.74 GB | 25 European languages | cased, punctuated |
 //! | `parakeet-v2` | `parakeet-tdt-0.6b-v2` | 0.73 GB | English | cased, punctuated |
+//! | `parakeet-ultra` | `parakeet-ultra` | 0.74 GB | 25 European languages | cased, punctuated |
+//! | `parakeet-unified` | `parakeet-unified-en-0.6b` | 0.73 GB | English | cased, punctuated |
 //! | `parakeet-he` | `parakeet-tdt-0.6b-v3-he` | 0.74 GB | Hebrew | cased, punctuated |
 //! | `gigaam-v3` | `gigaam-v3-e2e-rnnt` | 0.27 GB | Russian | cased, punctuated |
 //! | `gigaam-v3-e2e-ctc` | `gigaam-v3-e2e-ctc` | 0.27 GB | Russian | cased, punctuated |

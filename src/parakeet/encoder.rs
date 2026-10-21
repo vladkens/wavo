@@ -1,9 +1,9 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Encoder on the GPU: 8× subsampling of the mel image `[t][freq]` by 3×3 stride-2 convs (conv0 +
 //! ReLU, depthwise conv2, pointwise conv3 + ReLU, depthwise conv5, pointwise conv6 + ReLU),
-//! flattened to `[t][channel · 16 + freq]` and projected to d_model, then the Conformer blocks with
-//! relative positions, then the joint's encoder projection. All dispatches of a call go into one
-//! compute pass over a preallocated arena.
+//! flattened to `[t][channel · 16 + freq]` and projected to d_model (and scaled by √d_model with
+//! xscaling), then the Conformer blocks with relative positions, then the joint's encoder
+//! projection. All dispatches of a call go into one compute pass over a preallocated arena.
 
 use std::sync::{Mutex, PoisonError};
 
@@ -26,6 +26,8 @@ pub struct Encoder {
   conv5: Channels,
   conv6: Linear,
   out: Linear,
+  /// NeMo's xscaling: the subsampling output times √d_model.
+  xscale: Option<f32>,
   conformer: Conformer,
   joint: Linear,
   arena: Mutex<Option<Arena>>,
@@ -47,7 +49,14 @@ struct Arena {
 }
 
 impl Encoder {
-  pub fn new(gpu: &Gpu, g: &Gguf, cfg: conformer::Config, ch: usize, joint: usize) -> Result<Self> {
+  pub fn new(
+    gpu: &Gpu,
+    g: &Gguf,
+    cfg: conformer::Config,
+    ch: usize,
+    joint: usize,
+    xscaling: bool,
+  ) -> Result<Self> {
     let d = cfg.d;
     let f32s = |name: String, dims: &[usize]| g.tensor(&name, dims)?.to_f32();
     // Weights from [ch][time tap][frequency tap] to [tap][ch].
@@ -66,6 +75,7 @@ impl Encoder {
       conv5: conv(5)?,
       conv6: linear("enc.pre_encode.conv.6", &[1, 1, ch, ch])?,
       out: linear("enc.pre_encode.out", &[ch * half(half(half(MELS))), d])?,
+      xscale: xscaling.then(|| (d as f32).sqrt()),
       conformer: Conformer::load(gpu, g, cfg)?,
       joint: linear("joint.enc", &[d, joint])?,
       arena: Mutex::new(None),
@@ -73,42 +83,59 @@ impl Encoder {
   }
 
   /// Encodes `mel` `[mel frames][MELS]` and returns the joint's encoder projections in rows of
-  /// the returned width (the joint's size padded to a multiple of 64).
-  pub fn run(&self, gpu: &Gpu, mel: &[f32]) -> Result<(Vec<f32>, usize)> {
+  /// the returned width (the joint's size padded to a multiple of 64). With `valid` less than the
+  /// mel frames, the frames past it are padding, as transcribe.cpp's kestrel length masking has
+  /// it: the subsampling masks its outputs past their valid lengths, and only the valid encoder
+  /// frames are encoded.
+  pub fn run(&self, gpu: &Gpu, mel: &[f32], valid: usize) -> Result<(Vec<f32>, usize)> {
     let mel_frames = mel.len() / MELS;
-    let (t, d, width) = (half(half(half(mel_frames))), self.conformer.cfg.d, self.joint.width());
+    let (t, d, width) = (half(half(half(valid))), self.conformer.cfg.d, self.joint.width());
+    // Sized for all mel frames: the buffers hold 8 of them per encoder frame.
+    let all = half(half(half(mel_frames)));
     let mut arena = self.arena.lock().unwrap_or_else(PoisonError::into_inner);
     let a = match arena.take() {
-      Some(a) if a.frames >= t => arena.insert(a),
+      Some(a) if a.frames >= all => arena.insert(a),
       old => {
         drop(old);
-        arena.insert(self.arena(gpu, t.next_multiple_of(64))?)
+        arena.insert(self.arena(gpu, all.next_multiple_of(64))?)
       }
     };
     gpu.write(&a.mel, mel);
+    if self.xscale.is_some() {
+      // The subsampling output goes onto zeros, see `record`.
+      gpu.write(&a.bufs.x, &vec![0.0; t * d]);
+    }
     gpu.write(&a.bufs.pos, &a.table[(a.frames - t) * d..][..pos_rows(t) * d]);
     let Arena { bufs, mel, out, read, groups, .. } = a;
-    let out =
-      gpu.run(groups, out, read, t * width, |p| self.record(p, bufs, mel, out, mel_frames))?;
+    let frames = [mel_frames, valid];
+    let out = gpu.run(groups, out, read, t * width, |p| self.record(p, bufs, mel, out, frames))?;
     Ok((out, width))
   }
 
-  fn record(&self, p: &mut Pass, b: &Buffers, mel: &Buffer, out: &Buffer, mel_frames: usize) {
-    let ch = self.ch;
+  /// `frames` are the mel frames and the valid ones of them.
+  fn record(&self, p: &mut Pass, b: &Buffers, mel: &Buffer, out: &Buffer, frames: [usize; 2]) {
+    let (ch, [mel_frames, valid]) = (self.ch, frames);
+    // The first conv's output past its valid rows is zero, as is the second's: the fused kernel
+    // sees the valid mel frames only (the frame past them is zero) and zeroes conv2's rows past
+    // its own. conv5 sees conv3's output of those rows, then zero padding.
     let (t2, f2) = (half(half(mel_frames)), half(half(MELS)));
-    let (t, f) = (half(t2), half(f2));
+    let (t, f) = (half(half(half(valid))), half(f2));
     // Always CHUNKS chunks, some maybe empty, so the dispatches match the cached bind groups.
     let c = t.div_ceil(CHUNKS);
     for t0 in (0..CHUNKS).map(|i| i * c) {
       let n = c.min(t.saturating_sub(t0));
       let rows = if n == 0 { 0 } else { 2 * n + 1 };
-      p.depthwise(mel, Some(&self.conv0), &self.conv2, &b.yr, [mel_frames, MELS, ch], t0, rows);
+      p.depthwise(mel, Some(&self.conv0), &self.conv2, &b.yr, [valid, MELS, ch], t0, rows);
       p.gemm(&b.yr, &self.conv3, &b.qk, rows * f2, Epilogue::Relu);
       p.depthwise(&b.qk, None, &self.conv5, &b.h, [t2, f2, ch], t0, n);
     }
     p.gemm(&b.h, &self.conv6, &b.qk, t * f, Epilogue::Relu);
     p.flatten(&b.qk, &b.h, t, f, ch);
-    p.gemm(&b.h, &self.out, &b.x, t, Epilogue::Bias);
+    match self.xscale {
+      // x is zero: 0 + √d · v is the scaled output exactly.
+      Some(scale) => p.gemm(&b.h, &self.out, &b.x, t, Epilogue::Residual(scale)),
+      None => p.gemm(&b.h, &self.out, &b.x, t, Epilogue::Bias),
+    }
     let x = self.conformer.record(p, b, t);
     p.gemm(x, &self.joint, out, t, Epilogue::Bias);
   }

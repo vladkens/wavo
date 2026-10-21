@@ -1484,7 +1484,8 @@ impl<'a> Pass<'a> {
   /// `[t][f][ch]` into output rows t0..t0 + rows of `y` `[⌈t/2⌉][⌈f/2⌉][ch]`; `x` holds the
   /// image's rows from 2·t0 − 1 on. With `first` the image is ReLU(`first` + bias), a 3×3
   /// stride-2 conv from the one-channel image `x` `[t][f]` to ch channels that is never stored,
-  /// and `y` gets `rows` rows of `[⌈f/4⌉][ch]`, the output rows from 2·t0 − 1 on.
+  /// and `y` gets `rows` rows of `[⌈f/4⌉][ch]`, the output rows from 2·t0 − 1 on, those from
+  /// ⌈t/4⌉ on zero.
   #[allow(clippy::too_many_arguments)]
   pub fn depthwise(
     &mut self,
@@ -2101,27 +2102,35 @@ mod tests {
     let [w0, b0, w2, b2, w5, b5] =
       std::array::from_fn(|i| &ws[i][..if i % 2 == 0 { ch * 9 } else { ch }]);
     let wide: Vec<f32> = mel.iter().flat_map(|&v| std::iter::repeat_n(v, ch)).collect();
-    let first: Vec<f32> =
-      depthwise(&wide, w0, b0, t, f, ch).into_iter().map(|v| v.max(0.0)).collect();
     let (t2, f2) = (half(half(t)), half(half(f)));
-    let second = depthwise(&first, w2, b2, half(t), half(f), ch);
-    // Four output rows of conv5.
-    let want = depthwise(&second, w5, b5, t2, f2, ch);
     let x = random(t * f * ch, 26);
     let flat: Vec<f32> =
       (0..t * f * ch).map(|e| x[(e / (f * ch) * f + e % f) * ch + e % (f * ch) / f]).collect();
+    // The whole image, and the first 28 rows: conv2's 8th output row is then masked to zero.
+    for valid in [t, t - 1] {
+      let first: Vec<f32> = (depthwise(&wide[..valid * f * ch], w0, b0, valid, f, ch).into_iter())
+        .map(|v| v.max(0.0))
+        .collect();
+      let mut second = depthwise(&first, w2, b2, half(valid), half(f), ch);
+      second.resize(t2 * f2 * ch, 0.0);
+      // Four output rows of conv5.
+      let want = depthwise(&second, w5, b5, t2, f2, ch);
+      for gpu in gpus() {
+        let [c0, c2, c5] = [(w0, b0), (w2, b2), (w5, b5)].map(|(w, b)| gpu.channels(w, b).unwrap());
+        let mb = up(gpu, &mel);
+        // Two chunks of two rows, each from five rows of conv2's output.
+        let chunk = gpu.buffer(5 * f2 * ch);
+        let got = run(gpu, &vec![0.0; want.len()], |p, y| {
+          for t0 in [0, 2] {
+            p.depthwise(&mb, Some(&c0), &c2, &chunk, [valid, f, ch], t0, 5);
+            p.depthwise(&chunk, None, &c5, y, [t2, f2, ch], t0, 2);
+          }
+        });
+        assert_close(&got, &want);
+      }
+    }
     for gpu in gpus() {
-      let [c0, c2, c5] = [(w0, b0), (w2, b2), (w5, b5)].map(|(w, b)| gpu.channels(w, b).unwrap());
-      let (mb, xb) = (up(gpu, &mel), up(gpu, &x));
-      // Two chunks of two rows, each from five rows of conv2's output.
-      let chunk = gpu.buffer(5 * f2 * ch);
-      let got = run(gpu, &vec![0.0; want.len()], |p, y| {
-        for t0 in [0, 2] {
-          p.depthwise(&mb, Some(&c0), &c2, &chunk, [t, f, ch], t0, 5);
-          p.depthwise(&chunk, None, &c5, y, [t2, f2, ch], t0, 2);
-        }
-      });
-      assert_close(&got, &want);
+      let xb = up(gpu, &x);
       assert_close(&run(gpu, &vec![0.0; flat.len()], |p, y| p.flatten(&xb, y, t, f, ch)), &flat);
     }
   }

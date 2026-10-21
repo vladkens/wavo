@@ -197,6 +197,14 @@ impl Gguf {
     }
   }
 
+  /// The metadata value `key` as a `T`, or `None` when the file has no `key`.
+  pub fn optional<'a, T: Meta<'a>>(&'a self, key: &str) -> Result<Option<T>> {
+    if !self.meta.contains_key(key) {
+      return Ok(None);
+    }
+    self.get(key).map(Some)
+  }
+
   /// Fails unless the metadata value `key` is one of `allowed`.
   pub fn check<'a, T: Meta<'a> + PartialEq + Debug>(
     &'a self,
@@ -449,6 +457,9 @@ mod tests {
     assert!(g.get::<&str>("a.n").is_err());
     assert_eq!(g.array::<&str>("a.tokens").unwrap(), ["▁x", "y"]);
     assert!(g.get::<bool>("a.flag").unwrap());
+    assert_eq!(g.optional::<bool>("a.flag").unwrap(), Some(true));
+    assert_eq!(g.optional::<bool>("missing").unwrap(), None);
+    assert!(g.optional::<&str>("a.flag").is_err());
     assert_eq!(g.get::<i32>("a.left").unwrap(), -1);
     assert!(g.get::<u32>("a.left").is_err());
     assert_eq!(g.array::<i32>("a.durations").unwrap(), [0, 2, -4]);
