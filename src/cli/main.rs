@@ -46,6 +46,8 @@ Run options:
                                (25 for GigaAM, 30 for Whisper and Moonshine, else 60;
                                0 for one pass, up to 37.5 s for GigaAM and 45 s for
                                Moonshine)
+  --language CODE              the language of the speech (en, he, ...) for multilingual
+                               Whisper models, instead of detecting it
   -y, --yes                    download a missing model without asking
 
 MODEL is a name below, its full name or a path to a .gguf file. AUDIO is wav, mp3, m4a, flac
@@ -179,8 +181,10 @@ fn load(path: &Path) -> Result<wavo::Model> {
 }
 
 fn run(args: &[&str]) -> Result<()> {
-  const USAGE: &str = "usage: wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS] [-y]";
+  const USAGE: &str =
+    "usage: wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS] [--language CODE] [-y]";
   let (mut format, mut segment, mut download, mut rest) = (None, None, Download::Ask, Vec::new());
+  let mut options = wavo::Options::default();
   let mut args = args.iter();
   while let Some(&arg) = args.next() {
     match arg {
@@ -191,6 +195,10 @@ fn run(args: &[&str]) -> Result<()> {
         let secs =
           secs.context("--segment takes whole seconds: 0 for one pass, else at least 5")?;
         segment = Some(secs.saturating_mul(1000));
+      }
+      "--language" if options.language.is_none() => {
+        let code = args.next().context("--language takes a code such as en or he")?;
+        options.language = Some(code.to_string());
       }
       "-y" | "--yes" => download = Download::Yes,
       _ if arg.starts_with('-') => bail!("unknown or repeated option {arg}\n{USAGE}"),
@@ -234,7 +242,7 @@ fn run(args: &[&str]) -> Result<()> {
   let n = ranges.len();
   let parts = ranges.into_iter().enumerate().map(|(i, r)| {
     bar.set_message(format!("transcribing {}/{n}", i + 1));
-    Ok((r.start, model.transcribe(&pcm[r])?))
+    Ok((r.start, model.transcribe_with(&pcm[r], &options)?))
   });
   let (transcript, starts) = split::join(parts.collect::<Result<Vec<_>>>()?);
   bar.finish_and_clear();

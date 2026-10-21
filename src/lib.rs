@@ -82,6 +82,9 @@
 //! # }
 //! ```
 //!
+//! [`Model::transcribe_with`] takes [`Options`] as well: the language of the speech, for Whisper
+//! to transcribe instead of detecting one.
+//!
 //! Load a model once and call `transcribe` as often as needed; loading takes about 0.1–0.2 s on
 //! an Apple M2. [`Model::device`] names the GPU and API it runs on, for a log line or a settings
 //! screen, and [`devices`] lists the GPUs before any model is loaded.
@@ -195,7 +198,11 @@ pub fn cpu_path() -> &'static str {
 /// Load it once with [`Model::load`], then call [`Model::transcribe`] for each recording. It is
 /// `Send` and `Sync`: share it between threads, and concurrent calls take turns on its GPU
 /// buffers.
-pub struct Model(Family);
+pub struct Model {
+  family: Family,
+  /// The GGUF's `general.languages`.
+  languages: Vec<String>,
+}
 
 enum Family {
   Gigaam(Box<gigaam::Gigaam>),
@@ -212,6 +219,25 @@ pub struct Transcript {
   pub text: String,
   /// The tokens in order: the model's vocabulary pieces the text is made of, with start times.
   pub tokens: Vec<Token>,
+}
+
+/// Options for [`Model::transcribe_with`]. Start from `Options::default()`, which
+/// [`Model::transcribe`] uses, and set the fields to change.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct Options {
+  /// The language of the speech, as one of the codes the model lists (its GGUF's
+  /// `general.languages`, which `hub::ModelInfo::langs` repeats): `en`, `he`, `zh`. `None`, the
+  /// default, leaves it to the model.
+  ///
+  /// A multilingual Whisper model then transcribes in this language instead of detecting one
+  /// from the first 30 s: on short or accented speech detection can pick a close language, such
+  /// as Arabic for Hebrew or Russian for Ukrainian. Told a language other than the speech's,
+  /// Whisper writes that language anyway, often as a rough translation. A model of one language
+  /// (GigaAM, Parakeet v2, Moonshine, Whisper `.en`) takes its own code and runs as without it.
+  /// Parakeet v3 has no way to be told a language, so any code fails with it, as does a code the
+  /// model doesn't list: see [`Error::Language`].
+  pub language: Option<String>,
 }
 
 /// One token of a [`Transcript`].
@@ -251,7 +277,9 @@ impl Model {
   /// ```
   pub fn load(path: impl AsRef<Path>) -> Result<Self> {
     let g = gguf::Gguf::open(path.as_ref())?;
-    Ok(Self(match g.get::<&str>("general.architecture")? {
+    let languages = g.optional_array::<&str>("general.languages")?;
+    let languages = languages.into_iter().map(str::to_string).collect();
+    let family = match g.get::<&str>("general.architecture")? {
       "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g)?)),
       "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g)?)),
       "whisper" => Family::Whisper(Box::new(whisper::Whisper::load(&g)?)),
@@ -259,7 +287,8 @@ impl Model {
       arch => bail!(
         "general.architecture is {arch:?}, only gigaam, parakeet, whisper and moonshine are supported"
       ),
-    }))
+    };
+    Ok(Self { family, languages })
   }
 
   /// Transcribes 16 kHz mono PCM samples in [-1, 1].
@@ -285,20 +314,48 @@ impl Model {
   /// # Ok::<(), wavo::Error>(())
   /// ```
   pub fn transcribe(&self, pcm: &[f32]) -> Result<Transcript> {
+    self.transcribe_with(pcm, &Options::default())
+  }
+
+  /// [`transcribe`](Self::transcribe) with [`Options`].
+  ///
+  /// # Errors
+  ///
+  /// As [`transcribe`](Self::transcribe), and [`Error::Language`] when [`Options::language`] is
+  /// set and the model can't take it.
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// let model = wavo::Model::load("whisper-large-v3-turbo-Q8_0.gguf")?;
+  /// # let pcm = vec![0.0f32; 16_000];
+  /// let mut options = wavo::Options::default();
+  /// options.language = Some("he".into()); // Hebrew, not detected
+  /// let transcript = model.transcribe_with(&pcm, &options)?;
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn transcribe_with(&self, pcm: &[f32], options: &Options) -> Result<Transcript> {
+    let tokens = matches!(&self.family, Family::Whisper(m) if m.multilingual());
+    let language = match &options.language {
+      Some(code) => language(code, &self.languages, tokens)?,
+      None => None,
+    };
+
     // One pass over the whole audio: a little past the window still matches the reference (the
     // 34-35 s fixtures), from ~45 s the tail is dropped or made up, and much longer audio
     // overruns the GPU's 65 535 workgroups per dispatch.
-    if let (Family::Gigaam(_) | Family::Moonshine(_), Some(window)) = (&self.0, self.max_audio_ms())
+    if let (Family::Gigaam(_) | Family::Moonshine(_), Some(window)) =
+      (&self.family, self.max_audio_ms())
       && pcm.len() > window as usize * 3 / 2 * 16
     {
       let ms = (pcm.len() as u64).div_ceil(16);
       return Err(Error::AudioTooLong { ms, max_ms: window * 3 / 2 });
     }
 
-    match &self.0 {
+    match &self.family {
       Family::Gigaam(m) => m.transcribe(pcm),
       Family::Parakeet(m) => m.transcribe(pcm),
-      Family::Whisper(m) => m.transcribe(pcm),
+      Family::Whisper(m) => m.transcribe(pcm, language),
       Family::Moonshine(m) => m.transcribe(pcm),
     }
   }
@@ -309,7 +366,7 @@ impl Model {
   /// [`transcribe`](Self::transcribe) rejects 1.5 times it. `None` for Parakeet, which has no such
   /// window.
   pub fn max_audio_ms(&self) -> Option<u32> {
-    match &self.0 {
+    match &self.family {
       // No GGUF key holds GigaAM's window; transcribe.cpp hardcodes the same 25 s.
       Family::Gigaam(_) => Some(25_000),
       // Its window; `transcribe` still takes any length in 30 s windows, as transcribe.cpp does.
@@ -344,7 +401,7 @@ impl Model {
   /// # Ok::<(), wavo::Error>(())
   /// ```
   pub fn device(&self) -> &Device {
-    match &self.0 {
+    match &self.family {
       Family::Gigaam(m) => m.gpu.info(),
       Family::Parakeet(m) => m.gpu.info(),
       Family::Whisper(m) => m.gpu.info(),
@@ -353,8 +410,49 @@ impl Model {
   }
 }
 
+/// The index in `languages` of `code`, the language to force on a model with a token per
+/// language (`tokens`: multilingual Whisper); `None` for a model of that language alone.
+fn language(code: &str, languages: &[String], tokens: bool) -> Result<Option<usize>> {
+  let fail = |reason: String| Err(Error::Language(format!("language {code:?}: {reason}")));
+  let Some(i) = languages.iter().position(|l| l == code) else {
+    return fail(match languages.len() {
+      0 => "the model lists no languages".into(),
+      _ => format!("not one of the model's languages: {}", languages.join(", ")),
+    });
+  };
+  match (tokens, languages.len()) {
+    (true, _) => Ok(Some(i)),
+    (false, 1) => Ok(None),
+    (false, n) => fail(format!(
+      "the model detects its {n} languages itself and can't be told one; multilingual Whisper \
+       models can"
+    )),
+  }
+}
+
 #[cfg(test)]
 mod tests {
+  use super::*;
+
+  #[test]
+  fn language_codes() {
+    let list = |codes: &[&str]| codes.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+    let whisper = list(&["en", "zh", "de", "he"]);
+    assert_eq!(language("he", &whisper, true).unwrap(), Some(3));
+    assert_eq!(language("en", &whisper, true).unwrap(), Some(0));
+    let err = language("xx", &whisper, true).unwrap_err().to_string();
+    assert_eq!(err, r#"language "xx": not one of the model's languages: en, zh, de, he"#);
+    // Codes are case-sensitive, as in the GGUF.
+    assert!(language("HE", &whisper, true).is_err());
+    // A model of one language takes its own code and nothing else.
+    assert_eq!(language("ru", &list(&["ru"]), false).unwrap(), None);
+    assert!(language("en", &list(&["ru"]), false).is_err());
+    // Parakeet v3: no language token, so not even a listed code.
+    let err = language("de", &list(&["en", "de", "uk"]), false).unwrap_err().to_string();
+    assert!(err.contains("detects its 3 languages itself"), "{err}");
+    assert!(matches!(language("de", &[], false), Err(Error::Language(_))));
+  }
+
   #[test]
   fn model_and_device_are_send_and_sync() {
     fn check<T: Send + Sync>() {}

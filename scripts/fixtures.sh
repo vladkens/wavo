@@ -8,6 +8,9 @@
 # the `text: ` line alone. Writes nothing if the reference fails, cuts a decode short (`run:` not
 # `ok`: truncated or repeating) or prints anything else.
 #
+# A SAMPLE `CLIP+lang=CODE` runs CLIP.wav with the language set (`-l CODE`): the transcript of
+# `Options::language`.
+#
 # The clips come from transcribe.cpp's samples/ and stay there; some are Google FLEURS recordings
 # (CC-BY-4.0). The fixtures keep only the reference's transcripts, never audio.
 set -eu
@@ -27,8 +30,11 @@ if [ -f "$out" ]; then
 fi
 
 for s in "$@"; do
-  "$cli" -m "$model" --timestamps "$timestamps" "3rd/transcribe.cpp/samples/$s.wav" \
-    > "$tmp/raw" 2> /dev/null || { echo "$s: transcribe-cli failed" >&2; exit 1; }
+  clip=${s%%+lang=*}
+  lang=${s#"$clip"} # empty or +lang=CODE
+  "$cli" -m "$model" --timestamps "$timestamps" ${lang:+-l "${lang#+lang=}"} \
+    "3rd/transcribe.cpp/samples/$clip.wav" > "$tmp/raw" 2> /dev/null \
+    || { echo "$s: transcribe-cli failed" >&2; exit 1; }
   grep -qx 'run: ok' "$tmp/raw" || { echo "$s: $(grep '^run: ' "$tmp/raw")" >&2; exit 1; }
   # From `text:` to `realtime:` every line must be known, so the filter below drops no part of
   # the transcript, such as a second line of text.
