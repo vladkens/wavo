@@ -29,6 +29,8 @@ for c in $clips; do
   name=${c%%:*} id=${c#*:}
   tar -xf "$tmp/head.tar" -C "$tmp" "test/$id.wav" 2> /dev/null || true
   [ -f "$tmp/test/$id.wav" ] || { echo "$id.wav is not in the archive's head" >&2; exit 1; }
+  # A failed conversion must not leave a clip that the check above takes as done.
   ffmpeg -v error -y -i "$tmp/test/$id.wav" -ar 16000 -ac 1 -c:a pcm_s16le -map_metadata -1 \
-    -bitexact "$dir/$name.wav"
+    -bitexact -f wav "$dir/.$name.wav.part"
+  mv "$dir/.$name.wav.part" "$dir/$name.wav"
 done
