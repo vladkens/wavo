@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::Cursor;
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Resampler};
 use symphonia::core::codecs::audio::AudioDecoderOptions;
@@ -34,20 +34,21 @@ impl std::error::Error for Unsupported {}
 pub fn read(path: &str) -> Result<Vec<f32>> {
   let file = File::open(path).with_context(|| format!("reading {path}"))?;
   let ext = Path::new(path).extension().and_then(|e| e.to_str());
-  pcm(Box::new(file), ext).map_err(|e| match e.is::<Unsupported>() {
+  pcm(Box::new(file), ext, None).map_err(|e| match e.is::<Unsupported>() {
     true => anyhow!("{path}: {e}"),
     false => e.context(format!("reading {path}")),
   })
 }
 
-/// [`read`] for the bytes of a file whose name ends in `ext`, a hint at the format. Fails with
-/// [`Unsupported`] for a format it doesn't decode.
-pub fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>) -> Result<Vec<f32>> {
-  pcm(Box::new(Cursor::new(bytes)), ext)
+/// [`read`] for the bytes of a file whose name ends in `ext`, a hint at the format, of up to
+/// `max_secs` seconds: a small compressed file can decode to more samples than fit in memory.
+/// Fails with [`Unsupported`] for a format it doesn't decode.
+pub fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>, max_secs: usize) -> Result<Vec<f32>> {
+  pcm(Box::new(Cursor::new(bytes)), ext, Some(max_secs))
 }
 
-fn pcm(source: Box<dyn MediaSource>, ext: Option<&str>) -> Result<Vec<f32>> {
-  let (pcm, rate) = decode(source, ext).map_err(|e| match e.downcast_ref() {
+fn pcm(source: Box<dyn MediaSource>, ext: Option<&str>, max: Option<usize>) -> Result<Vec<f32>> {
+  let (pcm, rate) = decode(source, ext, max).map_err(|e| match e.downcast_ref() {
     Some(Error::Unsupported(_)) => Unsupported.into(),
     _ => e,
   })?;
@@ -60,8 +61,12 @@ fn pcm(source: Box<dyn MediaSource>, ext: Option<&str>) -> Result<Vec<f32>> {
   Ok(resampler.process_all(&input, pcm.len(), None)?.take_data())
 }
 
-/// Mono samples and their rate.
-fn decode(source: Box<dyn MediaSource>, ext: Option<&str>) -> Result<(Vec<f32>, usize)> {
+/// Mono samples and their rate, of up to `max_secs` seconds.
+fn decode(
+  source: Box<dyn MediaSource>,
+  ext: Option<&str>,
+  max_secs: Option<usize>,
+) -> Result<(Vec<f32>, usize)> {
   let mut hint = Hint::new();
   if let Some(ext) = ext {
     hint.with_extension(ext);
@@ -89,6 +94,10 @@ fn decode(source: Box<dyn MediaSource>, ext: Option<&str>) -> Result<(Vec<f32>, 
     match channels {
       1 => pcm.extend_from_slice(&frame),
       n => pcm.extend(frame.chunks(n).map(|f| f.iter().sum::<f32>() / n as f32)),
+    }
+
+    if let Some(max) = max_secs.filter(|&max| pcm.len() > max * rate) {
+      bail!("the audio is longer than {:.1} hours: send it in parts", max as f64 / 3600.0);
     }
   }
   Ok((pcm, rate))
@@ -140,11 +149,17 @@ mod tests {
     let mut w = hound::WavWriter::new(&mut wav, spec(1, 16000, hound::SampleFormat::Int)).unwrap();
     [0i16, 1000, -1000].iter().for_each(|&s| w.write_sample(s).unwrap());
     w.finalize().unwrap();
-    let pcm = decode_bytes(wav.into_inner(), None).unwrap();
+    let pcm = decode_bytes(wav.into_inner(), None, 1).unwrap();
     assert_eq!(pcm, [0.0, 1000.0 / 32768.0, -1000.0 / 32768.0]);
     // WebM's magic, then nothing a decoder knows
-    let e = decode_bytes(b"\x1a\x45\xdf\xa3 then junk".repeat(100), Some("webm")).unwrap_err();
+    let e = decode_bytes(b"\x1a\x45\xdf\xa3 then junk".repeat(100), Some("webm"), 1).unwrap_err();
     assert!(e.is::<Unsupported>(), "{e:#}");
+    let mut wav = Cursor::new(Vec::new());
+    let mut w = hound::WavWriter::new(&mut wav, spec(2, 8000, hound::SampleFormat::Int)).unwrap();
+    (0..2 * 8001).for_each(|_| w.write_sample(0i16).unwrap());
+    w.finalize().unwrap();
+    let e = decode_bytes(wav.into_inner(), None, 1).unwrap_err().to_string();
+    assert_eq!(e, "the audio is longer than 0.0 hours: send it in parts", "1 s and a sample");
   }
 
   #[test]

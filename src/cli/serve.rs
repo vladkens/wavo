@@ -25,11 +25,13 @@ const USAGE: &str = "usage: wavo serve [MODEL...] [--host ADDR] [--port PORT] [-
 const MAX_CONNECTIONS: usize = 16;
 /// The largest request body: some 4.5 hours of 16 kHz 16-bit WAV.
 const MAX_BODY: usize = 512 << 20;
+/// The longest audio, in seconds, whatever its compression.
+const MAX_AUDIO: usize = 5 * 3600;
 /// How long one read from or write to a client may wait.
 const TIMEOUT: Duration = Duration::from_secs(30);
-/// How long and how much of a request nobody reads is drained after the response; also the
-/// timeout for a request answered with 503.
-const LINGER: (Duration, u64) = (Duration::from_secs(1), 16 << 20);
+/// How long the part of a request nobody reads is drained after the response; also the timeout
+/// for a request answered with 503.
+const LINGER: Duration = Duration::from_secs(1);
 const FORMATS: &[&str] = &["json", "text", "srt", "vtt", "verbose_json"];
 const JSON: &str = "application/json";
 const TEXT: &str = "text/plain; charset=utf-8";
@@ -139,7 +141,7 @@ impl Server {
   /// reads the response.
   fn connection(&self, stream: TcpStream, open: usize, _slot: Slot) {
     let (t, busy) = (Instant::now(), open >= MAX_CONNECTIONS);
-    let timeout = Some(if busy { LINGER.0 } else { TIMEOUT });
+    let timeout = Some(if busy { LINGER } else { TIMEOUT });
     let _ = (stream.set_read_timeout(timeout), stream.set_write_timeout(timeout));
     let mut r = BufReader::new(&stream);
     let (method, path, reply) = match http::head(&mut r) {
@@ -162,8 +164,9 @@ impl Server {
     let _ = send(&stream, reply); // fails when the client is gone
     let sep = if note.is_empty() { "" } else { ": " };
     eprintln!("{method} {path} {status} {} ms{sep}{note}", t.elapsed().as_millis());
-    let _ = (stream.shutdown(Shutdown::Write), stream.set_read_timeout(Some(LINGER.0)));
-    let _ = io::copy(&mut r.take(LINGER.1), &mut io::sink());
+    let _ = (stream.shutdown(Shutdown::Write), stream.set_read_timeout(Some(LINGER)));
+    let (until, mut buf) = (Instant::now() + LINGER, [0; 64 << 10]);
+    while Instant::now() < until && matches!(r.read(&mut buf), Ok(1..)) {}
   }
 
   fn route(&self, head: &Head, r: &mut impl BufRead, w: &mut impl Write) -> Res<Reply> {
@@ -233,12 +236,13 @@ impl Server {
     let data = file.data.clone();
     body.truncate(data.end);
     body.drain(..data.start);
-    let pcm = audio::decode_bytes(body, ext.as_deref()).map_err(|e| {
-      match e.is::<audio::Unsupported>() {
+    let pcm =
+      audio::decode_bytes(body, ext.as_deref(), MAX_AUDIO).map_err(|e| match e
+        .is::<audio::Unsupported>()
+      {
         true => fail(415, "the audio is not wav, mp3, m4a, flac or ogg (Vorbis): convert it first"),
         false => fail(400, format!("decoding the audio: {e:#}")),
-      }
-    })?;
+      })?;
     let transcript = split::transcribe(&model.model, &pcm, None, &options, |_, _| ());
     let (t, starts) = transcript.map_err(|e| match e {
       wavo::Error::Language(_) => fail(400, e.to_string()),
