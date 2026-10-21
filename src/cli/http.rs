@@ -24,8 +24,12 @@ pub fn fail(status: u16, message: impl Into<String>) -> Fail {
 
 impl From<io::Error> for Fail {
   fn from(e: io::Error) -> Self {
-    let timeout = matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock);
-    fail(if timeout { 408 } else { 400 }, format!("reading the request: {e}"))
+    match e.kind() {
+      io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+        fail(408, "the request came too slowly")
+      }
+      _ => fail(400, format!("reading the request: {e}")),
+    }
   }
 }
 
@@ -132,8 +136,14 @@ fn chunks(r: &mut impl BufRead, limit: usize) -> Res<Vec<u8>> {
     }
   }
 
-  while !matches!(&line(r)?[..], b"\r\n" | b"\n") {}
-  Ok(body)
+  let mut trailers = 0;
+  loop {
+    match line(r)?.len() {
+      ..=2 => return Ok(body), // `\r\n` or `\n`
+      n if trailers + n > MAX_HEAD => return Err(fail(431, "the trailers are over 64 KiB")),
+      n => trailers += n,
+    }
+  }
 }
 
 /// A line with its line end.
@@ -159,7 +169,8 @@ pub struct Part {
 /// The fields of a form `body` sent with the Content-Type `content_type`.
 pub fn multipart(content_type: &str, body: &[u8]) -> Res<Vec<Part>> {
   let kind = content_type.split(';').next().unwrap_or_default().trim();
-  let boundary = param(content_type, "boundary").filter(|_| kind == "multipart/form-data");
+  let form = kind.eq_ignore_ascii_case("multipart/form-data");
+  let boundary = param(content_type, "boundary").filter(|_| form);
   let boundary = boundary.ok_or_else(|| fail(415, "send the request as multipart/form-data"))?;
   let bad = || fail(400, "a broken multipart/form-data body");
   // Each part ends at a line end and a delimiter; the first delimiter needs no line end.
@@ -292,6 +303,7 @@ mod tests {
     assert_eq!(status(&body("zz\r\n")), 400);
     assert_eq!(status(&body("64\r\n")), 400, "100 bytes fit, but none come");
     assert_eq!(status(&body("65\r\n")), 413, "101 bytes don't");
+    assert_eq!(status(&body(&format!("0\r\n{}\r\n", "X: y\r\n".repeat(11_000)))), 431);
   }
 
   #[test]
@@ -303,7 +315,7 @@ mod tests {
     assert_eq!(value(0), "RIFF\r\n--X\r\n", "a delimiter needs the whole boundary");
     assert_eq!((parts[1].name.as_str(), parts[1].filename.as_deref()), ("model", None));
     assert_eq!(value(1), "whisper-1");
-    let empty = multipart("multipart/form-data; boundary=XyZ", b"--XyZ--\r\n").unwrap();
+    let empty = multipart("Multipart/Form-Data; boundary=XyZ", b"--XyZ--\r\n").unwrap();
     assert_eq!(empty, []);
     assert_eq!(multipart("application/json", b"{}").unwrap_err().status, 415);
     assert_eq!(multipart("multipart/form-data", b"").unwrap_err().status, 415);

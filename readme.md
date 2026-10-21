@@ -202,7 +202,7 @@ A `model` that names no wavo model, such as `whisper-1`, goes to the first model
 downloaded model loads on its first request, replacing the one loaded that way before. Long audio
 is split at pauses as in `wavo run`. `GET /v1/models` lists the downloaded models and `GET /health`
 the GPU and the loaded models. `serve` downloads the models it is started with, after asking or
-with `-y`; requests never download. It serves 16 requests at once, each up to 512 MB and 5 hours
+with `-y`; requests never download. It serves 16 requests at once, each up to 512 MB and 3 hours
 of audio, and answers more with 503.
 
 ## ⚡ Speed

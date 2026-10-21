@@ -143,11 +143,13 @@ pub fn srt(cues: &[Cue]) -> String {
   out
 }
 
-/// WebVTT subtitles: a `WEBVTT` header, then cues with times like `00:00:01.500`.
+/// WebVTT subtitles: a `WEBVTT` header, then cues with times like `00:00:01.500` and `&`, `<`
+/// and `>` escaped, as WebVTT reads markup in cue text.
 pub fn vtt(cues: &[Cue]) -> String {
   let mut out = String::from("WEBVTT\n\n");
   for c in cues {
-    write!(out, "{} --> {}\n{}\n\n", time(c.start, '.'), time(c.end, '.'), c.text).unwrap();
+    let text = c.text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    write!(out, "{} --> {}\n{text}\n\n", time(c.start, '.'), time(c.end, '.')).unwrap();
   }
   out
 }
@@ -304,6 +306,9 @@ mod tests {
       "WEBVTT\n\n00:00:00.000 --> 00:00:01.580\nHello.\n\n01:00:00.500 --> 01:00:01.000\nBye\n\n"
     );
     assert_eq!(vtt(&[]), "WEBVTT\n\n");
+    let t = tokens(&[("▁a<b>&c", 0)]);
+    let escaped = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\na&lt;b&gt;&amp;c\n\n";
+    assert_eq!(vtt(&cues(&t, &[], 1000, true)), escaped);
   }
 
   #[test]

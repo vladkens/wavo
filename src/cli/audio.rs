@@ -41,7 +41,8 @@ pub fn read(path: &str) -> Result<Vec<f32>> {
 }
 
 /// [`read`] for the bytes of a file whose name ends in `ext`, a hint at the format, of up to
-/// `max_secs` seconds: a small compressed file can decode to more samples than fit in memory.
+/// `max_secs` seconds (fewer above 48 kHz): a small compressed file can decode to more samples
+/// than fit in memory.
 /// Fails with [`Unsupported`] for a format it doesn't decode.
 pub fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>, max_secs: usize) -> Result<Vec<f32>> {
   pcm(Box::new(Cursor::new(bytes)), ext, Some(max_secs))
@@ -96,7 +97,8 @@ fn decode(
       n => pcm.extend(frame.chunks(n).map(|f| f.iter().sum::<f32>() / n as f32)),
     }
 
-    if let Some(max) = max_secs.filter(|&max| pcm.len() > max * rate) {
+    // Counted at 48 kHz at most, so that memory stays in bounds at higher rates too.
+    if let Some(max) = max_secs.filter(|&max| pcm.len() > max * rate.min(48_000)) {
       bail!("the audio is longer than {:.1} hours: send it in parts", max as f64 / 3600.0);
     }
   }

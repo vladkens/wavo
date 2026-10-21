@@ -26,9 +26,11 @@ const MAX_CONNECTIONS: usize = 16;
 /// The largest request body: some 4.5 hours of 16 kHz 16-bit WAV.
 const MAX_BODY: usize = 512 << 20;
 /// The longest audio, in seconds, whatever its compression.
-const MAX_AUDIO: usize = 5 * 3600;
-/// How long one read from or write to a client may wait.
+const MAX_AUDIO: usize = 3 * 3600;
+/// How long one read from or write to a client may wait, and the request head may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a whole request may take to arrive: 512 MB at some 300 KB/s.
+const MAX_UPLOAD: Duration = Duration::from_secs(1800);
 /// How long the part of a request nobody reads is drained after the response; also the timeout
 /// for a request answered with 503.
 const LINGER: Duration = Duration::from_secs(1);
@@ -125,6 +127,26 @@ fn load(info: &'static ModelInfo, path: &Path) -> Result<Arc<Loaded>> {
   Ok(Arc::new(Loaded { info, model: crate::load(path)?, timed: models::timed(path) }))
 }
 
+/// A client's socket whose reads wait up to `TIMEOUT` each and fail past `until`, also when the
+/// client sends a byte at a time.
+struct Timed<'a> {
+  stream: &'a TcpStream,
+  until: Instant,
+}
+
+impl Read for Timed<'_> {
+  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    let left = self.until.saturating_duration_since(Instant::now()).min(TIMEOUT);
+    if left.is_zero() {
+      return Err(io::ErrorKind::TimedOut.into());
+    }
+
+    self.stream.set_read_timeout(Some(left))?;
+    let mut stream = self.stream;
+    stream.read(buf)
+  }
+}
+
 /// An open connection, counted until dropped.
 struct Slot<'a>(&'a AtomicUsize);
 
@@ -141,9 +163,10 @@ impl Server {
   /// reads the response.
   fn connection(&self, stream: TcpStream, open: usize, _slot: Slot) {
     let (t, busy) = (Instant::now(), open >= MAX_CONNECTIONS);
-    let timeout = Some(if busy { LINGER } else { TIMEOUT });
-    let _ = (stream.set_read_timeout(timeout), stream.set_write_timeout(timeout));
-    let mut r = BufReader::new(&stream);
+    let limit = if busy { LINGER } else { TIMEOUT };
+    let _ = stream.set_write_timeout(Some(limit));
+    // The head must come within `limit`, the body only without a pause of `TIMEOUT`.
+    let mut r = BufReader::with_capacity(64 << 10, Timed { stream: &stream, until: t + limit });
     let (method, path, reply) = match http::head(&mut r) {
       Ok(None) => return,
       Ok(Some(head)) if busy => {
@@ -151,6 +174,7 @@ impl Server {
         (head.method, head.path, Err(fail(503, busy)))
       }
       Ok(Some(head)) => {
+        r.get_mut().until = t + MAX_UPLOAD;
         let route = AssertUnwindSafe(|| self.route(&head, &mut r, &mut &stream));
         let reply = catch_unwind(route).unwrap_or_else(|_| Err(fail(500, "wavo panicked")));
         (head.method, head.path, reply)
@@ -164,9 +188,9 @@ impl Server {
     let _ = send(&stream, reply); // fails when the client is gone
     let sep = if note.is_empty() { "" } else { ": " };
     eprintln!("{method} {path} {status} {} ms{sep}{note}", t.elapsed().as_millis());
-    let _ = (stream.shutdown(Shutdown::Write), stream.set_read_timeout(Some(LINGER)));
-    let (until, mut buf) = (Instant::now() + LINGER, [0; 64 << 10]);
-    while Instant::now() < until && matches!(r.read(&mut buf), Ok(1..)) {}
+    let _ = stream.shutdown(Shutdown::Write);
+    r.get_mut().until = Instant::now() + LINGER;
+    let _ = io::copy(&mut r, &mut io::sink());
   }
 
   fn route(&self, head: &Head, r: &mut impl BufRead, w: &mut impl Write) -> Res<Reply> {
