@@ -170,10 +170,10 @@ load and mp3 decoding included, on an **Apple M2** (10-core GPU), 2026-10-21.
 | Model | 1 min of audio | RTF |
 |---|---:|---:|
 | `gigaam-v3` | 0.51 s | 0.0085 |
-| `parakeet-v3` | 0.88 s | 0.0147 |
-| `parakeet-v2` | 0.82 s | 0.0137 |
-| `whisper-turbo` | 3.30 s | 0.0550 |
-| `whisper-tiny` | 0.36 s | 0.0060 |
+| `parakeet-v3` | 0.88 s | 0.0146 |
+| `parakeet-v2` | 0.82 s | 0.0136 |
+| `whisper-turbo` | 3.32 s | 0.0553 |
+| `whisper-tiny` | 0.36 s | 0.0061 |
 | `moonshine-tiny` | 0.33 s | 0.0055 |
 | `moonshine-base` | 0.50 s | 0.0083 |
 
