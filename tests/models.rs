@@ -3,17 +3,18 @@
 //! and its start time (for Whisper every segment's text and start). Every GGUF must list the
 //! languages `hub::MODELS` gives its model. Missing models or samples fail the test. A sample
 //! `<clip>+lang=<code>` is `<clip>` transcribed with `Options::language` set to `<code>`.
+//!
+//! The tests need the `hub` feature, for `hub::MODELS`: the default features have it.
+#![cfg(feature = "hub")]
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 /// The library's GGUF reader, to read metadata the API doesn't expose. It fails through `error`.
-#[cfg(feature = "hub")]
 #[path = "../src/gguf.rs"]
 #[allow(dead_code)]
 mod gguf;
 
-#[cfg(feature = "hub")]
 mod error {
   pub use wavo::Result;
 
@@ -29,8 +30,8 @@ mod error {
 /// memory of an 8 GB card.
 static GPU: Mutex<()> = Mutex::new(());
 
-/// The Q8_0 GGUF of `name` in the Hugging Face cache (`make models`), with the root resolved as
-/// `wavo::hub::Hub::new` does (`src/hub/cache.rs`).
+/// The Q8_0 GGUF of `name` in the Hugging Face cache (`make models`), in its owner's repository
+/// in `hub::MODELS`, with the root resolved as `wavo::hub::Hub::new` does (`src/hub/cache.rs`).
 fn model_path(name: &str) -> PathBuf {
   let var = |k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
   let user = || var("HOME").or_else(|| var("USERPROFILE")).unwrap_or_default();
@@ -38,10 +39,21 @@ fn model_path(name: &str) -> PathBuf {
   let home = || var("HF_HOME").unwrap_or_else(|| cache().join("huggingface"));
   let hub = var("HF_HUB_CACHE").or_else(|| var("HUGGINGFACE_HUB_CACHE"));
   let hub = hub.unwrap_or_else(|| home().join("hub"));
-  let repo = hub.join(format!("models--handy-computer--{name}-gguf"));
+  let owner = wavo::hub::lookup(name).unwrap().owner;
+  let repo = hub.join(format!("models--{owner}--{name}-gguf"));
   let rev = std::fs::read_to_string(repo.join("refs/main"))
     .unwrap_or_else(|e| panic!("{name} is not downloaded, run `make models MODELS={name}`: {e}"));
   repo.join("snapshots").join(rev.trim()).join(format!("{name}-Q8_0.gguf"))
+}
+
+/// A test clip: `3rd/samples/` has the ones transcribe.cpp's `samples/` lacks (`make samples-he`).
+fn read_sample(sample: &str) -> Vec<f32> {
+  let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("3rd");
+  let mut path = root.join(format!("samples/{sample}.wav"));
+  if !path.exists() {
+    path = root.join(format!("transcribe.cpp/samples/{sample}.wav"));
+  }
+  read_wav(&path)
 }
 
 fn read_wav(path: &Path) -> Vec<f32> {
@@ -87,7 +99,6 @@ fn read_fixture(name: &str, sample: &str) -> (String, Option<Vec<(String, u32)>>
 }
 
 /// The GGUF's `general.languages` is the model's `langs` in `hub::MODELS`.
-#[cfg(feature = "hub")]
 fn check_languages(name: &str, path: &Path) {
   let g = gguf::Gguf::open(path).unwrap();
   let codes: Vec<&str> = g.array("general.languages").unwrap();
@@ -96,9 +107,7 @@ fn check_languages(name: &str, path: &Path) {
 
 fn check(name: &str, samples: &[&str]) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
-  let root = Path::new(env!("CARGO_MANIFEST_DIR"));
   let path = model_path(name);
-  #[cfg(feature = "hub")]
   check_languages(name, &path);
   let model = wavo::Model::load(&path).unwrap();
   for sample in samples {
@@ -106,7 +115,7 @@ fn check(name: &str, samples: &[&str]) {
       Some((clip, code)) => (clip, Some(code.to_string())),
       None => (*sample, None),
     };
-    let pcm = read_wav(&root.join(format!("3rd/transcribe.cpp/samples/{clip}.wav")));
+    let pcm = read_sample(clip);
     let (text, tokens, segments) = read_fixture(name, sample);
     let mut options = wavo::Options::default();
     options.language = language;
@@ -139,9 +148,8 @@ fn check(name: &str, samples: &[&str]) {
 /// A clip played twice, past 1.5 times the model's `max_audio_ms`, fails with `AudioTooLong`.
 fn too_long(name: &str, sample: &str) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
-  let root = Path::new(env!("CARGO_MANIFEST_DIR"));
   let model = wavo::Model::load(model_path(name)).unwrap();
-  let pcm = read_wav(&root.join(format!("3rd/transcribe.cpp/samples/{sample}.wav"))).repeat(2);
+  let pcm = read_sample(sample).repeat(2);
   let got = model.transcribe(&pcm);
   assert!(matches!(got, Err(wavo::Error::AudioTooLong { .. })), "{name} {sample}: {got:?}");
 }
@@ -184,8 +192,18 @@ fn parakeet_tdt_v3() {
 }
 
 #[test]
+fn parakeet_tdt_v3_he() {
+  check("parakeet-tdt-0.6b-v3-he", &["he-short", "he-long"]);
+}
+
+#[test]
 fn whisper_large_v3_turbo() {
   check("whisper-large-v3-turbo", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
+}
+
+#[test]
+fn ivrit_whisper_large_v3_turbo() {
+  check("ivrit-whisper-large-v3-turbo", &["he-short", "he-long"]);
 }
 
 #[test]
