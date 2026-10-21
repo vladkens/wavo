@@ -38,7 +38,7 @@ clean:
 .PHONY: test-unit models models-all samples samples-he reference fixtures compare bench-compare
 
 ALL_MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
-	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 parakeet-tdt-0.6b-v3-he parakeet-ultra parakeet-unified-en-0.6b \
+	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 parakeet-tdt-0.6b-v3-he parakeet-ultra \
 	whisper-large-v3-turbo ivrit-whisper-large-v3-turbo whisper-tiny whisper-base whisper-small whisper-medium whisper-large-v3 whisper-tiny.en whisper-base.en whisper-small.en whisper-medium.en whisper-large whisper-large-v2 Breeze-ASR-25 \
 	moonshine-tiny moonshine-base
 # `make models` and `make test` (and CI) take only the smoke models, by these names in

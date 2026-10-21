@@ -1,10 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! Parakeet TDT and RNN-T: log-mel frontend on the CPU, FastConformer encoder (8× conv
-//! subsampling, relative positions) on the GPU, greedy decoding on the CPU, where a TDT joint also
-//! predicts how many frames to advance. Parakeet Ultra (TDT) adds kestrel's length masking and
-//! symbol budget; its voice activity head, which transcribe.cpp runs to split audio past 30 s, is
-//! not used. Parakeet Unified (RNN-T) has layer biases and xscaling, and attends to the whole clip
-//! offline.
+//! Parakeet TDT: log-mel frontend on the CPU, FastConformer encoder (8× conv subsampling, relative
+//! positions) on the GPU, TDT greedy decoding on the CPU, where the joint also predicts how many
+//! frames to advance. Parakeet Ultra adds kestrel's length masking and symbol budget; its voice
+//! activity head, which transcribe.cpp runs to split audio past 30 s, is not used.
 
 mod decoder;
 mod encoder;
@@ -38,11 +36,10 @@ pub struct Parakeet {
 
 impl Parakeet {
   pub fn load(g: &Gguf) -> Result<Self> {
-    g.check("stt.parakeet.head_kind", &["tdt", "rnnt"])?;
-    // Unified streams with chunked attention, which it doesn't use offline.
-    g.check("stt.parakeet.encoder.att_context_style", &["regular", "chunked_limited_with_rc"])?;
     for (key, want) in [
       ("general.architecture", "parakeet"),
+      ("stt.parakeet.head_kind", "tdt"),
+      ("stt.parakeet.encoder.att_context_style", "regular"),
       ("tokenizer.ggml.model", "bpe"),
       ("stt.frontend.type", "mel"),
       ("stt.frontend.window", "hann"),
@@ -63,14 +60,14 @@ impl Parakeet {
     for (key, want) in [("pre_emphasis", PRE_EMPHASIS), ("f_min", 0.0), ("f_max", F_MAX)] {
       g.check(&format!("stt.frontend.{key}"), &[want])?;
     }
-    let bias = g.get::<bool>("stt.parakeet.encoder.use_bias")?;
-    let xscaling = g.get::<bool>("stt.parakeet.encoder.xscaling")?;
+    g.check("stt.parakeet.encoder.use_bias", &[false])?;
+    g.check("stt.parakeet.encoder.xscaling", &[false])?;
     let kestrel = match g.optional::<&str>("stt.parakeet.encoder.length_masking")? {
       None | Some("none") => false,
       Some("kestrel") => true,
       Some(other) => bail!("stt.parakeet.encoder.length_masking is {other:?}"),
     };
-    let cfg = conformer::Config::load(g, "parakeet", Attention::Relative, bias)?;
+    let cfg = conformer::Config::load(g, "parakeet", Attention::Relative, false)?;
     let pad = (cfg.kernel / 2) as i32;
     for (key, want) in [
       ("att_context_left", -1),
@@ -99,7 +96,7 @@ impl Parakeet {
     let (gpu, encoder, decoder) = std::thread::scope(|s| {
       let decoder = s.spawn(|| Decoder::new(g, vocab.len(), blank));
       let gpu = Gpu::new(true)?;
-      let encoder = Encoder::new(&gpu, g, cfg, ch, joint, xscaling)?;
+      let encoder = Encoder::new(&gpu, g, cfg, ch, joint)?;
       Ok::<_, Error>((gpu, encoder, decoder.join().unwrap()?))
     })?;
     let tok = Tokenizer::new(&vocab);

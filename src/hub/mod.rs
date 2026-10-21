@@ -138,7 +138,6 @@ pub static MODELS: &[ModelInfo] = &[
   ModelInfo { name: "parakeet-v3", owner: HC, full_name: "parakeet-tdt-0.6b-v3", size: 739_508_576, languages: "25 European languages", langs: PARAKEET_V3, punctuated: true },
   ModelInfo { name: "parakeet-v2", owner: HC, full_name: "parakeet-tdt-0.6b-v2", size: 729_574_912, languages: "English", langs: EN, punctuated: true },
   ModelInfo { name: "parakeet-ultra", owner: HC, full_name: "parakeet-ultra", size: 740_363_168, languages: "25 European languages", langs: PARAKEET_ULTRA, punctuated: true },
-  ModelInfo { name: "parakeet-unified", owner: HC, full_name: "parakeet-unified-en-0.6b", size: 731_357_568, languages: "English", langs: EN, punctuated: true },
   ModelInfo { name: "parakeet-he", owner: VK, full_name: "parakeet-tdt-0.6b-v3-he", size: 740_915_360, languages: "Hebrew", langs: HE, punctuated: true },
   ModelInfo { name: "gigaam-v3", owner: HC, full_name: "gigaam-v3-e2e-rnnt", size: 273_724_832, languages: "Russian", langs: RU, punctuated: true },
   ModelInfo { name: "gigaam-v3-e2e-ctc", owner: HC, full_name: "gigaam-v3-e2e-ctc", size: 272_151_136, languages: "Russian", langs: RU, punctuated: true },

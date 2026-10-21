@@ -1,9 +1,9 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Encoder on the GPU: 8× subsampling of the mel image `[t][freq]` by 3×3 stride-2 convs (conv0 +
 //! ReLU, depthwise conv2, pointwise conv3 + ReLU, depthwise conv5, pointwise conv6 + ReLU),
-//! flattened to `[t][channel · 16 + freq]` and projected to d_model (and scaled by √d_model with
-//! xscaling), then the Conformer blocks with relative positions, then the joint's encoder
-//! projection. All dispatches of a call go into one compute pass over a preallocated arena.
+//! flattened to `[t][channel · 16 + freq]` and projected to d_model, then the Conformer blocks with
+//! relative positions, then the joint's encoder projection. All dispatches of a call go into one
+//! compute pass over a preallocated arena.
 
 use std::sync::{Mutex, PoisonError};
 
@@ -26,8 +26,6 @@ pub struct Encoder {
   conv5: Channels,
   conv6: Linear,
   out: Linear,
-  /// NeMo's xscaling: the subsampling output times √d_model.
-  xscale: Option<f32>,
   conformer: Conformer,
   joint: Linear,
   arena: Mutex<Option<Arena>>,
@@ -49,14 +47,7 @@ struct Arena {
 }
 
 impl Encoder {
-  pub fn new(
-    gpu: &Gpu,
-    g: &Gguf,
-    cfg: conformer::Config,
-    ch: usize,
-    joint: usize,
-    xscaling: bool,
-  ) -> Result<Self> {
+  pub fn new(gpu: &Gpu, g: &Gguf, cfg: conformer::Config, ch: usize, joint: usize) -> Result<Self> {
     let d = cfg.d;
     let f32s = |name: String, dims: &[usize]| g.tensor(&name, dims)?.to_f32();
     // Weights from [ch][time tap][frequency tap] to [tap][ch].
@@ -75,7 +66,6 @@ impl Encoder {
       conv5: conv(5)?,
       conv6: linear("enc.pre_encode.conv.6", &[1, 1, ch, ch])?,
       out: linear("enc.pre_encode.out", &[ch * half(half(half(MELS))), d])?,
-      xscale: xscaling.then(|| (d as f32).sqrt()),
       conformer: Conformer::load(gpu, g, cfg)?,
       joint: linear("joint.enc", &[d, joint])?,
       arena: Mutex::new(None),
@@ -101,10 +91,6 @@ impl Encoder {
       }
     };
     gpu.write(&a.mel, mel);
-    if self.xscale.is_some() {
-      // The subsampling output goes onto zeros, see `record`.
-      gpu.write(&a.bufs.x, &vec![0.0; t * d]);
-    }
     gpu.write(&a.bufs.pos, &a.table[(a.frames - t) * d..][..pos_rows(t) * d]);
     let Arena { bufs, mel, out, read, groups, .. } = a;
     let frames = [mel_frames, valid];
@@ -131,11 +117,7 @@ impl Encoder {
     }
     p.gemm(&b.h, &self.conv6, &b.qk, t * f, Epilogue::Relu);
     p.flatten(&b.qk, &b.h, t, f, ch);
-    match self.xscale {
-      // x is zero: 0 + √d · v is the scaled output exactly.
-      Some(scale) => p.gemm(&b.h, &self.out, &b.x, t, Epilogue::Residual(scale)),
-      None => p.gemm(&b.h, &self.out, &b.x, t, Epilogue::Bias),
-    }
+    p.gemm(&b.h, &self.out, &b.x, t, Epilogue::Bias);
     let x = self.conformer.record(p, b, t);
     p.gemm(x, &self.joint, out, t, Epilogue::Bias);
   }

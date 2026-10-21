@@ -199,11 +199,6 @@ fn parakeet_ultra() {
 }
 
 #[test]
-fn parakeet_unified_en() {
-  check("parakeet-unified-en-0.6b", &["jfk", "dots", "jobs-silence"]);
-}
-
-#[test]
 fn parakeet_tdt_v3_he() {
   check("parakeet-tdt-0.6b-v3-he", &["he-short", "he-long"]);
 }

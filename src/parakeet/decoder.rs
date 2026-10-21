@@ -1,8 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! TDT or RNN-T greedy decoding on the CPU: a predictor of stacked LSTM layers over the last
-//! emitted token, and a joint `out(relu(enc + pred(h)))` whose outputs are the token logits, then
-//! for TDT one logit per duration (how many frames to advance). RNN-T decodes as TDT with the one
-//! duration 0. The encoder side of the joint is projected on the GPU.
+//! TDT greedy decoding on the CPU: a predictor of stacked LSTM layers over the last emitted token,
+//! and a joint `out(relu(enc + pred(h)))` whose outputs are the token logits, then one logit per
+//! duration (how many frames to advance). The encoder side of the joint is projected on the GPU.
 //! Q8_0 weights stay Q8_0, so an LSTM step and a joint (V3's: 13.5 MB) stay in the performance
 //! cores' L2; F32 and F16 ones (some converted models) are kept as f32.
 
@@ -42,28 +41,18 @@ struct Lstm {
 impl Decoder {
   pub fn new(g: &Gguf, classes: usize, blank: usize) -> Result<Self> {
     let u = |key: &str| g.get::<u32>(&format!("stt.parakeet.{key}")).map(|v| v as usize);
-    let (hidden, joint, extra) =
-      (u("predictor.hidden")?, u("joint.hidden")?, u("joint.num_extra_outputs")?);
+    let (hidden, joint) = (u("predictor.hidden")?, u("joint.hidden")?);
+    let durations = g.array::<i32>("stt.parakeet.tdt.durations")?;
+    let max_symbols = u("tdt.max_symbols")?;
     g.check("stt.parakeet.joint.activation", &["relu"])?;
     g.check("stt.parakeet.predictor.vocab", &[classes as u32])?;
-    // RNN-T: transcribe.cpp's 10 tokens per frame; the joint has no duration logits, and the
-    // argmax of none is index 0.
-    let (durations, max_symbols, global) = match g.get::<&str>("stt.parakeet.head_kind")? {
-      "rnnt" if extra == 0 => (vec![0], 10, false),
-      "rnnt" => bail!("RNN-T joint with {extra} extra outputs"),
-      _ => {
-        let durations = g.array::<i32>("stt.parakeet.tdt.durations")?;
-        if extra != durations.len() || durations.iter().any(|&d| d < 0) {
-          bail!("TDT durations {durations:?} don't match the joint's extra outputs");
-        }
-        let budget = g.optional::<&str>("stt.parakeet.tdt.symbol_budget")?;
-        let global = match budget.unwrap_or("per_frame") {
-          "per_frame" => false,
-          "global" => true,
-          other => bail!("stt.parakeet.tdt.symbol_budget is {other:?}"),
-        };
-        (durations.into_iter().map(|d| d as usize).collect(), u("tdt.max_symbols")?, global)
-      }
+    if u("joint.num_extra_outputs")? != durations.len() || durations.iter().any(|&d| d < 0) {
+      bail!("TDT durations {durations:?} don't match the joint's extra outputs");
+    }
+    let global = match g.optional::<&str>("stt.parakeet.tdt.symbol_budget")? {
+      None | Some("per_frame") => false,
+      Some("global") => true,
+      Some(other) => bail!("stt.parakeet.tdt.symbol_budget is {other:?}"),
     };
     if max_symbols == 0 {
       bail!("stt.parakeet.tdt.max_symbols is 0");
@@ -79,13 +68,13 @@ impl Decoder {
         })
       })
       .collect::<Result<_>>()?;
-    let outputs = classes + extra;
+    let outputs = classes + durations.len();
     Ok(Self {
       hidden,
       joint,
       classes,
       blank,
-      durations,
+      durations: durations.into_iter().map(|d| d as usize).collect(),
       max_symbols,
       global,
       embed: q("pred.embed.weight", &[hidden, classes])?,
@@ -252,18 +241,6 @@ mod tests {
     let frames: Vec<u32> = out.iter().map(|&(_, t)| t).collect();
     assert_eq!(frames, [vec![0; 10], vec![1; 9], vec![2]].concat());
     assert_eq!(calls.iter().filter(|c| c.0 == 1).count(), 10);
-  }
-
-  #[test]
-  fn rnnt_moves_on_after_blank_or_ten_tokens() {
-    // The one duration 0: a token stays on its frame, a blank moves on, and so does the tenth
-    // token on a frame.
-    let mut script = vec![(BLANK, 0), (5, 0), (BLANK, 0)];
-    script.extend([(6, 0); 10]);
-    let (out, calls) = run(3, &[0], &script);
-    let frames: Vec<u32> = out.iter().map(|&(_, t)| t).collect();
-    assert_eq!(frames, [vec![1], vec![2; 10]].concat());
-    assert_eq!(calls.last(), Some(&(2, Some(6))));
   }
 
   #[test]
