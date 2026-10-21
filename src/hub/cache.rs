@@ -170,6 +170,14 @@ impl Hub {
     if pointers.is_empty() {
       return Ok(None);
     }
+
+    // What `Model::prepare` made for each revision's file, named by the file: hashed before it
+    // goes, under the lock a pull holds while it prepares.
+    let mut prepared = Vec::new();
+    for p in pointers.iter().filter(|p| p.is_file()) {
+      prepared.extend(crate::ane::key(p)?);
+    }
+    prepared.dedup();
     let blobs: Vec<PathBuf> = (pointers.iter().filter_map(|p| fs::read_link(p).ok()))
       .filter_map(|target| target.file_name().map(|etag| dir.join("blobs").join(etag)))
       .collect();
@@ -210,6 +218,9 @@ impl Hub {
     }
     for store in &shared {
       freed += self.sweep(store)?;
+    }
+    for key in &prepared {
+      freed += crate::ane::remove(key)?;
     }
     Ok(Some(freed))
   }

@@ -163,6 +163,11 @@ pub fn prepare(
   if !coreml::available() {
     return Ok(false);
   }
+
+  // One at a time in this process (`wavo pull` pulls models in parallel): a first prepare peaks
+  // at about the model's size in memory.
+  static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+  let _one = ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
   let mut step = |s| if progress(s).is_break() { Err(Error::Cancelled) } else { Ok(()) };
   let target = compiled(path)?;
   let dir = target.parent().unwrap();
@@ -201,21 +206,19 @@ pub fn key(path: &Path) -> Result<Option<String>> {
 /// Deletes the compiled models of every graph version named by `key`; returns the bytes freed.
 pub fn remove(key: &str) -> Result<u64> {
   let dir = cache()?;
-  let entries = match fs::read_dir(&dir) {
+  // `prepare`'s lock, which it creates first: none, nothing to delete. Taken before listing so that
+  // a prepare under way finishes first, and left in place: a new file would let another prepare in
+  // meanwhile.
+  let lock = match File::options().write(true).open(dir.join(format!("{key}.v{GRAPH}.lock"))) {
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-    entries => entries?,
+    lock => lock?,
   };
-  let paths: Vec<PathBuf> = (entries.collect::<std::io::Result<Vec<_>>>()?.into_iter())
+  lock.lock()?;
+  let paths: Vec<PathBuf> = (fs::read_dir(&dir)?.collect::<std::io::Result<Vec<_>>>()?.into_iter())
     .map(|e| e.path())
     .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{key}."))))
     .filter(|p| p.extension().is_none_or(|e| e != "lock"))
     .collect();
-  if paths.is_empty() {
-    return Ok(0);
-  }
-  // `prepare`'s lock, which stays in place: a new file would let another prepare in meanwhile.
-  let lock = File::create(dir.join(format!("{key}.v{GRAPH}.lock")))?;
-  lock.lock()?;
   let mut freed = 0;
   for p in paths {
     freed += size(&p);

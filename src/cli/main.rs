@@ -156,13 +156,14 @@ enum Download {
 }
 
 /// A model by name, downloaded when `download` allows, or a `.gguf` path.
-fn model_path(arg: &str, download: Download) -> Result<PathBuf> {
+fn model_path(arg: &str, download: Download, on: Backend) -> Result<PathBuf> {
   let m = match models::resolve(arg)? {
     Source::Path(path) if path.is_file() => return Ok(path),
     Source::Path(path) => bail!("{}: no such file", path.display()),
     Source::Model(m) => m,
   };
-  let hub = Hub::new();
+  // `--backend gpu` skips preparing for the Neural Engine after a download.
+  let hub = Hub::new().prepare(on != Backend::Gpu);
   if let Some(path) = hub.find(m.name) {
     return Ok(path);
   }
@@ -251,7 +252,7 @@ fn run(args: &[&str]) -> Result<()> {
     meta => meta.with_context(|| format!("reading {audio}"))?,
   };
   ensure!(!meta.is_dir(), "{audio}: a folder, not an audio file");
-  let path = model_path(model, download)?;
+  let path = model_path(model, download, on)?;
   let bar = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear); // on errors too
   bar.set_style(ProgressStyle::with_template("{spinner} {msg} {elapsed}")?);
   bar.enable_steady_tick(Duration::from_millis(100));
@@ -431,7 +432,7 @@ fn bench(model: &str, audio: &str, opts: &[&str]) -> Result<()> {
     }
   }
 
-  let (pcm, path) = (audio::read(audio)?, model_path(model, Download::Never)?);
+  let (pcm, path) = (audio::read(audio)?, model_path(model, Download::Never, on)?);
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
   let t = Instant::now();
   let model = load(&path, on)?;

@@ -387,11 +387,7 @@ impl Hub {
   /// - [`Error::Io`]: deleting failed.
   pub fn remove(&self, name: &str) -> Result<Option<u64>> {
     let m = lookup(name)?;
-    // Named by the file, which is gone once removed.
-    let prepared = self.find(name).map(|path| crate::ane::key(&path)).transpose()?.flatten();
-    let freed = self.remove_file(&m.repo(), &m.file())?;
-    let ane = prepared.map(|key| crate::ane::remove(&key)).transpose()?.unwrap_or(0);
-    Ok(freed.map(|bytes| bytes + ane))
+    self.remove_file(&m.repo(), &m.file())
   }
 }
 
