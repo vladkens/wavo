@@ -1,7 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Transcripts must match the reference fixtures (`make fixtures`) exactly: text, every token piece
 //! and its start time (for Whisper every segment's text and start). Every GGUF must list the
-//! languages `hub::MODELS` gives its model. Missing models or samples fail the test.
+//! languages `hub::MODELS` gives its model. Missing models or samples fail the test. A sample
+//! `<clip>+prompt` is `<clip>` transcribed with `Options::punctuate`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -101,9 +102,15 @@ fn check(name: &str, samples: &[&str]) {
   check_languages(name, &path);
   let model = wavo::Model::load(&path).unwrap();
   for sample in samples {
-    let pcm = read_wav(&root.join(format!("3rd/transcribe.cpp/samples/{sample}.wav")));
+    let (clip, punctuate) = match sample.strip_suffix("+prompt") {
+      Some(clip) => (clip, true),
+      None => (*sample, false),
+    };
+    let pcm = read_wav(&root.join(format!("3rd/transcribe.cpp/samples/{clip}.wav")));
     let (text, tokens, segments) = read_fixture(name, sample);
-    let got = model.transcribe(&pcm).unwrap();
+    let mut options = wavo::Options::default();
+    options.punctuate = punctuate;
+    let got = model.transcribe_with(&pcm, &options).unwrap();
     assert_eq!(got.text, text, "{name} {sample}: text");
     let Some(tokens) = tokens else {
       // Text only (Moonshine): the pieces make the text, but for one leading space.
@@ -176,14 +183,20 @@ fn parakeet_tdt_v3() {
   check("parakeet-tdt-0.6b-v3", &["jfk", "ru-short", "uk-short"]);
 }
 
+// `+prompt`: with the punctuation prompt, on clips in four languages of one window each (the
+// reference primes only the first).
 #[test]
 fn whisper_large_v3_turbo() {
-  check("whisper-large-v3-turbo", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
+  let samples = ["jfk", "zh-short", "ru-long", "jobs-silence"];
+  let prompted = ["jfk+prompt", "zh-short+prompt", "ru-short+prompt", "german+prompt"];
+  check("whisper-large-v3-turbo", &[&samples[..], &prompted].concat());
 }
 
 #[test]
 fn whisper_tiny() {
-  check("whisper-tiny", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
+  let samples = ["jfk", "zh-short", "ru-long", "jobs-silence"];
+  let prompted = ["jfk+prompt", "zh-short+prompt", "german+prompt"];
+  check("whisper-tiny", &[&samples[..], &prompted].concat());
 }
 
 #[test]

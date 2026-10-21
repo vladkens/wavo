@@ -214,6 +214,23 @@ pub struct Transcript {
   pub tokens: Vec<Token>,
 }
 
+/// Options for [`Model::transcribe_with`]. Start from `Options::default()`, which
+/// [`Model::transcribe`] uses, and set the fields to change.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct Options {
+  /// Whisper only, multilingual models: decode each 30 s window after a short punctuated
+  /// sentence in the language the model detects, given as the text before the audio (as
+  /// transcribe.cpp's `--initial-prompt`, which primes the first window only). Whisper
+  /// large-v3-turbo often writes long readings in lowercase without punctuation; with the sentence
+  /// it mostly cases and punctuates them. The sentence is not part of the transcript. 27
+  /// languages have one, among them English, Chinese, Japanese, Spanish, French, German, Russian
+  /// and Ukrainian; other languages, `.en` models and the other families ignore the option. Off
+  /// by default: it changes the text, now and then a word too, and small models such as
+  /// whisper-tiny gain nothing from it and can lose text. It costs 13–41 decoder steps per window.
+  pub punctuate: bool,
+}
+
 /// One token of a [`Transcript`].
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
@@ -285,6 +302,26 @@ impl Model {
   /// # Ok::<(), wavo::Error>(())
   /// ```
   pub fn transcribe(&self, pcm: &[f32]) -> Result<Transcript> {
+    self.transcribe_with(pcm, &Options::default())
+  }
+
+  /// [`transcribe`](Self::transcribe) with [`Options`].
+  ///
+  /// # Errors
+  ///
+  /// As [`transcribe`](Self::transcribe).
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// let model = wavo::Model::load("whisper-large-v3-turbo-Q8_0.gguf")?;
+  /// # let pcm = vec![0.0f32; 16_000];
+  /// let mut options = wavo::Options::default();
+  /// options.punctuate = true;
+  /// let transcript = model.transcribe_with(&pcm, &options)?;
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn transcribe_with(&self, pcm: &[f32], options: &Options) -> Result<Transcript> {
     // One pass over the whole audio: a little past the window still matches the reference (the
     // 34-35 s fixtures), from ~45 s the tail is dropped or made up, and much longer audio
     // overruns the GPU's 65 535 workgroups per dispatch.
@@ -298,7 +335,7 @@ impl Model {
     match &self.0 {
       Family::Gigaam(m) => m.transcribe(pcm),
       Family::Parakeet(m) => m.transcribe(pcm),
-      Family::Whisper(m) => m.transcribe(pcm),
+      Family::Whisper(m) => m.transcribe(pcm, options.punctuate),
       Family::Moonshine(m) => m.transcribe(pcm),
     }
   }

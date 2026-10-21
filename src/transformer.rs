@@ -242,8 +242,23 @@ impl Decoder {
   /// Records the decoder on a token at position `pos`, attending to `frames` encoder frames; the
   /// logits end up in `b.logits`. The token is `ids[i]` (u32 bits) when the step runs. With
   /// rotary dims, `rope` is the table of `Pass::rope` from position 0.
-  #[allow(clippy::too_many_arguments)]
   pub fn record_step(
+    &self,
+    p: &mut Pass,
+    b: &Steps,
+    token: (&Buffer, usize),
+    pos: usize,
+    frames: usize,
+    rope: Option<&Buffer>,
+  ) {
+    self.record_cache(p, b, token, pos, frames, rope);
+    p.layer_norm_row(&b.x, &self.norm, &b.y, self.cfg.d);
+    p.gemv(&b.y, &self.embed, &b.logits, Epilogue::Bias, 0);
+  }
+
+  /// [`Self::record_step`] up to the self-attention caches, without the logits: for a prompt's
+  /// tokens before the last.
+  pub fn record_cache(
     &self,
     p: &mut Pass,
     b: &Steps,
@@ -277,7 +292,5 @@ impl Decoder {
       }
       p.gemv(&b.h, &l.fc2, &b.x, Epilogue::Residual(1.0), 0);
     }
-    p.layer_norm_row(&b.x, &self.norm, &b.y, d);
-    p.gemv(&b.y, &self.embed, &b.logits, Epilogue::Bias, 0);
   }
 }

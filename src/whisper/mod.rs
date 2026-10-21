@@ -5,6 +5,7 @@
 
 mod encoder;
 mod frontend;
+mod prompt;
 mod search;
 pub(crate) mod tokenizer;
 
@@ -34,7 +35,11 @@ pub struct Whisper {
   sot: usize,
   transcribe: usize,
   no_speech: usize,
+  /// `<|startofprev|>`, before the previous text.
+  prev: usize,
   languages: Vec<usize>,
+  /// Each language's punctuation prompt (see `prompt`), empty for one without.
+  prompts: Vec<Vec<usize>>,
   encoder: Encoder,
   decoder: Decoder,
   arena: Mutex<Arena>,
@@ -44,7 +49,7 @@ pub struct Whisper {
 struct Arena {
   enc: encoder::Buffers,
   dec: Steps,
-  /// The tokens of a pass's steps, as u32 bits.
+  /// The tokens of a pass's steps, as u32 bits: the longest prompt and SOT.
   ids: Buffer,
   read: Buffer,
   window: Groups,
@@ -117,14 +122,17 @@ impl Whisper {
       begin_suppress: list("stt.whisper.begin_suppress_tokens")?,
     };
     // English-only (`.en`) models have no language or task tokens: they prompt with SOT alone.
-    let languages = match g.get::<bool>("stt.capability.lang_detect")? {
-      true => (g.array::<&str>("general.languages")?.iter())
-        .map(|code| tok.find(&format!("<|{code}|>")))
-        .collect::<Option<Vec<_>>>(),
-      false => Some(Vec::new()),
+    let codes = match g.get::<bool>("stt.capability.lang_detect")? {
+      true => g.array::<&str>("general.languages")?,
+      false => Vec::new(),
     };
-    let Some(languages) = languages else { bail!("a language of general.languages has no token") };
-    let all = [&ids.suppress[..], &ids.begin_suppress, &languages, &[ids.eot, no_timestamps]];
+    let languages = codes.iter().map(|code| tok.find(&format!("<|{code}|>")));
+    let Some(languages) = languages.collect::<Option<Vec<_>>>() else {
+      bail!("a language of general.languages has no token")
+    };
+    let prompts: Vec<_> = codes.iter().map(|code| prompt::ids(code, &tok)).collect();
+    let prev = if codes.is_empty() { 0 } else { u("prev_sot_token_id")? };
+    let all = [&ids.suppress[..], &ids.begin_suppress, &languages, &[ids.eot, no_timestamps, prev]];
     if all.iter().flat_map(|v| v.iter()).any(|&i| i >= vocab) {
       bail!("special token ids out of the vocabulary");
     }
@@ -135,10 +143,11 @@ impl Whisper {
     let encoder = Encoder::load(&gpu, g, encoder::Config { mels, frames: SAMPLES / HOP / 2 }, enc)?;
     let decoder = Decoder::load(&gpu, g, dec, vocab, context)?;
     let frames = encoder.cfg.frames;
+    let longest = prompts.iter().map(|p| p.len() + 2).max().unwrap_or(2);
     let arena = Arena {
       enc: encoder.buffers(&gpu),
       dec: decoder.steps(&gpu, frames),
-      ids: gpu.buffer(2),
+      ids: gpu.buffer(longest),
       read: gpu.readback(vocab),
       window: Vec::new(),
       steps: Vec::new(),
@@ -148,7 +157,9 @@ impl Whisper {
       sot: u("sot_token_id")?,
       transcribe: u("transcribe_token_id")?,
       no_speech: no_timestamps - 1,
+      prev,
       languages,
+      prompts,
       gpu,
       frontend,
       tok,
@@ -163,7 +174,9 @@ impl Whisper {
     self.arena.lock().unwrap_or_else(PoisonError::into_inner)
   }
 
-  pub fn transcribe(&self, pcm: &[f32]) -> Result<Transcript> {
+  /// With `punctuate`, each window's decoding starts after the punctuation prompt of the language
+  /// detected on the first window, if the language has one.
+  pub fn transcribe(&self, pcm: &[f32], punctuate: bool) -> Result<Transcript> {
     let mels = self.encoder.cfg.mels;
     let window = 2 * self.encoder.cfg.frames;
     let mel = self.frontend.compute(pcm);
@@ -175,18 +188,31 @@ impl Whisper {
       let frames = (total - seek).min(window);
       let mut chunk = mel[seek * mels..(seek + frames) * mels].to_vec();
       chunk.resize(window * mels, 0.0);
-      let sot = self.window(&mut a, &chunk)?;
-      let no_speech = search::probability(&sot, self.no_speech);
-      let prompt = match self.languages.first() {
-        Some(&first) => {
-          // Detected on the first window: the first of the highest.
-          let best = |best: usize, &id: &usize| if sot[id] > sot[best] { id } else { best };
-          let language = *language.get_or_insert_with(|| self.languages.iter().fold(first, best));
-          vec![self.sot, language, self.transcribe]
-        }
-        None => vec![self.sot],
+      let mut sot = self.window(&mut a, &chunk)?;
+      // Detected on the first window from SOT alone: the first of the highest.
+      let best = |best: usize, i: usize| {
+        if sot[self.languages[i]] > sot[self.languages[best]] { i } else { best }
       };
-      let logits = if prompt.len() > 1 { self.steps(&mut a, &prompt[1..], 1)? } else { sot };
+      let language = (!self.languages.is_empty())
+        .then(|| *language.get_or_insert_with(|| (0..self.languages.len()).fold(0, best)));
+      let primer = language.filter(|_| punctuate).map_or(&[][..], |i| &self.prompts[i]);
+      let mut prompt = vec![self.sot];
+      if !primer.is_empty() {
+        // The primer as the previous text before SOT, whose logits then give the no-speech
+        // probability, as in the reference.
+        prompt = [&[self.prev], primer, &[self.sot]].concat();
+        sot = self.steps(&mut a, &prompt, 0)?;
+      }
+
+      let no_speech = search::probability(&sot, self.no_speech);
+      let logits = match language {
+        Some(i) => {
+          let tokens = [self.languages[i], self.transcribe];
+          prompt.extend(tokens);
+          self.steps(&mut a, &tokens, prompt.len() - 2)?
+        }
+        None => sot,
+      };
       let (generated, logprob) =
         search::decode(&self.ids, logits, prompt.len(), no_speech > NO_SPEECH, |token, pos| {
           self.steps(&mut a, &[token], pos)
@@ -230,18 +256,20 @@ impl Whisper {
     })
   }
 
-  /// Runs the decoder on `tokens` (at most 2) from position `pos` in one pass; returns the last
-  /// one's logits. While the GPU runs it, the CPU records a step at the position after, which the
-  /// next call takes if it is for that position. Every step has the same dispatches over the same
-  /// buffers, so the bind groups are shared.
+  /// Runs the decoder on `tokens` (at most the `ids` buffer) from position `pos` in one pass;
+  /// returns the last one's logits. While the GPU runs it, the CPU records a step at the position
+  /// after, which the next call takes if it is for that position. Every step has the same
+  /// dispatches over the same buffers, so the bind groups are shared.
   fn steps(&self, a: &mut Arena, tokens: &[usize], pos: usize) -> Result<Vec<f32>> {
     let frames = self.encoder.cfg.frames;
     let Arena { dec, ids, read, steps, next, .. } = a;
     let record = |steps: &mut Groups, pos: usize, n: usize| {
       self.gpu.record(steps, &dec.logits, read, self.decoder.vocab, |p| {
-        for i in 0..n {
-          self.decoder.record_step(p, dec, (ids, i), pos + i, frames, None);
+        for i in 0..n - 1 {
+          self.decoder.record_cache(p, dec, (ids, i), pos + i, frames, None);
         }
+
+        self.decoder.record_step(p, dec, (ids, n - 1), pos + n - 1, frames, None);
       })
     };
     let r = match next.take() {

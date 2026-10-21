@@ -1,7 +1,17 @@
+## german+prompt
+text: Am Strand, der Badeanzug, die Badehose, die Sandalen, die Luftmatratze, das Handtuch, das Eis, der Ball, die Sonne, das Meer, die Wellen.
+segments: 1
+  [   0.00 ->   28.18] Am Strand, der Badeanzug, die Badehose, die Sandalen, die Luftmatratze, das Handtuch, das Eis, der Ball, die Sonne, das Meer, die Wellen.
+
 ## jfk
 text: And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country.
 segments: 1
   [   0.00 ->   10.40] And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country.
+
+## jfk+prompt
+text: And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country.
+segments: 1
+  [   0.00 ->   11.00] And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country.
 
 ## jobs-silence
 text: Thank you.
@@ -15,7 +25,17 @@ segments: 3
   [  19.38 ->   25.24] и что к ним не добавлены какие-либо другие конверты, кроме конвертов тех людей,
   [  25.74 ->   32.28] которых допустили к участию в голосовании и голоса которых подсчитали надлежащим образом.
 
+## ru-short+prompt
+text: Он добавил, что их, однако, не следует просить брать на себя обязательства, которые выходят за рамки их стадий разработки, ответственности и возможностей.
+segments: 1
+  [   0.00 ->    9.96] Он добавил, что их, однако, не следует просить брать на себя обязательства, которые выходят за рамки их стадий разработки, ответственности и возможностей.
+
 ## zh-short
 text: 日本原子能机构表示核电站检测出了放射性物质验核电
 segments: 1
   [   0.00 ->    7.42] 日本原子能机构表示核电站检测出了放射性物质验核电
+
+## zh-short+prompt
+text: 日本原子能机构表示,核电站检测出了放射性物质验核电。
+segments: 1
+  [   0.00 ->   11.00] 日本原子能机构表示,核电站检测出了放射性物质验核电。

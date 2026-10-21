@@ -1,7 +1,17 @@
+## german+prompt
+text: Am Strand der Bade anzug, die Badehose, die Sandalen, die Luftmatratze, das Handtuch, das Eis, der Ball, die Sonne, das Meer, die Wellen,
+segments: 1
+  [   0.00 ->   29.00] Am Strand der Bade anzug, die Badehose, die Sandalen, die Luftmatratze, das Handtuch, das Eis, der Ball, die Sonne, das Meer, die Wellen,
+
 ## jfk
 text: And so my fellow Americans ask not what your country can do for you, ask what you can do for your country.
 segments: 1
   [   0.00 ->   10.50] And so my fellow Americans ask not what your country can do for you, ask what you can do for your country.
+
+## jfk+prompt
+text: And so my fellow Americans ask not what your country can do for you, ask what you can do for your country.
+segments: 1
+  [   0.00 ->   11.00] And so my fellow Americans ask not what your country can do for you, ask what you can do for your country.
 
 ## jobs-silence
 text: See you next time!
@@ -22,3 +32,8 @@ segments: 6
 text: 日本原子能激過表示和點戰檢測輸了放射性物質 驗和點
 segments: 1
   [   0.00 ->    7.50] 日本原子能激過表示和點戰檢測輸了放射性物質 驗和點
+
+## zh-short+prompt
+text: 日版原子能机构表示和点战渐测数了放射性物质、验和点。
+segments: 1
+  [   0.00 ->    8.00] 日版原子能机构表示和点战渐测数了放射性物质、验和点。

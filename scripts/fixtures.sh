@@ -8,6 +8,11 @@
 # the `text: ` line alone. Writes nothing if the reference fails, cuts a decode short (`run:` not
 # `ok`: truncated or repeating) or prints anything else.
 #
+# With PROMPT (Whisper), the reference runs with `--initial-prompt "$PROMPT"` and the block is
+# `## SAMPLE+prompt`: the transcript `Options::punctuate` gives when PROMPT is the sentence
+# src/whisper/prompt.rs has for the language detected. Only for clips up to 30 s: the reference
+# primes the first window alone, wavo every window.
+#
 # The clips come from transcribe.cpp's samples/ and stay there; some are Google FLEURS recordings
 # (CC-BY-4.0). The fixtures keep only the reference's transcripts, never audio.
 set -eu
@@ -26,8 +31,12 @@ if [ -f "$out" ]; then
   awk -v dir="$tmp/blocks" '/^## /{f = dir "/" substr($0, 4); next} /./{print > f}' "$out"
 fi
 
+run() {
+  if [ -n "${PROMPT:-}" ]; then "$cli" --initial-prompt "$PROMPT" "$@"; else "$cli" "$@"; fi
+}
+
 for s in "$@"; do
-  "$cli" -m "$model" --timestamps "$timestamps" "3rd/transcribe.cpp/samples/$s.wav" \
+  run -m "$model" --timestamps "$timestamps" "3rd/transcribe.cpp/samples/$s.wav" \
     > "$tmp/raw" 2> /dev/null || { echo "$s: transcribe-cli failed" >&2; exit 1; }
   grep -qx 'run: ok' "$tmp/raw" || { echo "$s: $(grep '^run: ' "$tmp/raw")" >&2; exit 1; }
   # From `text:` to `realtime:` every line must be known, so the filter below drops no part of
@@ -44,7 +53,7 @@ for s in "$@"; do
     echo "$s: unexpected output from transcribe-cli" >&2
     exit 1
   fi
-  mv "$tmp/block" "$tmp/blocks/$s"
+  mv "$tmp/block" "$tmp/blocks/$s${PROMPT:++prompt}"
 done
 
 first=1
