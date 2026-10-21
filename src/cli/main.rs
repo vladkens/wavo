@@ -98,15 +98,36 @@ fn cli(args: &[&str]) -> Result<()> {
     ["list" | "ls"] => list()?,
     ["rm", name] => rm(name)?,
     ["bench", model, audio] => bench(model, audio, 10)?,
-    ["bench", model, audio, "-n", n] => bench(model, audio, n.parse().context("-n")?)?,
-    ["debug"] => debug::print()?,
-    // wavo AUDIO, also with run options first: wavo -y AUDIO
-    [arg, ..] if arg.starts_with('-') || (!COMMANDS.contains(arg) && Path::new(arg).is_file()) => {
-      run(args)?
+    ["bench", model, audio, "-n", n] => {
+      let n = n.parse().ok().filter(|&n| n > 0);
+      bench(model, audio, n.context("-n takes a whole number of calls, at least 1")?)?
     }
-    _ => bail!("unknown command: wavo {}\n\n{}", args.join(" "), usage()),
+    ["debug"] => debug::print()?,
+    // wavo AUDIO, also with run options first (wavo -y AUDIO), and whatever looks like a file,
+    // so that a mistyped one fails as missing
+    [arg, ..] if arg.starts_with('-') || !COMMANDS.contains(arg) && file_like(arg) => run(args)?,
+    ["pull"] => bail!("usage: wavo pull MODEL..."),
+    ["rm", ..] => bail!("usage: wavo rm MODEL"),
+    ["bench", ..] => bail!("usage: wavo bench MODEL AUDIO [-n N]"),
+    [command @ ("list" | "ls" | "debug"), ..] => bail!("usage: wavo {command}"),
+    [arg, ..] if hub::lookup(arg).is_ok() => {
+      bail!("{arg} is a model, not a command; to transcribe with it: wavo run {}", args.join(" "))
+    }
+    _ => bail!("unknown command: wavo {}; see wavo --help", args.join(" ")),
   }
   Ok(())
+}
+
+/// Whether `arg` names a file: an existing one, a path or a name with an audio extension.
+fn file_like(arg: &str) -> bool {
+  Path::new(arg).is_file() || arg.contains(['/', '\\']) || audio_like(arg)
+}
+
+/// Whether `arg` ends in an audio extension.
+fn audio_like(arg: &str) -> bool {
+  const AUDIO: &[&str] = &["wav", "mp3", "m4a", "mp4", "aac", "flac", "ogg", "oga", "opus"];
+  let ext = Path::new(arg).extension().and_then(|e| e.to_str()).unwrap_or_default();
+  AUDIO.iter().any(|a| a.eq_ignore_ascii_case(ext))
 }
 
 /// Whether a command may download a model that isn't in the cache.
@@ -164,6 +185,7 @@ fn run(args: &[&str]) -> Result<()> {
   while let Some(&arg) = args.next() {
     match arg {
       "--json" | "--srt" if format.is_none() => format = Some(arg),
+      "--json" | "--srt" if format != Some(arg) => bail!("--json and --srt: choose one"),
       "--segment" if segment.is_none() => {
         let secs = args.next().and_then(|s| s.parse::<u32>().ok()).filter(|&s| s == 0 || s >= 5);
         let secs =
@@ -171,7 +193,7 @@ fn run(args: &[&str]) -> Result<()> {
         segment = Some(secs.saturating_mul(1000));
       }
       "-y" | "--yes" => download = Download::Yes,
-      _ if arg.starts_with("--") => bail!(USAGE),
+      _ if arg.starts_with('-') => bail!("unknown or repeated option {arg}\n{USAGE}"),
       _ => rest.push(arg),
     }
   }
@@ -180,11 +202,20 @@ fn run(args: &[&str]) -> Result<()> {
       bail!("no audio file given: wavo run {arg} AUDIO")
     }
     [audio] => (models::DEFAULT, audio),
-    [model, audio] => (model, audio),
+    [model, audio] if !audio_like(model) => (model, audio),
+    [audio, model] if !audio_like(model) => {
+      bail!("the model comes first: wavo run {model} {audio}")
+    }
+    _ if rest.iter().filter(|a| audio_like(a)).count() > 1 => {
+      bail!("wavo takes one audio file at a time: run it once per file")
+    }
     _ => bail!(USAGE),
   };
   // Before anything is asked or downloaded.
-  let meta = std::fs::metadata(audio).with_context(|| format!("reading {audio}"))?;
+  let meta = match std::fs::metadata(audio) {
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!("no such file: {audio}"),
+    meta => meta.with_context(|| format!("reading {audio}"))?,
+  };
   ensure!(!meta.is_dir(), "{audio}: a folder, not an audio file");
   let path = model_path(model, download)?;
   let bar = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear); // on errors too
@@ -207,6 +238,11 @@ fn run(args: &[&str]) -> Result<()> {
   });
   let (transcript, starts) = split::join(parts.collect::<Result<Vec<_>>>()?);
   bar.finish_and_clear();
+  // Silence or noise: not an error, so that a batch of files goes on.
+  if transcript.text.is_empty() {
+    eprintln!("no speech recognized in {audio}");
+  }
+
   let (tokens, ms) = (&transcript.tokens, (pcm.len() / 16) as u32);
   let text = match format {
     Some("--json") => output::json(&transcript) + "\n",
@@ -215,6 +251,7 @@ fn run(args: &[&str]) -> Result<()> {
       output::srt_segments(tokens, ms)
     }
     Some(_) => output::srt(tokens, &starts, ms),
+    None if transcript.text.is_empty() => String::new(),
     None => format!("{}\n", transcript.text),
   };
   Ok(std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())?)
@@ -320,7 +357,6 @@ fn rm(arg: &str) -> Result<()> {
 
 /// Load time, first call and warm median/min over `n` calls, in milliseconds.
 fn bench(model: &str, audio: &str, n: usize) -> Result<()> {
-  ensure!(n > 0, "-n must be at least 1");
   let (pcm, path) = (audio::read(audio)?, model_path(model, Download::Never)?);
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
   let t = Instant::now();
@@ -340,4 +376,53 @@ fn bench(model: &str, audio: &str, n: usize) -> Result<()> {
     warm[0]
   )?;
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// The error `wavo ARGS` fails with; each fails before any model, download or GPU.
+  fn error(args: &str) -> String {
+    format!("{:#}", cli(&args.split(' ').collect::<Vec<_>>()).unwrap_err())
+  }
+
+  #[test]
+  fn errors_name_the_problem() {
+    assert_eq!(error("tlak.m4a"), "no such file: tlak.m4a");
+    assert_eq!(error("dir/talk"), "no such file: dir/talk");
+    assert_eq!(error("run gigaam-v3 TALK.WAV"), "no such file: TALK.WAV");
+    let one = "wavo takes one audio file at a time: run it once per file";
+    assert_eq!(error("a.mp3 b.mp3"), one);
+    assert_eq!(error("run a.mp3 b.wav c.ogg"), one);
+    assert_eq!(
+      error("run talk.wav gigaam-v3"),
+      "the model comes first: wavo run gigaam-v3 talk.wav"
+    );
+    assert_eq!(
+      error("gigaam-v3 talk.wav"),
+      "gigaam-v3 is a model, not a command; to transcribe with it: wavo run gigaam-v3 talk.wav"
+    );
+    assert_eq!(error("frobnicate"), "unknown command: wavo frobnicate; see wavo --help");
+    assert_eq!(error("pull"), "usage: wavo pull MODEL...");
+    assert_eq!(error("bench gigaam-v3"), "usage: wavo bench MODEL AUDIO [-n N]");
+    assert_eq!(error("list x"), "usage: wavo list");
+    assert_eq!(
+      error("bench gigaam-v3 talk.wav -n 0"),
+      "-n takes a whole number of calls, at least 1"
+    );
+    assert!(error("talk.wav --jsn").starts_with("unknown or repeated option --jsn\nusage: "));
+    assert!(error("talk.wav -n 5").starts_with("unknown or repeated option -n\n"));
+    assert_eq!(error("talk.wav --json --srt"), "--json and --srt: choose one");
+  }
+
+  #[test]
+  fn audio_names() {
+    for arg in ["a.wav", "b.MP3", "dir/c.m4a", "d.flac", "e.ogg", "f.opus"] {
+      assert!(audio_like(arg), "{arg}");
+    }
+    for arg in ["whisper-tiny.en", "parakeet-tdt-0.6b-v3", "model.gguf", "wav", "talk"] {
+      assert!(!audio_like(arg), "{arg}");
+    }
+  }
 }
