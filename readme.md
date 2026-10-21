@@ -49,11 +49,13 @@ how I build now.
 |---|---|---|---|
 | `parakeet-v3` (default) | 0.74 GB | 25 European languages | cased, punctuated |
 | `parakeet-v2` | 0.73 GB | English | cased, punctuated |
+| `parakeet-he` | 0.74 GB | Hebrew | cased, punctuated |
 | `gigaam-v3` | 0.27 GB | Russian | cased, punctuated |
 | `gigaam-v3-e2e-ctc` | 0.27 GB | Russian | cased, punctuated |
 | `gigaam-v3-rnnt` | 0.27 GB | Russian | lowercase, no punctuation |
 | `gigaam-v3-ctc` | 0.27 GB | Russian | lowercase, no punctuation |
 | `whisper-turbo` | 0.89 GB | 100 languages | cased, punctuated |
+| `whisper-turbo-he` | 0.89 GB | Hebrew | cased, punctuated |
 | `whisper-tiny` | 0.05 GB | 99 languages | cased, punctuated |
 | `whisper-base` | 0.08 GB | 99 languages | cased, punctuated |
 | `whisper-small` | 0.27 GB | 99 languages | cased, punctuated |
@@ -75,10 +77,13 @@ GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM), Whisp
 Research's [Whisper large-v2 fine-tune](https://huggingface.co/MediaTek-Research/Breeze-ASR-25)
 and Moonshine is Useful Sensors' [Moonshine](https://huggingface.co/UsefulSensors/moonshine-tiny),
 small and fast. Moonshine has no timestamps: its tokens all start at 0, and `--srt` gives one cue
-per piece of the split audio.
+per piece of the split audio. The Hebrew models are ivrit.ai's
+[Whisper turbo fine-tune](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo) and Yakov
+Kolani's [Parakeet v3 fine-tune](https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he).
 Short names stand for the published ones: `parakeet-v3` is `parakeet-tdt-0.6b-v3`, `parakeet-v2`
-is `parakeet-tdt-0.6b-v2`, `gigaam-v3` is `gigaam-v3-e2e-rnnt`, `whisper-turbo` is
-`whisper-large-v3-turbo` and `breeze-asr-25` is `Breeze-ASR-25`; full names and a path to a
+is `parakeet-tdt-0.6b-v2`, `parakeet-he` is `parakeet-tdt-0.6b-v3-he`, `gigaam-v3` is
+`gigaam-v3-e2e-rnnt`, `whisper-turbo` is `whisper-large-v3-turbo`, `whisper-turbo-he` is
+`ivrit-whisper-large-v3-turbo` and `breeze-asr-25` is `Breeze-ASR-25`; full names and a path to a
 `.gguf` work too.
 
 ## 📥 Installation
@@ -301,8 +306,8 @@ wavo's kernels and algorithms are built from the ideas and code of these project
   transcribe.cpp's ports.
 
 **Models.** wavo ships no weights: `wavo pull` downloads the GGUF conversions that
-[handy-computer](https://huggingface.co/handy-computer) publishes on Hugging Face, under the
-original licenses:
+[handy-computer](https://huggingface.co/handy-computer) publishes on Hugging Face, and
+[vladkens](https://huggingface.co/vladkens) for the Hebrew models, under the original licenses:
 
 - Parakeet TDT ([v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2),
   [v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)) © NVIDIA, CC-BY-4.0
@@ -314,6 +319,10 @@ original licenses:
   [base](https://huggingface.co/UsefulSensors/moonshine-base)) © Useful Sensors, MIT
 - [Breeze-ASR-25](https://huggingface.co/MediaTek-Research/Breeze-ASR-25) © MediaTek Research,
   Apache-2.0
+- [ivrit-ai/whisper-large-v3-turbo](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo) ©
+  ivrit.ai, Apache-2.0
+- [parakeet-tdt-0.6b-v3-he](https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he) © Yakov
+  Kolani, CC-BY-4.0
 
 ## 📝 License
 

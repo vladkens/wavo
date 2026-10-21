@@ -68,7 +68,8 @@ the `Makefile` and `.github/workflows/main.yml`.
   schema: its `scripts/convert-<family>.py` is the spec.
 - When adapting code from `3rd/` (MIT), name the source file in a comment next to it and add the
   upstream copyright line to `LICENSE` once.
-- Take test audio from `3rd/transcribe.cpp/samples/`; never copy audio into the repository.
+- Take test audio from `3rd/transcribe.cpp/samples/`, or `3rd/samples/` for clips it lacks (`make
+  samples-he` fetches them); never copy audio into the repository.
 - The `research` branch is read-only reference from an earlier, bloated attempt: read it with
   `git show research:<path>` and port ideas. Never merge it.
 
@@ -122,9 +123,9 @@ the `Makefile` and `.github/workflows/main.yml`.
 
 - Before committing, run `make check` and `make test` (the smoke run). `make prepare` rewrites
   files: not a check.
-- Run `make test-all` (every model, after `make models-all`) before a release and before merging
-  speed work or a PR that touches GPU kernels, `src/gpu/`, the GGUF reader, or shared frontend or
-  decoder numerics. Otherwise the smoke run is enough.
+- Run `make test-all` (every model, after `make models-all` and `make samples-he`) before a
+  release and before merging speed work or a PR that touches GPU kernels, `src/gpu/`, the GGUF
+  reader, or shared frontend or decoder numerics. Otherwise the smoke run is enough.
 - Every change reaches `main` through a pull request, one per feature or roadmap phase:
   1. Agree the plan with the person. For multi-step work keep a checklist in
      `docs/plans/yyyymmdd-<name>.md` and during the work only tick its checkboxes, with no

@@ -7,8 +7,8 @@
 # then fails. `/usr/bin/time -l` is macOS's.
 set -eu
 model_name=$1 list=$2 out=$3
-model=$(hf download "handy-computer/$model_name-gguf" "$model_name-Q8_0.gguf" | sed 's/^path=//')
-cargo build --release --locked --example batch
+cargo build --release --locked --bin wavo --example batch
+model=$(target/release/wavo pull "$model_name")
 mkdir -p "$out"
 tr '\n' '\0' < "$list" | xargs -0 cat > /dev/null # into the page cache, so neither run reads disk
 

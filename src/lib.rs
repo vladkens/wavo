@@ -39,11 +39,13 @@
 //! |---|---|---|---|---|
 //! | `parakeet-v3` | `parakeet-tdt-0.6b-v3` | 0.74 GB | 25 European languages | cased, punctuated |
 //! | `parakeet-v2` | `parakeet-tdt-0.6b-v2` | 0.73 GB | English | cased, punctuated |
+//! | `parakeet-he` | `parakeet-tdt-0.6b-v3-he` | 0.74 GB | Hebrew | cased, punctuated |
 //! | `gigaam-v3` | `gigaam-v3-e2e-rnnt` | 0.27 GB | Russian | cased, punctuated |
 //! | `gigaam-v3-e2e-ctc` | `gigaam-v3-e2e-ctc` | 0.27 GB | Russian | cased, punctuated |
 //! | `gigaam-v3-rnnt` | `gigaam-v3-rnnt` | 0.27 GB | Russian | lowercase, no punctuation |
 //! | `gigaam-v3-ctc` | `gigaam-v3-ctc` | 0.27 GB | Russian | lowercase, no punctuation |
 //! | `whisper-turbo` | `whisper-large-v3-turbo` | 0.89 GB | 100 languages | cased, punctuated |
+//! | `whisper-turbo-he` | `ivrit-whisper-large-v3-turbo` | 0.89 GB | Hebrew | cased, punctuated |
 //! | `whisper-tiny` | `whisper-tiny` | 0.05 GB | 99 languages | cased, punctuated |
 //! | `whisper-base` | `whisper-base` | 0.08 GB | 99 languages | cased, punctuated |
 //! | `whisper-small` | `whisper-small` | 0.27 GB | 99 languages | cased, punctuated |
@@ -59,8 +61,9 @@
 //! | `moonshine-tiny` | `moonshine-tiny` | 0.04 GB | English | cased, punctuated |
 //! | `moonshine-base` | `moonshine-base` | 0.08 GB | English | cased, punctuated |
 //!
-//! A model `<full name>` lives in the Hugging Face repository `handy-computer/<full name>-gguf`
-//! as `<full name>-Q8_0.gguf`.
+//! A model `<full name>` lives in the Hugging Face repository `<owner>/<full name>-gguf` as
+//! `<full name>-Q8_0.gguf`. The owner is `handy-computer`, transcribe.cpp's account, except for the
+//! Hebrew models: transcribe.cpp doesn't publish them, so their conversions are under `vladkens`.
 //!
 //! # Transcribe
 //!

@@ -1,9 +1,10 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Download and manage the supported models in the Hugging Face cache (the `hub` feature).
 //!
-//! [`MODELS`] lists the models wavo knows by name: the Q8_0 GGUF files transcribe.cpp publishes as
-//! `handy-computer/<full name>-gguf` on Hugging Face. A [`Hub`] finds, downloads and removes them
-//! in a cache folder laid out as the
+//! [`MODELS`] lists the models wavo knows by name: Q8_0 GGUF files in the Hugging Face repositories
+//! `<owner>/<full name>-gguf`, transcribe.cpp's own under `handy-computer` and a few more
+//! conversions under `vladkens`. A [`Hub`] finds, downloads and removes them in a cache folder laid
+//! out as the
 //! [Hub local cache spec](https://huggingface.co/docs/hub/local-cache) says, so `wavo`, the `hf`
 //! CLI, Python's `huggingface_hub` and your app all find what any of them downloaded.
 //!
@@ -46,8 +47,11 @@ pub const RETRIES: u32 = 3;
 pub struct ModelInfo {
   /// Short name, such as `parakeet-v3`.
   pub name: &'static str,
-  /// The name transcribe.cpp publishes it under, such as `parakeet-tdt-0.6b-v3`; the same as
-  /// `name` for most models. Every function that takes a name accepts this one too.
+  /// The Hugging Face account that publishes its GGUF: `handy-computer` (transcribe.cpp) for most
+  /// models, `vladkens` for conversions transcribe.cpp doesn't publish.
+  pub owner: &'static str,
+  /// The name it is published under, such as `parakeet-tdt-0.6b-v3`; the same as `name` for most
+  /// models. Every function that takes a name accepts this one too.
   pub full_name: &'static str,
   /// Size of the Q8_0 GGUF file in bytes.
   pub size: u64,
@@ -77,9 +81,10 @@ pub struct ModelInfo {
 }
 
 impl ModelInfo {
-  /// The Hugging Face repository, such as `handy-computer/parakeet-tdt-0.6b-v3-gguf`.
+  /// The Hugging Face repository `<owner>/<full name>-gguf`, such as
+  /// `handy-computer/parakeet-tdt-0.6b-v3-gguf`.
   pub fn repo(&self) -> String {
-    format!("handy-computer/{}-gguf", self.full_name)
+    format!("{}/{}-gguf", self.owner, self.full_name)
   }
 
   /// The file name in [`repo`](Self::repo), such as `parakeet-tdt-0.6b-v3-Q8_0.gguf`.
@@ -88,7 +93,13 @@ impl ModelInfo {
   }
 }
 
+/// transcribe.cpp's account, which publishes most models.
+const HC: &str = "handy-computer";
+/// wavo's author's account, for conversions transcribe.cpp doesn't publish.
+const VK: &str = "vladkens";
+
 static EN: &[&str] = &["en"];
+static HE: &[&str] = &["he"];
 static RU: &[&str] = &["ru"];
 /// transcribe.cpp's `V3_LANGUAGES`, in the model card's order.
 static PARAKEET_V3: &[&str] = &[
@@ -119,27 +130,29 @@ static WHISPER_V3: &[&str] = &[
 /// Every model wavo can download by name, as in the crate's [model table](crate#models).
 #[rustfmt::skip]
 pub static MODELS: &[ModelInfo] = &[
-  ModelInfo { name: "parakeet-v3", full_name: "parakeet-tdt-0.6b-v3", size: 739_508_576, languages: "25 European languages", langs: PARAKEET_V3, punctuated: true },
-  ModelInfo { name: "parakeet-v2", full_name: "parakeet-tdt-0.6b-v2", size: 729_574_912, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "gigaam-v3", full_name: "gigaam-v3-e2e-rnnt", size: 273_724_832, languages: "Russian", langs: RU, punctuated: true },
-  ModelInfo { name: "gigaam-v3-e2e-ctc", full_name: "gigaam-v3-e2e-ctc", size: 272_151_136, languages: "Russian", langs: RU, punctuated: true },
-  ModelInfo { name: "gigaam-v3-rnnt", full_name: "gigaam-v3-rnnt", size: 273_022_880, languages: "Russian", langs: RU, punctuated: false },
-  ModelInfo { name: "gigaam-v3-ctc", full_name: "gigaam-v3-ctc", size: 271_803_328, languages: "Russian", langs: RU, punctuated: false },
-  ModelInfo { name: "whisper-turbo", full_name: "whisper-large-v3-turbo", size: 886_381_760, languages: "100 languages", langs: WHISPER_V3, punctuated: true },
-  ModelInfo { name: "whisper-tiny", full_name: "whisper-tiny", size: 45_981_088, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-base", full_name: "whisper-base", size: 84_962_880, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-small", full_name: "whisper-small", size: 269_751_136, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-medium", full_name: "whisper-medium", size: 831_538_144, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-large-v3", full_name: "whisper-large-v3", size: 1_668_741_440, languages: "100 languages", langs: WHISPER_V3, punctuated: true },
-  ModelInfo { name: "whisper-tiny.en", full_name: "whisper-tiny.en", size: 45_904_544, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "whisper-base.en", full_name: "whisper-base.en", size: 84_886_208, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "whisper-small.en", full_name: "whisper-small.en", size: 269_674_144, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "whisper-medium.en", full_name: "whisper-medium.en", size: 831_460_928, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "whisper-large", full_name: "whisper-large", size: 1_667_964_192, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-large-v2", full_name: "whisper-large-v2", size: 1_667_964_224, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "breeze-asr-25", full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "moonshine-tiny", full_name: "moonshine-tiny", size: 35_466_912, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "moonshine-base", full_name: "moonshine-base", size: 77_476_480, languages: "English", langs: EN, punctuated: true },
+  ModelInfo { name: "parakeet-v3", owner: HC, full_name: "parakeet-tdt-0.6b-v3", size: 739_508_576, languages: "25 European languages", langs: PARAKEET_V3, punctuated: true },
+  ModelInfo { name: "parakeet-v2", owner: HC, full_name: "parakeet-tdt-0.6b-v2", size: 729_574_912, languages: "English", langs: EN, punctuated: true },
+  ModelInfo { name: "parakeet-he", owner: VK, full_name: "parakeet-tdt-0.6b-v3-he", size: 740_915_360, languages: "Hebrew", langs: HE, punctuated: true },
+  ModelInfo { name: "gigaam-v3", owner: HC, full_name: "gigaam-v3-e2e-rnnt", size: 273_724_832, languages: "Russian", langs: RU, punctuated: true },
+  ModelInfo { name: "gigaam-v3-e2e-ctc", owner: HC, full_name: "gigaam-v3-e2e-ctc", size: 272_151_136, languages: "Russian", langs: RU, punctuated: true },
+  ModelInfo { name: "gigaam-v3-rnnt", owner: HC, full_name: "gigaam-v3-rnnt", size: 273_022_880, languages: "Russian", langs: RU, punctuated: false },
+  ModelInfo { name: "gigaam-v3-ctc", owner: HC, full_name: "gigaam-v3-ctc", size: 271_803_328, languages: "Russian", langs: RU, punctuated: false },
+  ModelInfo { name: "whisper-turbo", owner: HC, full_name: "whisper-large-v3-turbo", size: 886_381_760, languages: "100 languages", langs: WHISPER_V3, punctuated: true },
+  ModelInfo { name: "whisper-turbo-he", owner: VK, full_name: "ivrit-whisper-large-v3-turbo", size: 886_381_920, languages: "Hebrew", langs: WHISPER_V3, punctuated: true },
+  ModelInfo { name: "whisper-tiny", owner: HC, full_name: "whisper-tiny", size: 45_981_088, languages: "99 languages", langs: WHISPER, punctuated: true },
+  ModelInfo { name: "whisper-base", owner: HC, full_name: "whisper-base", size: 84_962_880, languages: "99 languages", langs: WHISPER, punctuated: true },
+  ModelInfo { name: "whisper-small", owner: HC, full_name: "whisper-small", size: 269_751_136, languages: "99 languages", langs: WHISPER, punctuated: true },
+  ModelInfo { name: "whisper-medium", owner: HC, full_name: "whisper-medium", size: 831_538_144, languages: "99 languages", langs: WHISPER, punctuated: true },
+  ModelInfo { name: "whisper-large-v3", owner: HC, full_name: "whisper-large-v3", size: 1_668_741_440, languages: "100 languages", langs: WHISPER_V3, punctuated: true },
+  ModelInfo { name: "whisper-tiny.en", owner: HC, full_name: "whisper-tiny.en", size: 45_904_544, languages: "English", langs: EN, punctuated: true },
+  ModelInfo { name: "whisper-base.en", owner: HC, full_name: "whisper-base.en", size: 84_886_208, languages: "English", langs: EN, punctuated: true },
+  ModelInfo { name: "whisper-small.en", owner: HC, full_name: "whisper-small.en", size: 269_674_144, languages: "English", langs: EN, punctuated: true },
+  ModelInfo { name: "whisper-medium.en", owner: HC, full_name: "whisper-medium.en", size: 831_460_928, languages: "English", langs: EN, punctuated: true },
+  ModelInfo { name: "whisper-large", owner: HC, full_name: "whisper-large", size: 1_667_964_192, languages: "99 languages", langs: WHISPER, punctuated: true },
+  ModelInfo { name: "whisper-large-v2", owner: HC, full_name: "whisper-large-v2", size: 1_667_964_224, languages: "99 languages", langs: WHISPER, punctuated: true },
+  ModelInfo { name: "breeze-asr-25", owner: HC, full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", langs: WHISPER, punctuated: true },
+  ModelInfo { name: "moonshine-tiny", owner: HC, full_name: "moonshine-tiny", size: 35_466_912, languages: "English", langs: EN, punctuated: true },
+  ModelInfo { name: "moonshine-base", owner: HC, full_name: "moonshine-base", size: 77_476_480, languages: "English", langs: EN, punctuated: true },
 ];
 
 /// The model a short or full name stands for.
@@ -213,7 +226,7 @@ pub struct Progress<'a> {
 ///
 /// It shares the cache with `hf` and Python's `huggingface_hub`: a model either of them downloaded
 /// is found here, and the other way round. A model's file is at
-/// `<root>/models--handy-computer--<full name>-gguf/snapshots/<commit>/<full name>-Q8_0.gguf`, a
+/// `<root>/models--<owner>--<full name>-gguf/snapshots/<commit>/<full name>-Q8_0.gguf`, a
 /// symlink into the repository's `blobs/`. Several processes can pull and remove at once: they
 /// take turns through lock files in `<root>/.locks/`.
 #[derive(Debug, Clone)]
@@ -365,6 +378,13 @@ mod tests {
     let m = lookup("breeze-asr-25").unwrap();
     assert_eq!(m.repo(), "handy-computer/Breeze-ASR-25-gguf");
     assert_eq!(m.file(), "Breeze-ASR-25-Q8_0.gguf");
+    assert_eq!(name("ivrit-whisper-large-v3-turbo"), "whisper-turbo-he");
+    let m = lookup("whisper-turbo-he").unwrap();
+    assert_eq!(m.repo(), "vladkens/ivrit-whisper-large-v3-turbo-gguf");
+    assert_eq!(m.file(), "ivrit-whisper-large-v3-turbo-Q8_0.gguf");
+    let m = lookup("parakeet-he").unwrap();
+    assert_eq!(m.repo(), "vladkens/parakeet-tdt-0.6b-v3-he-gguf");
+    assert_eq!(m.file(), "parakeet-tdt-0.6b-v3-he-Q8_0.gguf");
   }
 
   #[test]
