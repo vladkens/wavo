@@ -358,9 +358,9 @@ Decided with the person:
 
 ### Task 7: language variants (phase 17)
 
-- [ ] Language fine-tunes, tiny and base × `uk vi zh ja ko ar`: registry under their variant
+- [x] Language fine-tunes, tiny and base × `uk vi zh ja ko ar`: registry under their variant
       names (`moonshine-tiny-uk`, …), fixtures `<lang>-short <lang>-long`; config only.
-- [ ] `readme.md`, roadmap phase 17.
+- [x] `readme.md`, roadmap phase 17.
 
 ### Task 8: streaming variants, one-shot (phase 18, optional, decision 5)
 

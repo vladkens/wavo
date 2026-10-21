@@ -58,6 +58,18 @@
 //! | `breeze-asr-25` | `Breeze-ASR-25` | 1.67 GB | Taiwanese Mandarin and English | cased, punctuated |
 //! | `moonshine-tiny` | `moonshine-tiny` | 0.04 GB | English | cased, punctuated |
 //! | `moonshine-base` | `moonshine-base` | 0.08 GB | English | cased, punctuated |
+//! | `moonshine-tiny-ar` | `moonshine-tiny-ar` | 0.04 GB | Arabic | lowercase, no punctuation |
+//! | `moonshine-tiny-ja` | `moonshine-tiny-ja` | 0.04 GB | Japanese | cased, punctuated |
+//! | `moonshine-tiny-ko` | `moonshine-tiny-ko` | 0.04 GB | Korean | cased, punctuated |
+//! | `moonshine-tiny-uk` | `moonshine-tiny-uk` | 0.04 GB | Ukrainian | cased, punctuated |
+//! | `moonshine-tiny-vi` | `moonshine-tiny-vi` | 0.04 GB | Vietnamese | cased, punctuated |
+//! | `moonshine-tiny-zh` | `moonshine-tiny-zh` | 0.04 GB | Chinese | cased, punctuated |
+//! | `moonshine-base-ar` | `moonshine-base-ar` | 0.08 GB | Arabic | lowercase, no punctuation |
+//! | `moonshine-base-ja` | `moonshine-base-ja` | 0.08 GB | Japanese | cased, punctuated |
+//! | `moonshine-base-ko` | `moonshine-base-ko` | 0.08 GB | Korean | cased, punctuated |
+//! | `moonshine-base-uk` | `moonshine-base-uk` | 0.08 GB | Ukrainian | cased, punctuated |
+//! | `moonshine-base-vi` | `moonshine-base-vi` | 0.08 GB | Vietnamese | cased, punctuated |
+//! | `moonshine-base-zh` | `moonshine-base-zh` | 0.08 GB | Chinese | cased, punctuated |
 //!
 //! A model `<full name>` lives in the Hugging Face repository `handy-computer/<full name>-gguf`
 //! as `<full name>-Q8_0.gguf`.

@@ -19,11 +19,13 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **13. Other Whisper variants** and Breeze-ASR-25 (#20).
 - [x] **14. Model downloads in the library:** `wavo::hub` behind the `hub` feature (#21).
 - [x] **15. Moonshine tiny and base, correct** (#30). [Plan](plans/20261011-moonshine.md)
+- [x] **17. Moonshine language fine-tunes:** tiny and base for Arabic, Japanese, Korean,
+      Ukrainian, Vietnamese and Chinese.
 
 Open:
 
-- **Moonshine:** fast (phase 16), the language fine-tunes (17), the streaming variants one-shot
-  (18, optional). [Plan](plans/20261011-moonshine.md)
+- **Moonshine:** fast (phase 16), the streaming variants one-shot (18, optional).
+  [Plan](plans/20261011-moonshine.md)
 - **Fast kernels beyond Apple.** The GEMM on F16 16×16 cooperative matrices runs on NVIDIA
   (#28, [plan](plans/completed/20261011-nvidia-fast.md)): 10–40% faster on an RTX 4060, Parakeet ahead of
   transcribe.cpp; flash attention on them and a portable one (#36) put Whisper ahead too, and the

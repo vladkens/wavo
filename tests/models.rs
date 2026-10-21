@@ -46,7 +46,10 @@ fn model_path(name: &str) -> PathBuf {
 fn read_wav(path: &Path) -> Vec<f32> {
   let mut wav = hound::WavReader::open(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
   assert_eq!((wav.spec().channels, wav.spec().sample_rate), (1, 16000), "{path:?}");
-  wav.samples::<i16>().map(|s| s.unwrap() as f32 / 32768.0).collect()
+  match wav.spec().sample_format {
+    hound::SampleFormat::Float => wav.samples::<f32>().map(Result::unwrap).collect(),
+    hound::SampleFormat::Int => wav.samples::<i16>().map(|s| s.unwrap() as f32 / 32768.0).collect(),
+  }
 }
 
 /// Text and `(piece, start ms)` tokens from the block `## <sample>` of `tests/fixtures/<name>.txt`,
@@ -251,4 +254,65 @@ fn moonshine_tiny() {
 fn moonshine_base() {
   check("moonshine-base", &["jfk", "dots", "jobs-silence"]);
   too_long("moonshine-base", "dots");
+}
+
+#[test]
+fn moonshine_tiny_ar() {
+  check("moonshine-tiny-ar", &["ar-short", "ar-long"]);
+}
+
+#[test]
+fn moonshine_tiny_ja() {
+  // Not ja-long: a near-tie there, where the reference's own CPU and Metal backends disagree.
+  check("moonshine-tiny-ja", &["ja", "ja-short"]);
+}
+
+#[test]
+fn moonshine_tiny_ko() {
+  check("moonshine-tiny-ko", &["ko-short", "ko-long"]);
+}
+
+#[test]
+fn moonshine_tiny_uk() {
+  check("moonshine-tiny-uk", &["uk-short", "uk-long"]);
+}
+
+#[test]
+fn moonshine_tiny_vi() {
+  check("moonshine-tiny-vi", &["vi-short", "vi-long"]);
+}
+
+#[test]
+fn moonshine_tiny_zh() {
+  check("moonshine-tiny-zh", &["zh-short", "zh-long"]);
+}
+
+#[test]
+fn moonshine_base_ar() {
+  check("moonshine-base-ar", &["ar-short", "ar-long"]);
+}
+
+#[test]
+fn moonshine_base_ja() {
+  check("moonshine-base-ja", &["ja-short", "ja-long"]);
+}
+
+#[test]
+fn moonshine_base_ko() {
+  check("moonshine-base-ko", &["ko-short", "ko-long"]);
+}
+
+#[test]
+fn moonshine_base_uk() {
+  check("moonshine-base-uk", &["uk-short", "uk-long"]);
+}
+
+#[test]
+fn moonshine_base_vi() {
+  check("moonshine-base-vi", &["vi-short", "vi-long"]);
+}
+
+#[test]
+fn moonshine_base_zh() {
+  check("moonshine-base-zh", &["zh-short", "zh-long"]);
 }

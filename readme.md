@@ -68,6 +68,18 @@ how I build now.
 | `breeze-asr-25` | 1.67 GB | Taiwanese Mandarin and English | cased, punctuated |
 | `moonshine-tiny` | 0.04 GB | English | cased, punctuated |
 | `moonshine-base` | 0.08 GB | English | cased, punctuated |
+| `moonshine-tiny-ar` | 0.04 GB | Arabic | lowercase, no punctuation |
+| `moonshine-tiny-ja` | 0.04 GB | Japanese | cased, punctuated |
+| `moonshine-tiny-ko` | 0.04 GB | Korean | cased, punctuated |
+| `moonshine-tiny-uk` | 0.04 GB | Ukrainian | cased, punctuated |
+| `moonshine-tiny-vi` | 0.04 GB | Vietnamese | cased, punctuated |
+| `moonshine-tiny-zh` | 0.04 GB | Chinese | cased, punctuated |
+| `moonshine-base-ar` | 0.08 GB | Arabic | lowercase, no punctuation |
+| `moonshine-base-ja` | 0.08 GB | Japanese | cased, punctuated |
+| `moonshine-base-ko` | 0.08 GB | Korean | cased, punctuated |
+| `moonshine-base-uk` | 0.08 GB | Ukrainian | cased, punctuated |
+| `moonshine-base-vi` | 0.08 GB | Vietnamese | cased, punctuated |
+| `moonshine-base-zh` | 0.08 GB | Chinese | cased, punctuated |
 
 Parakeet is NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
 GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM), Whisper is OpenAI's
@@ -75,7 +87,8 @@ GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM), Whisp
 Research's [Whisper large-v2 fine-tune](https://huggingface.co/MediaTek-Research/Breeze-ASR-25)
 and Moonshine is Useful Sensors' [Moonshine](https://huggingface.co/UsefulSensors/moonshine-tiny),
 small and fast. Moonshine has no timestamps: its tokens all start at 0, and `--srt` gives one cue
-per piece of the split audio.
+per piece of the split audio. Each of its language fine-tunes (`moonshine-tiny-ja`, …)
+transcribes only its own language: on other speech or silence it tends to repeat itself.
 Short names stand for the published ones: `parakeet-v3` is `parakeet-tdt-0.6b-v3`, `parakeet-v2`
 is `parakeet-tdt-0.6b-v2`, `gigaam-v3` is `gigaam-v3-e2e-rnnt`, `whisper-turbo` is
 `whisper-large-v3-turbo` and `breeze-asr-25` is `Breeze-ASR-25`; full names and a path to a
@@ -307,7 +320,12 @@ original licenses:
   and Apache-2.0 for the other sizes (such as
   [large-v3](https://huggingface.co/openai/whisper-large-v3)), as their model cards state
 - Moonshine ([tiny](https://huggingface.co/UsefulSensors/moonshine-tiny),
-  [base](https://huggingface.co/UsefulSensors/moonshine-base)) © Useful Sensors, MIT
+  [base](https://huggingface.co/UsefulSensors/moonshine-base)) © Useful Sensors, MIT; its
+  Arabic, Japanese, Korean, Ukrainian, Vietnamese and Chinese fine-tunes (such as
+  [tiny-ja](https://huggingface.co/UsefulSensors/moonshine-tiny-ja)) under the
+  [Moonshine AI Community License](https://github.com/moonshine-ai/moonshine/blob/main/LICENSE):
+  free for research and non-commercial use, commercial use only after registering and under
+  US $1M annual revenue
 - [Breeze-ASR-25](https://huggingface.co/MediaTek-Research/Breeze-ASR-25) © MediaTek Research,
   Apache-2.0
 

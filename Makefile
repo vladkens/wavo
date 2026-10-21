@@ -39,7 +39,9 @@ clean:
 ALL_MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
 	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 \
 	whisper-large-v3-turbo whisper-tiny whisper-base whisper-small whisper-medium whisper-large-v3 whisper-tiny.en whisper-base.en whisper-small.en whisper-medium.en whisper-large whisper-large-v2 Breeze-ASR-25 \
-	moonshine-tiny moonshine-base
+	moonshine-tiny moonshine-base \
+	moonshine-tiny-ar moonshine-tiny-ja moonshine-tiny-ko moonshine-tiny-uk moonshine-tiny-vi moonshine-tiny-zh \
+	moonshine-base-ar moonshine-base-ja moonshine-base-ko moonshine-base-uk moonshine-base-vi moonshine-base-zh
 # `make models` and `make test` (and CI) take only the smoke models, by these names in
 # tests/models.rs: one per family, plus English-only Parakeet v2 next to multilingual v3.
 # `make test-all` covers them all. CI caches the downloads under a key made from this line, so

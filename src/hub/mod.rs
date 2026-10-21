@@ -140,6 +140,18 @@ pub static MODELS: &[ModelInfo] = &[
   ModelInfo { name: "breeze-asr-25", full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", langs: WHISPER, punctuated: true },
   ModelInfo { name: "moonshine-tiny", full_name: "moonshine-tiny", size: 35_466_912, languages: "English", langs: EN, punctuated: true },
   ModelInfo { name: "moonshine-base", full_name: "moonshine-base", size: 77_476_480, languages: "English", langs: EN, punctuated: true },
+  ModelInfo { name: "moonshine-tiny-ar", full_name: "moonshine-tiny-ar", size: 35_466_944, languages: "Arabic", langs: &["ar"], punctuated: false },
+  ModelInfo { name: "moonshine-tiny-ja", full_name: "moonshine-tiny-ja", size: 35_466_944, languages: "Japanese", langs: &["ja"], punctuated: true },
+  ModelInfo { name: "moonshine-tiny-ko", full_name: "moonshine-tiny-ko", size: 35_466_944, languages: "Korean", langs: &["ko"], punctuated: true },
+  ModelInfo { name: "moonshine-tiny-uk", full_name: "moonshine-tiny-uk", size: 35_466_944, languages: "Ukrainian", langs: &["uk"], punctuated: true },
+  ModelInfo { name: "moonshine-tiny-vi", full_name: "moonshine-tiny-vi", size: 35_466_944, languages: "Vietnamese", langs: &["vi"], punctuated: true },
+  ModelInfo { name: "moonshine-tiny-zh", full_name: "moonshine-tiny-zh", size: 35_466_944, languages: "Chinese", langs: &["zh"], punctuated: true },
+  ModelInfo { name: "moonshine-base-ar", full_name: "moonshine-base-ar", size: 77_476_480, languages: "Arabic", langs: &["ar"], punctuated: false },
+  ModelInfo { name: "moonshine-base-ja", full_name: "moonshine-base-ja", size: 77_476_480, languages: "Japanese", langs: &["ja"], punctuated: true },
+  ModelInfo { name: "moonshine-base-ko", full_name: "moonshine-base-ko", size: 77_476_480, languages: "Korean", langs: &["ko"], punctuated: true },
+  ModelInfo { name: "moonshine-base-uk", full_name: "moonshine-base-uk", size: 77_476_512, languages: "Ukrainian", langs: &["uk"], punctuated: true },
+  ModelInfo { name: "moonshine-base-vi", full_name: "moonshine-base-vi", size: 77_476_512, languages: "Vietnamese", langs: &["vi"], punctuated: true },
+  ModelInfo { name: "moonshine-base-zh", full_name: "moonshine-base-zh", size: 77_476_480, languages: "Chinese", langs: &["zh"], punctuated: true },
 ];
 
 /// The model a short or full name stands for.

@@ -1,0 +1,5 @@
+## vi-long
+text:  Ngôn ngữ chính thức của 3 Celona là tiếng Catalan và tiếng Tây Ban Nha khoảng một nửa dân số thích nói tiếng Catalan hơn và đại đa số người dân hiểu thứ tiếng này hầu như ai cũng biết tiếng Tây Ban Nha.
+
+## vi-short
+text:  Ngày 15 tháng 8 năm 1940, quân đồng minh mở chiến dịch Reagan xâm chiếm miền Nam nước Pháp.
