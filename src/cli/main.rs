@@ -25,6 +25,7 @@ use anyhow::{Context, Result, bail, ensure};
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
 use models::Source;
 use wavo::hub::{self, Hub, MODELS};
+use wavo::{Backend, PrepareStep};
 
 const USAGE: &str = "\
 Usage: wavo COMMAND ...
@@ -34,7 +35,8 @@ Commands:
   pull MODEL...                download models
   list                         list downloaded models
   rm MODEL                     delete a downloaded model
-  bench MODEL AUDIO [-n N]     time the model load, the first call and N more calls (10)
+  bench MODEL AUDIO [-n N]     time the model load, the first call and N more calls (10);
+                               takes --backend too
   serve [MODEL...] [OPTIONS]   serve the models (parakeet-ultra by default; the first
                                answers unknown model names) over OpenAI's transcription API
   debug                        print the system, its GPUs and the models, for a bug report
@@ -49,10 +51,13 @@ Run options:
   --segment SECS               split longer audio at pauses into parts of up to SECS
                                (25 for GigaAM, 30 for Whisper and Moonshine, else 60;
                                0 for one pass, up to 37.5 s for GigaAM and 45 s for
-                               Moonshine)
+                               Moonshine; at most 15 on the Neural Engine)
   --language CODE              the language of the speech (en, he, ...) for multilingual
                                Whisper models, instead of detecting it
   -y, --yes                    download a missing model without asking
+  --backend auto|gpu|ane       where the encoder runs: auto (the default) takes the Neural
+                               Engine for Parakeet and GigaAM once `wavo pull` prepared
+                               them on a Mac, else the GPU
 
 Serve options:
   --host ADDR                  the address to listen on (127.0.0.1)
@@ -111,11 +116,7 @@ fn cli(args: &[&str]) -> Result<()> {
     ["pull", names @ ..] if !names.is_empty() => pull(names)?,
     ["list" | "ls"] => list()?,
     ["rm", name] => rm(name)?,
-    ["bench", model, audio] => bench(model, audio, 10)?,
-    ["bench", model, audio, "-n", n] => {
-      let n = n.parse().ok().filter(|&n| n > 0);
-      bench(model, audio, n.context("-n takes a whole number of calls, at least 1")?)?
-    }
+    ["bench", model, audio, opts @ ..] => bench(model, audio, opts)?,
     ["serve", args @ ..] => serve::serve(args)?,
     ["debug"] => debug::print()?,
     // wavo AUDIO, also with run options first (wavo -y AUDIO), and whatever looks like a file,
@@ -123,7 +124,7 @@ fn cli(args: &[&str]) -> Result<()> {
     [arg, ..] if arg.starts_with('-') || !COMMANDS.contains(arg) && file_like(arg) => run(args)?,
     ["pull"] => bail!("usage: wavo pull MODEL..."),
     ["rm", ..] => bail!("usage: wavo rm MODEL"),
-    ["bench", ..] => bail!("usage: wavo bench MODEL AUDIO [-n N]"),
+    ["bench", ..] => bail!("usage: wavo bench MODEL AUDIO [-n N] [--backend B]"),
     [command @ ("list" | "ls" | "debug"), ..] => bail!("usage: wavo {command}"),
     [arg, ..] if hub::lookup(arg).is_ok() => {
       bail!("{arg} is a model, not a command; to transcribe with it: wavo run {}", args.join(" "))
@@ -189,18 +190,30 @@ fn ask(question: &str) -> bool {
   matches!(answer.trim().to_lowercase().as_str(), "" | "y" | "yes")
 }
 
-fn load(path: &Path) -> Result<wavo::Model> {
-  wavo::Model::load(path).with_context(|| format!("loading {}", path.display()))
+fn load(path: &Path, backend: Backend) -> Result<wavo::Model> {
+  wavo::Model::load_with(path, backend).with_context(|| format!("loading {}", path.display()))
+}
+
+/// The value of `--backend`.
+fn backend(arg: Option<&&str>) -> Result<Backend> {
+  Ok(match arg.copied() {
+    Some("auto") => Backend::Auto,
+    Some("gpu") => Backend::Gpu,
+    Some("ane") => Backend::NeuralEngine,
+    _ => bail!("--backend takes auto, gpu or ane"),
+  })
 }
 
 fn run(args: &[&str]) -> Result<()> {
-  const USAGE: &str =
-    "usage: wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS] [--language CODE] [-y]";
+  const USAGE: &str = "usage: wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS] \
+                       [--language CODE] [--backend B] [-y]";
   let (mut format, mut segment, mut download, mut rest) = (None, None, Download::Ask, Vec::new());
   let mut options = wavo::Options::default();
+  let mut on = Backend::Auto;
   let mut args = args.iter();
   while let Some(&arg) = args.next() {
     match arg {
+      "--backend" => on = backend(args.next())?,
       "--json" | "--srt" if format.is_none() => format = Some(arg),
       "--json" | "--srt" if format != Some(arg) => bail!("--json and --srt: choose one"),
       "--segment" if segment.is_none() => {
@@ -245,7 +258,7 @@ fn run(args: &[&str]) -> Result<()> {
   bar.set_message("decoding the audio");
   let pcm = audio::read(audio)?;
   bar.set_message("loading the model");
-  let model = load(&path)?;
+  let model = load(&path, on)?;
   if let Some(warning) = debug::software(model.device()) {
     bar.suspend(|| eprintln!("warning: {warning}"));
   }
@@ -306,7 +319,28 @@ fn pull_one(hub: &Hub, m: &hub::ModelInfo, bars: &MultiProgress) -> Result<PathB
     "{msg}: {percent:>3}% {decimal_bytes} / {decimal_total_bytes}, {decimal_bytes_per_sec}",
   )?;
   let (mut bar, mut retries): (Option<(ProgressBar, u64)>, u32) = (None, 0);
+  let mut spinner: Option<ProgressBar> = None;
   let path = hub.pull(m.name, |p| {
+    if let Some(step) = p.preparing {
+      let step = match step {
+        PrepareStep::Build => "building",
+        PrepareStep::Compile => "compiling",
+        _ => "loading, 10–30 s the first time",
+      };
+      let msg = format!("{}: preparing for the Neural Engine ({step})", m.name);
+      if plain {
+        eprintln!("{msg}");
+      } else {
+        let style = ProgressStyle::with_template("{spinner} {msg} {elapsed}").unwrap();
+        let new = || {
+          let s = bars.add(ProgressBar::new_spinner().with_style(style));
+          s.enable_steady_tick(Duration::from_millis(100));
+          s.with_finish(ProgressFinish::AndClear)
+        };
+        spinner.get_or_insert_with(new).set_message(msg);
+      }
+      return ControlFlow::Continue(());
+    }
     if let Some(e) = p.retrying {
       retries += 1;
       bar = None; // dropping a bar clears it
@@ -346,13 +380,30 @@ fn downloaded(hub: &Hub) -> Vec<(&'static hub::ModelInfo, PathBuf)> {
 
 fn list() -> Result<()> {
   let found = downloaded(&Hub::new());
+  // Whether each runs on the Neural Engine; a column only where one can.
+  let ane: Vec<_> = found.iter().map(|(_, path)| wavo::Model::prepared(path)).collect();
+  let column = ane.iter().any(Option::is_some);
   if found.is_empty() {
     eprintln!("no models downloaded; try: wavo pull {}", models::DEFAULT);
   } else {
-    out!("{:<18} {:>7}  PATH", "NAME", "SIZE")?;
+    out!("{:<18} {:>7}  {}PATH", "NAME", "SIZE", if column { "ANE  " } else { "" })?;
   }
-  for (m, path) in found {
-    out!("{:<18} {}  {}", m.name, models::gb(std::fs::metadata(&path)?.len()), path.display())?;
+  for ((m, path), ane) in found.iter().zip(&ane) {
+    let ane = match ane {
+      _ if !column => "",
+      Some(true) => "yes  ",
+      Some(false) => "no   ",
+      None => "-    ",
+    };
+    let size = models::gb(std::fs::metadata(path)?.len());
+    out!("{:<18} {size}  {ane}{}", m.name, path.display())?;
+  }
+
+  if let Some(((m, _), _)) = found.iter().zip(&ane).find(|(_, a)| **a == Some(false)) {
+    eprintln!(
+      "ANE no: runs on the GPU until prepared for the Neural Engine; run: wavo pull {}",
+      m.name
+    );
   }
   Ok(())
 }
@@ -366,12 +417,24 @@ fn rm(arg: &str) -> Result<()> {
   Ok(())
 }
 
-/// Load time, first call and warm median/min over `n` calls, in milliseconds.
-fn bench(model: &str, audio: &str, n: usize) -> Result<()> {
+/// Load time, first call and warm median/min over `-n` calls (10), in milliseconds.
+fn bench(model: &str, audio: &str, opts: &[&str]) -> Result<()> {
+  let (mut n, mut on, mut opts) = (10, Backend::Auto, opts.iter());
+  while let Some(&opt) = opts.next() {
+    match opt {
+      "-n" => {
+        let calls = opts.next().and_then(|n| n.parse().ok()).filter(|&n| n > 0);
+        n = calls.context("-n takes a whole number of calls, at least 1")?;
+      }
+      "--backend" => on = backend(opts.next())?,
+      _ => bail!("usage: wavo bench MODEL AUDIO [-n N] [--backend B]"),
+    }
+  }
+
   let (pcm, path) = (audio::read(audio)?, model_path(model, Download::Never)?);
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
   let t = Instant::now();
-  let model = load(&path)?;
+  let model = load(&path, on)?;
   let load = ms(t);
   eprintln!("device: {}", model.device());
   let mut calls = (0..=n).map(|_| {
@@ -416,7 +479,7 @@ mod tests {
     );
     assert_eq!(error("frobnicate"), "unknown command: wavo frobnicate; see wavo --help");
     assert_eq!(error("pull"), "usage: wavo pull MODEL...");
-    assert_eq!(error("bench gigaam-v3"), "usage: wavo bench MODEL AUDIO [-n N]");
+    assert_eq!(error("bench gigaam-v3"), "usage: wavo bench MODEL AUDIO [-n N] [--backend B]");
     assert_eq!(error("list x"), "usage: wavo list");
     assert_eq!(
       error("bench gigaam-v3 talk.wav -n 0"),

@@ -24,6 +24,8 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **Server:** `wavo serve`, OpenAI's transcription API on `std::net`.
 - [x] **19. Parakeet Ultra** on the Parakeet family, correct and faster than transcribe.cpp:
       `jfk` on an M2 in 145 vs 203 ms (best of 20).
+- [x] **20. Neural Engine backend** on macOS: Parakeet and GigaAM encoders through Core ML, 2–3.6×
+      faster than the GPU on 11 s of audio (#37). [Plan](plans/completed/20261011-ane.md)
 
 Open:
 
@@ -44,8 +46,6 @@ Open:
 - **GPU headroom on Parakeet.** Core ML on the same M2 GPU takes 8–15% less time end to end
   (FluidAudio GPU 134 vs wavo 145 ms on jfk, 372 vs 437 ms on dots). Profile our encoder against
   it and close the gap.
-- **Neural Engine backend** (opt-in, macOS) for Parakeet, then GigaAM; not scheduled.
-  [Plan](plans/20261011-ane.md)
 
 Later research: **accuracy against the originals.** Plan: [docs/plans/20261011-accuracy.md](plans/20261011-accuracy.md).
 

@@ -21,10 +21,11 @@ pub type Groups = Vec<(Pipeline, Vec<Buffer>, BindGroup)>;
 const MARKS: u64 = 256;
 
 /// The GPU a [`Model`](crate::Model) runs on, and the graphics API it reaches it through, as the
-/// driver reports them when the model loads. See [`Model::device`](crate::Model::device).
+/// driver reports them when the model loads; or the Neural Engine. See
+/// [`Model::device`](crate::Model::device).
 ///
 /// `Display` gives a line for logs and settings screens, such as
-/// `NVIDIA GeForce RTX 4060 Laptop GPU (Vulkan, discrete)`.
+/// `NVIDIA GeForce RTX 4060 Laptop GPU (Vulkan, discrete)` or `Apple M2 Neural Engine (Core ML)`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Device {
@@ -59,6 +60,8 @@ pub enum Api {
   Vulkan,
   /// Direct3D 12, on Windows without a Vulkan driver.
   Dx12,
+  /// Apple's Core ML, which runs a model on the Neural Engine.
+  CoreMl,
 }
 
 /// The kind of adapter a [`Device`] is, as the driver reports it.
@@ -74,6 +77,9 @@ pub enum DeviceKind {
   SoftwareGpu,
   /// A virtual GPU (in a virtual machine) or one the driver doesn't classify.
   OtherGpu,
+  /// The Neural Engine of an Apple Silicon Mac, reached through Core ML: see
+  /// [`Backend::NeuralEngine`](crate::Backend::NeuralEngine).
+  NeuralEngine,
 }
 
 /// The kernels wavo runs on a [`Device`], chosen at load from the adapter's features: a fast tier
@@ -89,6 +95,9 @@ pub enum Kernels {
   Matrix16,
   /// [`Matrix8`](Self::Matrix8) with the GEMM on the Metal 4 tensor API: Apple M5 / A19 and newer.
   Tensor,
+  /// No wavo kernels: on the [`NeuralEngine`](DeviceKind::NeuralEngine), the encoder is a Core ML
+  /// program (F16 with 8-bit weights) that the system compiles.
+  CoreMl,
 }
 
 /// Every GPU adapter wavo can run a model on, through Vulkan, Metal or DX12, starting with the
@@ -163,12 +172,14 @@ impl std::fmt::Display for Device {
       Api::Metal => "Metal",
       Api::Vulkan => "Vulkan",
       Api::Dx12 => "DX12",
+      Api::CoreMl => "Core ML",
     };
     let kind = match self.kind {
       DeviceKind::DiscreteGpu => "discrete",
       DeviceKind::IntegratedGpu => "integrated",
       DeviceKind::SoftwareGpu => "software",
       DeviceKind::OtherGpu => "other",
+      DeviceKind::NeuralEngine => return write!(f, "{} ({api})", self.name),
     };
     write!(f, "{} ({api}, {kind})", self.name)
   }

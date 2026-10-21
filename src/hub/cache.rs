@@ -53,7 +53,7 @@ impl Hub {
         let xdg = var("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| user().join(".cache"));
         (xdg.join("huggingface").join("hub"), None)
       });
-    Self { root, from }
+    Self { root, from, prepare: true }
   }
 
   fn folder(&self, repo: &str) -> PathBuf {
@@ -89,7 +89,9 @@ impl Hub {
         match download(&agent, &remote.url, part, remote.size, &mut progress) {
           Err(e) if retry < RETRIES && transient(&e) => {
             let done = fs::metadata(part).map_or(0, |m| m.len());
-            if progress(Progress { done, total: remote.size, retrying: Some(&e) }).is_break() {
+            if progress(Progress { done, total: remote.size, retrying: Some(&e), preparing: None })
+              .is_break()
+            {
               return Err(Error::Cancelled);
             }
             std::thread::sleep(Duration::from_secs(1 << retry));
@@ -102,7 +104,7 @@ impl Hub {
   }
 
   /// Holds `<root>/.locks/<repo folder>/<name>.lock` until the file is dropped.
-  fn lock(&self, repo: &str, name: &str) -> Result<File> {
+  pub(super) fn lock(&self, repo: &str, name: &str) -> Result<File> {
     let dir = self.root.join(".locks").join(self.folder(repo).file_name().unwrap());
     fs::create_dir_all(&dir)?;
     hold(&dir.join(format!("{name}.lock")))
@@ -375,7 +377,7 @@ fn copy(
   let mut buf = vec![0; 1 << 16];
   let broke = |message| Error::Http { url: url.into(), status: None, message };
   loop {
-    if progress(Progress { done, total: size, retrying: None }).is_break() {
+    if progress(Progress { done, total: size, retrying: None, preparing: None }).is_break() {
       return Err(Error::Cancelled);
     }
     let n = match body.read(&mut buf) {
@@ -453,7 +455,7 @@ mod tests {
       vars.push((var, value));
       assert_eq!(root(&vars), (PathBuf::from(expected), from), "{var}");
     }
-    let hub = Hub { root: PathBuf::from("/c"), from: Some("HF_HUB_CACHE") };
+    let hub = Hub { root: PathBuf::from("/c"), from: Some("HF_HUB_CACHE"), prepare: true };
     assert_eq!(hub.to_string(), "/c (set by HF_HUB_CACHE)");
     assert_eq!(Hub::at("/c").to_string(), "/c");
   }

@@ -32,6 +32,10 @@ fn main() -> Result<()> {
       if let Some(e) = p.retrying {
         eprintln!("\nretrying after: {e}");
       }
+      if let Some(step) = p.preparing {
+        eprintln!("\npreparing for the Neural Engine: {step:?}");
+        return ControlFlow::Continue(());
+      }
       let pct = p.done * 100 / p.total;
       if last != Some(pct) {
         last = Some(pct);

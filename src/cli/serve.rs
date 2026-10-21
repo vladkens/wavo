@@ -129,7 +129,11 @@ pub fn serve(args: &[&str]) -> Result<()> {
 }
 
 fn load(info: &'static ModelInfo, path: &Path) -> Result<Arc<Loaded>> {
-  Ok(Arc::new(Loaded { info, model: crate::load(path)?, timed: models::timed(path) }))
+  Ok(Arc::new(Loaded {
+    info,
+    model: crate::load(path, wavo::Backend::Auto)?,
+    timed: models::timed(path),
+  }))
 }
 
 /// A client's socket whose reads and writes wait up to `TIMEOUT` each and fail past `until`, also

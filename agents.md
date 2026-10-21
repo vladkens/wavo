@@ -29,8 +29,9 @@ the `Makefile` and `.github/workflows/main.yml`.
   `serve` listens on a socket and never downloads, except its startup models as `run` does; a
   request never does. `pull` blocks: the library starts no download threads.
 - The library leaves resampling to the caller; the CLI does it. `Model::transcribe` runs the audio
-  as it is, in one pass, and `Model::transcribe_long` splits long audio at pauses as an option. VAD
-  and streaming are in neither.
+  as it is, in one pass (on the Neural Engine, whose window is a fixed 15 s, it splits longer audio
+  at pauses), and `Model::transcribe_long` splits long audio at pauses as an option. VAD and
+  streaming are in neither.
 
 ## Code
 
