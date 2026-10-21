@@ -40,8 +40,9 @@ the `Makefile` and `.github/workflows/main.yml`.
   trusted: no guards against crafted files, no defensive checks in hot paths.
 - Keep core plus one family (GGUF, GPU, kernels, frontend, encoder, decoder) within ~3k lines of
   Rust and WGSL, tests excluded. The CLI (`src/cli/`) stays roughly ≤ 900 lines: hand-rolled
-  argument parsing, JSON and SRT, no clap or serde. `src/hub/` stays roughly ≤ 600 lines with its
-  docs. Simplify before growing past any budget.
+  argument parsing, JSON and SRT, no clap or serde. `wavo debug` (`src/cli/debug.rs`) is counted
+  separately and stays roughly ≤ 450 lines. `src/hub/` stays roughly ≤ 600 lines with its docs.
+  Simplify before growing past any budget.
 - Every public item has a doc comment with its units and failure cases; examples are doctests.
 - The library returns its own `thiserror` `Error`; only the CLI uses `anyhow`. Comment only
   non-obvious data layouts, numeric tricks and model quirks that differ from the reference docs.
