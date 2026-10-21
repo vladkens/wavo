@@ -27,8 +27,9 @@ the `Makefile` and `.github/workflows/main.yml`.
 - Only `wavo pull`, `wavo run` and `Hub::pull` use the network: `run` downloads a missing model
   only after the person confirms on a terminal, or with `-y`; `bench` never does. `pull` blocks:
   the library starts no download threads.
-- The library leaves resampling and splitting long audio at pauses to the caller (Whisper's own
-  30 s windows aside); the CLI does both. VAD and streaming are in neither.
+- The library leaves resampling to the caller; the CLI does it. `Model::transcribe` runs the audio
+  as it is, in one pass, and `Model::transcribe_long` splits long audio at pauses as an option. VAD
+  and streaming are in neither.
 
 ## Code
 

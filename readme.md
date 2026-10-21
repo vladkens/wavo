@@ -264,10 +264,11 @@ for token in &transcript.tokens {
 ```
 
 The `hub` feature downloads models by name (it adds an HTTP client); leave it out to load `.gguf`
-files you fetch yourself, with a pure Rust build. Decoding and resampling audio and splitting long
-recordings are up to you: `model.max_audio_ms()` tells how long a piece the model was trained on
-(25 s for GigaAM, 30 s for Whisper and Moonshine), and GigaAM and Moonshine return
-`Error::AudioTooLong` past 1.5 times that. The [API docs](https://docs.rs/wavo) have the details,
+files you fetch yourself, with a pure Rust build. Decoding and resampling audio are up to you.
+`model.transcribe` runs the audio in one pass, up to 1.5 times the length the model was trained on
+for GigaAM and Moonshine (`model.max_audio_ms()`: 25 s for GigaAM, 30 s for Whisper and Moonshine);
+`model.transcribe_long` takes recordings of any length, split at pauses into pieces of up to that
+length, as `wavo run` does. The [API docs](https://docs.rs/wavo) have the details,
 including downloading on a thread with progress and cancel, as
 [examples/hub.rs](examples/hub.rs) does.
 
