@@ -52,7 +52,9 @@ pub fn split(pcm: &[f32], max_ms: u32) -> Vec<Range<usize>> {
     let sums: Vec<f32> =
       (first..=end - WINDOW).map(|f| energy[f..f + WINDOW].iter().sum()).collect();
     let least = sums.iter().copied().fold(f32::INFINITY, f32::min);
-    let window = first + sums.iter().rposition(|&s| s <= 2.0 * least).unwrap();
+    // None only when every sum is NaN: then the latest window.
+    let quiet = sums.iter().rposition(|&s| s <= 2.0 * least);
+    let window = first + quiet.unwrap_or(sums.len() - 1);
     let frames = (window..window + WINDOW).rev();
     let cut = frames.min_by(|&a, &b| energy[a].total_cmp(&energy[b])).unwrap() * FRAME;
     out.push(start..cut);
@@ -163,6 +165,8 @@ mod tests {
     let ranges = split(&pcm, 5_000);
     check_ranges(&ranges, pcm.len(), 5 * SEC);
     assert_eq!(split(&pcm, 1_000), ranges, "under 5 s counts as 5 s");
+    let nan = vec![f32::NAN; 12 * SEC];
+    check_ranges(&split(&nan, 5_000), nan.len(), 5 * SEC);
   }
 
   #[test]
