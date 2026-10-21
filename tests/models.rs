@@ -1,7 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Transcripts must match the reference fixtures (`make fixtures`) exactly: text, every token piece
 //! and its start time (for Whisper every segment's text and start). Every GGUF must list the
-//! languages `hub::MODELS` gives its model. Missing models or samples fail the test.
+//! languages `hub::MODELS` gives its model. Missing models or samples fail the test. A sample
+//! `<clip>+lang=<code>` is `<clip>` transcribed with `Options::language` set to `<code>`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -101,9 +102,15 @@ fn check(name: &str, samples: &[&str]) {
   check_languages(name, &path);
   let model = wavo::Model::load(&path).unwrap();
   for sample in samples {
-    let pcm = read_wav(&root.join(format!("3rd/transcribe.cpp/samples/{sample}.wav")));
+    let (clip, language) = match sample.split_once("+lang=") {
+      Some((clip, code)) => (clip, Some(code.to_string())),
+      None => (*sample, None),
+    };
+    let pcm = read_wav(&root.join(format!("3rd/transcribe.cpp/samples/{clip}.wav")));
     let (text, tokens, segments) = read_fixture(name, sample);
-    let got = model.transcribe(&pcm).unwrap();
+    let mut options = wavo::Options::default();
+    options.language = language;
+    let got = model.transcribe_with(&pcm, &options).unwrap();
     assert_eq!(got.text, text, "{name} {sample}: text");
     let Some(tokens) = tokens else {
       // Text only (Moonshine): the pieces make the text, but for one leading space.
@@ -183,7 +190,11 @@ fn whisper_large_v3_turbo() {
 
 #[test]
 fn whisper_tiny() {
-  check("whisper-tiny", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
+  // The last two with the language set: whisper-tiny takes uk-short for Russian, and ru-long is
+  // told the wrong one across two windows.
+  const SAMPLES: &[&str] =
+    &["jfk", "zh-short", "ru-long", "jobs-silence", "uk-short+lang=uk", "ru-long+lang=uk"];
+  check("whisper-tiny", SAMPLES);
 }
 
 #[test]

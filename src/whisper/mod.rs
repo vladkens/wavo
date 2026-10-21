@@ -163,13 +163,20 @@ impl Whisper {
     self.arena.lock().unwrap_or_else(PoisonError::into_inner)
   }
 
-  pub fn transcribe(&self, pcm: &[f32]) -> Result<Transcript> {
+  /// Whether the model has language tokens: the multilingual ones, not `.en`.
+  pub fn multilingual(&self) -> bool {
+    !self.languages.is_empty()
+  }
+
+  /// With `language`, an index in `general.languages`, every window is decoded in that language;
+  /// without, in the one detected on the first window.
+  pub fn transcribe(&self, pcm: &[f32], language: Option<usize>) -> Result<Transcript> {
     let mels = self.encoder.cfg.mels;
     let window = 2 * self.encoder.cfg.frames;
     let mel = self.frontend.compute(pcm);
     let total = mel.len() / mels;
     let mut a = self.lock();
-    let (mut seek, mut language) = (0, None);
+    let (mut seek, mut language) = (0, language.map(|i| self.languages[i]));
     let (mut text, mut tokens) = (Vec::new(), Vec::new());
     while seek < total {
       let frames = (total - seek).min(window);

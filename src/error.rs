@@ -44,6 +44,11 @@ pub enum Error {
     /// [`max_audio_ms`](crate::Model::max_audio_ms).
     max_ms: u32,
   },
+  /// [`Options::language`](crate::Options::language) names a language the model can't take: one
+  /// it doesn't list, or any for a model that detects among several languages itself (Parakeet
+  /// v3). The message lists the model's codes when the code isn't one of them.
+  #[error("{0}")]
+  Language(String),
   /// A name that is neither a short nor a full name in [`hub::MODELS`](crate::hub::MODELS).
   #[cfg(feature = "hub")]
   #[cfg_attr(docsrs, doc(cfg(feature = "hub")))]
