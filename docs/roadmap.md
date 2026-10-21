@@ -20,7 +20,7 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **14. Model downloads in the library:** `wavo::hub` behind the `hub` feature (#21).
 - [x] **15. Moonshine tiny and base, correct** (#30). [Plan](plans/20261011-moonshine.md)
 - [x] **17. Moonshine language fine-tunes:** tiny and base for Arabic, Japanese, Korean,
-      Ukrainian, Vietnamese and Chinese.
+      Ukrainian, Vietnamese and Chinese (#63).
 
 Open:
 
