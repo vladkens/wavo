@@ -164,9 +164,25 @@ Hugging Face cache (`~/.cache/huggingface/hub`), so a model fetched with `hf dow
 
 ## ⚡ Speed
 
-Transcribe times are warm medians of `wavo bench MODEL CLIP` against `transcribe-bench` of
-transcribe.cpp at 5bb2deb, on the same Q8_0 file and clip; cells are wavo / transcribe.cpp. Bold
-marks the better side where the gap is over 3%.
+Seconds to transcribe one minute of audio on an **Apple M2** (10-core GPU), 2026-10-21. The
+short clip is a warm call with the model loaded (`wavo bench`, 35 s `dots`, `ru-long` for
+GigaAM); the 1 h file is `wavo run` on an hour-long English
+[LibriVox reading](https://archive.org/details/memoirsofsherlockholmesv3_1502_librivox), with the
+model load and mp3 decoding. Whisper pads audio to 30 s windows, so the 35 s clip costs it two.
+
+| Model | Short clip, s per min | 1 h file, s per min | 1 h file, × real time |
+|---|---|---|---|
+| `gigaam-v3` | 0.45 | 0.51 | 118× |
+| `parakeet-v3` | 0.81 | 0.88 | 68× |
+| `parakeet-v2` | 0.74 | 0.82 | 74× |
+| `whisper-turbo` | 4.6 | 3.3 | 18× |
+| `whisper-tiny` | 0.34 | 0.36 | 165× |
+| `moonshine-tiny` | 0.33 | 0.33 | 180× |
+| `moonshine-base` | 0.53 | 0.50 | 120× |
+
+Against transcribe.cpp: transcribe times are warm medians of `wavo bench MODEL CLIP` against
+`transcribe-bench` of transcribe.cpp at 5bb2deb, on the same Q8_0 file and clip; cells are
+wavo / transcribe.cpp. Bold marks the better side where the gap is over 3%.
 
 **Apple M2** (10-core GPU, 24 GiB, macOS 27) against transcribe.cpp on Metal, an 11 s clip (`jfk`,
 GigaAM `ru-short`), 2026-10-09 to 11; the GPU changes since left these models within noise on the
