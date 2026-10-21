@@ -1239,6 +1239,7 @@ dependencies = [
  "bytemuck",
  "half",
  "hound",
+ "httparse",
  "indicatif",
  "pollster",
  "rubato",

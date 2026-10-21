@@ -2,6 +2,7 @@
 //! Audio files to the 16 kHz mono samples the models take.
 
 use std::fs::File;
+use std::io::Cursor;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
@@ -11,33 +12,61 @@ use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, TrackType};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 
 const RATE: usize = 16000;
 
+/// A format or codec wavo doesn't decode, such as Opus or WebM.
+#[derive(Debug)]
+pub struct Unsupported;
+
+impl std::fmt::Display for Unsupported {
+  fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    f.write_str("not a wav, mp3, m4a, flac or ogg file")
+  }
+}
+
+impl std::error::Error for Unsupported {}
+
 /// Decodes wav, mp3, m4a/aac, flac or ogg/vorbis, averages the channels and resamples to 16 kHz.
 /// A 16 kHz mono file passes through untouched, so its samples are exactly the WAV's.
 pub fn read(path: &str) -> Result<Vec<f32>> {
-  let (pcm, rate) = decode(path).map_err(|e| match e.downcast_ref() {
-    Some(Error::Unsupported(_)) => anyhow!("{path}: not a wav, mp3, m4a, flac or ogg file"),
-    _ => e.context(format!("reading {path}")),
+  let file = File::open(path).with_context(|| format!("reading {path}"))?;
+  let ext = Path::new(path).extension().and_then(|e| e.to_str());
+  pcm(Box::new(file), ext).map_err(|e| match e.is::<Unsupported>() {
+    true => anyhow!("{path}: {e}"),
+    false => e.context(format!("reading {path}")),
+  })
+}
+
+/// [`read`] for the bytes of a file whose name ends in `ext`, a hint at the format. Fails with
+/// [`Unsupported`] for a format it doesn't decode.
+pub fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>) -> Result<Vec<f32>> {
+  pcm(Box::new(Cursor::new(bytes)), ext)
+}
+
+fn pcm(source: Box<dyn MediaSource>, ext: Option<&str>) -> Result<Vec<f32>> {
+  let (pcm, rate) = decode(source, ext).map_err(|e| match e.downcast_ref() {
+    Some(Error::Unsupported(_)) => Unsupported.into(),
+    _ => e,
   })?;
   if rate == RATE {
     return Ok(pcm);
   }
+
   let mut resampler = Fft::<f32>::new(rate, RATE, 1024, 1, FixedSync::Input)?;
   let input = InterleavedSlice::new(&pcm, 1, pcm.len())?;
   Ok(resampler.process_all(&input, pcm.len(), None)?.take_data())
 }
 
 /// Mono samples and their rate.
-fn decode(path: &str) -> Result<(Vec<f32>, usize)> {
+fn decode(source: Box<dyn MediaSource>, ext: Option<&str>) -> Result<(Vec<f32>, usize)> {
   let mut hint = Hint::new();
-  if let Some(ext) = Path::new(path).extension().and_then(|e| e.to_str()) {
+  if let Some(ext) = ext {
     hint.with_extension(ext);
   }
-  let source = MediaSourceStream::new(Box::new(File::open(path)?), Default::default());
+  let source = MediaSourceStream::new(source, Default::default());
   let options = (FormatOptions::default(), MetadataOptions::default());
   let mut format = symphonia::default::get_probe().probe(&hint, source, options.0, options.1)?;
   let track = format.default_track(TrackType::Audio).context("no audio track")?;
@@ -103,6 +132,19 @@ mod tests {
     let pcm = decode_wav("pcm16", spec(1, 16000, hound::SampleFormat::Int), &samples);
     let expected: Vec<u32> = samples.iter().map(|&s| (s as f32 / 32768.0).to_bits()).collect();
     assert!(pcm.iter().map(|s| s.to_bits()).eq(expected), "samples differ from hound's");
+  }
+
+  #[test]
+  fn bytes_decode_as_files_do() {
+    let mut wav = Cursor::new(Vec::new());
+    let mut w = hound::WavWriter::new(&mut wav, spec(1, 16000, hound::SampleFormat::Int)).unwrap();
+    [0i16, 1000, -1000].iter().for_each(|&s| w.write_sample(s).unwrap());
+    w.finalize().unwrap();
+    let pcm = decode_bytes(wav.into_inner(), None).unwrap();
+    assert_eq!(pcm, [0.0, 1000.0 / 32768.0, -1000.0 / 32768.0]);
+    // WebM's magic, then nothing a decoder knows
+    let e = decode_bytes(b"\x1a\x45\xdf\xa3 then junk".repeat(100), Some("webm")).unwrap_err();
+    assert!(e.is::<Unsupported>(), "{e:#}");
   }
 
   #[test]

@@ -1,7 +1,32 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! The transcripts of long audio's pieces (cut by `wavo::split`) joined back into one.
+//! The transcripts of long audio's pieces (cut by `wavo::split`) joined back into one, for
+//! `wavo run` and `wavo serve`.
 
-use wavo::{Token, Transcript};
+use wavo::{Model, Options, Token, Transcript};
+
+/// Audio splits into pieces of up to this for models without a window of their own, as
+/// `Model::transcribe_long` does.
+const SEGMENT_MS: u32 = 60_000;
+
+/// As `Model::transcribe_long`, but piece by piece: `each(i, n)` runs before piece `i` of `n`,
+/// and the index of each piece's first token comes back too, as subtitles start a word there.
+/// Pieces are up to `segment_ms` (0: one pass), else the model's window, else `SEGMENT_MS`.
+pub fn transcribe(
+  model: &Model,
+  pcm: &[f32],
+  segment_ms: Option<u32>,
+  options: &Options,
+  mut each: impl FnMut(usize, usize),
+) -> wavo::Result<(Transcript, Vec<usize>)> {
+  let max_ms = segment_ms.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
+  let ranges = wavo::split(pcm, if max_ms == 0 { u32::MAX } else { max_ms });
+  let n = ranges.len();
+  let parts = ranges.into_iter().enumerate().map(|(i, r)| {
+    each(i, n);
+    Ok((r.start, model.transcribe_with(&pcm[r], options)?))
+  });
+  Ok(join(parts.collect::<wavo::Result<Vec<_>>>()?))
+}
 
 /// Joins the transcripts of pieces starting at the given samples: texts with a space, token times
 /// shifted to the whole audio. Also returns the index of each piece's first token, where

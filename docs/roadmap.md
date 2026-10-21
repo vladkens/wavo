@@ -21,6 +21,7 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **15. Moonshine tiny and base, correct** (#30). [Plan](plans/20261011-moonshine.md)
 - [x] **Hebrew:** ivrit.ai's Whisper turbo and Yakov Kolani's Parakeet v3 fine-tunes, converted
       and published under `vladkens` on Hugging Face (#64).
+- [x] **Server:** `wavo serve`, OpenAI's transcription API on `std::net`.
 
 Open:
 
@@ -33,6 +34,7 @@ Open:
   rest of the [speed plan](plans/20261012-speed.md), the tier on AMD and Intel Arc, and the Linux
   plan's portable-encoder items. On Apple M5 and newer the GEMM runs on the Metal 4 tensor API:
   GigaAM, Parakeet and Whisper 1.5–1.9× faster there, ahead of transcribe.cpp on every model.
+- **Server, more:** a Docker image, the Wyoming protocol (Home Assistant) and Bazarr's `/asr`.
 - **Fast build.** The in-house FFT replaced `rustfft` (#15); left: wgpu features per target.
   [Plan](plans/20261010-fast-build.md)
 - **Other engines.** Measure wavo against the other ways to run the same models on a Mac, not
