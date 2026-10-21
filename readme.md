@@ -158,9 +158,10 @@ downloads without asking, for scripts. Without a terminal and `-y` it fails with
 command to run, and `wavo bench` never downloads. Long recordings are split at their quietest
 moments and transcribed piece by piece, so an hour of audio works as well as a minute;
 `--segment SECS` sets the piece length, `--segment 0` runs one pass (up to 37.5 s for
-GigaAM and 45 s for Moonshine). Models are stored in the
-Hugging Face cache (`~/.cache/huggingface/hub`), so a model fetched with `hf download` is found by
-`wavo` and the other way round.
+GigaAM and 45 s for Moonshine). Audio without recognized speech prints nothing (with `--json`,
+an empty text) and `no speech recognized` on stderr, and still exits with 0, so a batch goes on.
+Models are stored in the Hugging Face cache (`~/.cache/huggingface/hub`), so a model fetched with
+`hf download` is found by `wavo` and the other way round.
 
 ## ⚡ Speed
 
