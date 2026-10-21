@@ -24,8 +24,8 @@ builds with a plain `cargo build`.
 - 🎧 Any common format: wav, mp3, m4a, flac, ogg (Vorbis), resampled for you
 - 🦀 Pure Rust library: no CMake, C++ toolchain, Python or ONNX Runtime to install
 - ⚡ Runs on the GPU: Metal on Apple Silicon, Vulkan on Linux and Windows (DX12 without Vulkan)
-- 🧠 On Apple Silicon Macs, Parakeet and GigaAM run on the Neural Engine, 2–3× faster than the GPU
-  on 11 s of audio, prepared once by `wavo pull`
+- 🧠 On Apple Silicon Macs, Parakeet and GigaAM run on the Neural Engine, about 2× faster than the
+  GPU on 11 s of audio at a sixth of its energy, prepared once by `wavo pull`
 - 🏎️ Fast: an hour of audio in under a minute on an M2 with Parakeet or GigaAM (see
   [Speed](#-speed)), and a model loads in about 0.1 s
 - 📦 `pull` / `list` / `rm` models, shared with the Hugging Face cache that `hf` uses
@@ -256,12 +256,13 @@ transcribe.cpp on Metal:
 | Model | Mac | Neural Engine | GPU | transcribe.cpp |
 |---|---|---|---|---|
 | `parakeet-v3` | M1 | **70** / **53** | 252 / 115 | 295 / 142 |
-| `parakeet-v3` | M2 | **57** / **44** | 149 / 72 | 269 / 96 |
+| `parakeet-v3` | M2 | **61** / **46** | 151 / 73 | 269 / 96 |
 | `gigaam-v3` | M1 | **52** / **42** | 170 / 70 | 180 / 74 |
-| `gigaam-v3` | M2 | **46** / **40** | 92 / 47 | 105 / 53 |
+| `gigaam-v3` | M2 | **51** / **39** | 92 / 42 | 105 / 53 |
 
-A load takes 0.1–0.15 s, and the wavo process needs 16–21 MiB: the weights live in the system's
-Neural Engine service.
+A load takes 0.06–0.2 s, and the wavo process peaks at 25–60 MiB against 300–760 MiB on the GPU:
+the weights live in the system's Neural Engine service. A call takes 0.15–0.25 J on the Neural
+Engine against 0.9–1.4 J on the GPU (M2, the accelerator's own power).
 
 ## 📚 Library usage
 

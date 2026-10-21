@@ -772,6 +772,9 @@ Speed, load and prepare times are in the [plan's Result](plans/completed/2026101
   ANE only after a load by the same program build on the same OS (a marker per program next to
   the compiled model), so `load` never stalls; `prepare` in a new program skips the build and
   only loads.
+- 2026-10-22, on macOS 27 a renamed copy of `wavo` paid 11.5 s (GigaAM) and 13.2 s (Parakeet) at
+  its first load, while a rebuild under the same name loaded GigaAM in 65 ms and Parakeet in
+  12.9 s: the system's key isn't the content alone. The per-program marker stays.
 - 2026-10-12, Parakeet V3 accuracy against the GPU on the same 15 s pieces of 7 clips (637
   tokens): per-row int8 on the ANE 11 tokens moved, at most 560 ms (ru-long's final "." in a
   trailing pause), one word differs (uk-long); F16 weights on the M1's ANE (one 1.1 GB program

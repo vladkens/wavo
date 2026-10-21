@@ -101,8 +101,11 @@ pub enum Kernels {
 }
 
 /// Every GPU adapter wavo can run a model on, through Vulkan, Metal or DX12, starting with the
-/// one [`Model::load`](crate::Model::load) picks (see [`Model::device`](crate::Model::device)
-/// for how). Their [`kernels`](Device::kernels) are those the adapter's features allow.
+/// one [`Model::load`](crate::Model::load) picks on the GPU (see
+/// [`Model::device`](crate::Model::device) for how), and last the Mac's Neural Engine when it has
+/// one that Core ML can use (Apple Silicon, macOS 15 or later, not in a virtual machine): Parakeet
+/// and GigaAM run there once [prepared](crate::Model::prepare). The adapters'
+/// [`kernels`](Device::kernels) are those their features allow.
 ///
 /// Only the adapters' info and features are read: no device is created and no kernel compiles, so
 /// it takes milliseconds and works without a model, for example to warn about a
@@ -132,7 +135,9 @@ pub fn devices() -> Result<Vec<Device>> {
     rest.remove(i);
   }
 
-  Ok(std::iter::once(first).chain(rest).map(|a| Device::new(&a.get_info(), kernels(&a))).collect())
+  let gpus = std::iter::once(first).chain(rest).map(|a| Device::new(&a.get_info(), kernels(&a)));
+  let ane = crate::ane::available().then(|| crate::ane::device().clone());
+  Ok(gpus.chain(ane).collect())
 }
 
 /// The kernels `adapter`'s features allow, before their probes.
