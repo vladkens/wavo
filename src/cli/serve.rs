@@ -254,7 +254,7 @@ impl Server {
 
   /// The downloaded models in OpenAI's list format, the ones given on the command line first.
   fn list(&self) -> Reply {
-    let mut found: Vec<_> = crate::downloaded(&Hub::new()).into_iter().map(|(m, _)| m).collect();
+    let mut found: Vec<_> = Hub::new().downloaded().into_iter().map(|(m, _)| m).collect();
     let given = |m: &ModelInfo| self.models.iter().position(|x| x.info.name == m.name);
     found.sort_by_key(|m| given(m).unwrap_or(usize::MAX));
     let model = |m: &ModelInfo| {

@@ -604,6 +604,8 @@ mod tests {
     hub.install(&m.repo(), &m.file(), &remote('a', '1', 5), write("hello")).unwrap();
     let path = hub.find("gigaam-v3-e2e-rnnt").unwrap();
     assert!(path.starts_with(hub.root.join("models--handy-computer--gigaam-v3-e2e-rnnt-gguf")));
+    assert_eq!(hub.resolve("gigaam-v3").unwrap(), path);
+    assert_eq!(hub.downloaded(), vec![(m, path)]);
     assert_eq!(hub.remove("gigaam-v3").unwrap(), Some(5));
     assert_eq!((hub.find("gigaam-v3"), hub.remove("gigaam-v3").unwrap()), (None, None));
     fs::remove_dir_all(&hub.root).unwrap();

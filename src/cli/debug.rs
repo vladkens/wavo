@@ -86,7 +86,7 @@ fn gpu(w: &mut impl Write) -> Result<Vec<String>> {
 fn models(w: &mut impl Write) -> Result<()> {
   let hub = Hub::new();
   writeln!(w, "{:<18} {hub}", "cache")?;
-  for (m, path) in crate::downloaded(&hub) {
+  for (m, path) in hub.downloaded() {
     let size = std::fs::metadata(path).map_or("-".into(), |x| crate::models::gb(x.len()));
     writeln!(w, "{:<18} {size}", m.name)?;
   }

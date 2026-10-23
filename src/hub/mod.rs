@@ -305,6 +305,56 @@ impl Hub {
     self.find_file(&m.repo(), &m.file())
   }
 
+  /// The model file a name or path stands for, such as a command line's MODEL argument: an
+  /// existing file as is, else the downloaded file of a model by short or full name. Never uses
+  /// the network.
+  ///
+  /// # Errors
+  ///
+  /// - [`Error::Io`] of kind [`NotFound`](std::io::ErrorKind::NotFound): no such file, for an
+  ///   argument that ends in `.gguf` or has a path separator (`<path>: no such file`), or the model
+  ///   isn't downloaded (`<name> is not in <root>`); [`pull`](Self::pull) it then.
+  /// - [`Error::UnknownModel`]: any other argument that is not a name in [`MODELS`], with the
+  ///   closest name when it looks like a typo.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use std::io::ErrorKind;
+  /// use wavo::{Error, hub::Hub};
+  ///
+  /// let hub = Hub::at("/no/such/cache");
+  /// let missing = hub.resolve("gigaam-v3").unwrap_err();
+  /// assert!(matches!(&missing, Error::Io(e) if e.kind() == ErrorKind::NotFound));
+  /// assert!(matches!(hub.resolve("gigam-v3"), Err(Error::UnknownModel { .. })));
+  /// assert!(matches!(hub.resolve("models/my.gguf"), Err(Error::Io(_))));
+  /// ```
+  pub fn resolve(&self, name_or_path: &str) -> Result<PathBuf> {
+    let path = Path::new(name_or_path);
+    if path.is_file() {
+      return Ok(path.into());
+    }
+
+    let not_found =
+      |what: String| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, what));
+    if name_or_path.ends_with(".gguf") || name_or_path.contains(['/', '\\']) {
+      return Err(not_found(format!("{name_or_path}: no such file")));
+    }
+
+    let m = lookup(name_or_path)?;
+    self.find(m.name).ok_or_else(|| not_found(format!("{} is not in {self}", m.name)))
+  }
+
+  /// The models of [`MODELS`] downloaded to this cache, in its order, with their files. Never uses
+  /// the network.
+  ///
+  /// ```
+  /// assert!(wavo::hub::Hub::at("/no/such/cache").downloaded().is_empty());
+  /// ```
+  pub fn downloaded(&self) -> Vec<(&'static ModelInfo, PathBuf)> {
+    MODELS.iter().filter_map(|m| self.find(m.name).map(|path| (m, path))).collect()
+  }
+
   /// Downloads a model by short or full name, unless its latest revision is in the cache already,
   /// and returns the path of its file.
   ///
@@ -480,6 +530,19 @@ mod tests {
         assert_eq!(codes.len(), n, "{}: {}", m.name, m.languages);
       }
     }
+  }
+
+  #[test]
+  fn resolve() {
+    let hub = Hub::at("/nowhere");
+    let error = |arg| hub.resolve(arg).unwrap_err().to_string();
+    assert_eq!(error("gigaam-v3-e2e-rnnt"), "gigaam-v3 is not in /nowhere");
+    assert_eq!(error("dir/m.gguf"), "dir/m.gguf: no such file");
+    assert_eq!(error("m.gguf"), "m.gguf: no such file");
+    assert!(error("gigam-v3").contains("did you mean gigaam-v3?"));
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    assert_eq!(hub.resolve(file.to_str().unwrap()).unwrap(), file);
+    assert!(hub.downloaded().is_empty());
   }
 
   #[test]
