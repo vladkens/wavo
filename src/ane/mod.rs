@@ -74,9 +74,16 @@ fn name(path: &Path) -> Result<String> {
     let in_blobs = p.parent().and_then(Path::file_name).is_some_and(|d| d == "blobs");
     (in_blobs && blob.len() == 64 && blob.bytes().all(|b| b.is_ascii_hexdigit())).then_some(blob)
   };
-  // The blob itself, or the snapshot's link to it: one hop, not into the shared store.
-  if let Some(blob) = sha(path).or_else(|| fs::read_link(path).ok().as_deref().and_then(sha)) {
-    return Ok(format!("{stem}.{}", &blob[..16]));
+  // Links followed one hop at a time up to the blob (the snapshot's link, or one to it), not on
+  // into the shared store.
+  let mut hop = path.to_path_buf();
+  for _ in 0..8 {
+    if let Some(blob) = sha(&hop) {
+      return Ok(format!("{stem}.{}", &blob[..16]));
+    }
+
+    let Ok(next) = fs::read_link(&hop) else { break };
+    hop = hop.parent().unwrap_or(Path::new("")).join(next);
   }
 
   const PART: u64 = 1 << 20;
@@ -356,6 +363,10 @@ mod tests {
     let pointer = shared.join("m.gguf");
     std::os::unix::fs::symlink(Path::new("blobs").join(&sha), &pointer).unwrap();
     assert_eq!(name(&pointer).unwrap(), "m.0123456789abcdef");
+    let alias = dir.join("alias").join("m.gguf");
+    fs::create_dir_all(alias.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&pointer, &alias).unwrap();
+    assert_eq!(name(&alias).unwrap(), "m.0123456789abcdef");
 
     // Outside a Hugging Face cache: by content and time.
     let (a, b) = (dir.join("m.gguf"), dir.join("copy").join("m.gguf"));
