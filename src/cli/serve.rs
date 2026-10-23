@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use wavo::Backend;
 use wavo::hub::{self, Hub, ModelInfo};
 
 use crate::http::{self, Head, Part, Res, fail};
@@ -91,7 +92,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
   // Before the models load: a port in use fails at once.
   let listener =
     TcpListener::bind((host, port)).with_context(|| format!("listening on {host}:{port}"))?;
-  let models = names.iter().map(|m| load(m, &crate::model_path(m.name, download)?));
+  let models = names.iter().map(|m| load(m, &crate::model_path(m.name, download, Backend::Auto)?));
   let models = models.collect::<Result<Vec<_>>>()?;
   let device = models[0].model.device();
   if let Some(warning) = debug::software(device) {
@@ -131,7 +132,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
 fn load(info: &'static ModelInfo, path: &Path) -> Result<Arc<Loaded>> {
   Ok(Arc::new(Loaded {
     info,
-    model: crate::load(path, wavo::Backend::Auto)?,
+    model: crate::load(path, Backend::Auto)?,
     timed: models::timed(path),
   }))
 }
