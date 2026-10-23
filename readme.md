@@ -305,12 +305,12 @@ files you fetch yourself, with a pure Rust build. Decoding and resampling audio 
 `model.transcribe` runs the audio in one pass, up to 1.5 times the length the model was trained on
 for GigaAM and Moonshine (`model.max_audio_ms()`: 25 s for GigaAM, 30 s for Whisper and Moonshine);
 `model.transcribe_long` takes recordings of any length, split at pauses into pieces of up to that
-length, as `wavo run` does. On the Neural Engine the window is 15 s, and `model.transcribe` splits
-longer audio there itself. On a Mac, `hub.pull` also prepares Parakeet and GigaAM for the Neural
-Engine, `wavo::Model::prepare` does it for a file you manage, and `Model::load` then runs them
-there; your app prepares for itself even when `wavo pull` already did
-([why](https://docs.rs/wavo/latest/wavo/#neural-engine)). `Model::load_with(path, Backend::Gpu)`
-picks the GPU. The [API docs](https://docs.rs/wavo) have the
+length, as `wavo run` does, with a callback after each piece for progress and cancel. On the Neural
+Engine the window is 15 s, and `model.transcribe` splits longer audio there itself. On a Mac,
+`hub.pull` also prepares Parakeet and GigaAM for the Neural Engine, `wavo::Model::prepare` does it
+for a file you manage, and `Model::load` then runs them there; your app prepares for itself even
+when `wavo pull` already did ([why](https://docs.rs/wavo/latest/wavo/#neural-engine)).
+`Model::load_with(path, Backend::Gpu)` picks the GPU. The [API docs](https://docs.rs/wavo) have the
 details, including downloading on a thread with progress and cancel, as
 [examples/hub.rs](examples/hub.rs) does.
 
