@@ -678,9 +678,10 @@ impl Model {
   /// The compiled model takes about as much disk as the GGUF, in `~/Library/Caches/wavo/`, named
   /// by the file's name and a hash of its content and modification time. One is kept per file
   /// name: `prepare` deletes the compiled models of other files under the same name (an older
-  /// revision of the model, or a different file of that name, which then replace each other's),
-  /// and those no load has used for 30 days (of files deleted elsewhere). [`Model::unprepare`]
-  /// deletes the file's own. `progress` is called as each step starts; return
+  /// revision of the model, or a different file of that name, which then replace each other's).
+  /// The first load or prepare of a process also deletes, in the background, those of files
+  /// deleted or replaced since, such as by `hf cache rm`. [`Model::unprepare`] deletes the file's
+  /// own. `progress` is called as each step starts; return
   /// [`ControlFlow::Break`] to cancel before the next.
   ///
   /// # Errors
