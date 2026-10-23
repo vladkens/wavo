@@ -253,9 +253,7 @@ fn run(args: &[&str]) -> Result<()> {
   };
   ensure!(!meta.is_dir(), "{audio}: a folder, not an audio file");
   let path = model_path(model, download, on)?;
-  let bar = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear); // on errors too
-  bar.set_style(ProgressStyle::with_template("{spinner} {msg} {elapsed}")?);
-  bar.enable_steady_tick(Duration::from_millis(100));
+  let bar = spinner(); // cleared on errors too
   bar.set_message("decoding the audio");
   let pcm = audio::read(audio)?;
   bar.set_message("loading the model");
@@ -312,6 +310,14 @@ fn pull(args: &[&str]) -> Result<()> {
   Ok(())
 }
 
+/// A ticking spinner with its message and elapsed time, cleared when dropped.
+fn spinner() -> ProgressBar {
+  let style = ProgressStyle::with_template("{spinner} {msg} {elapsed}").unwrap();
+  let bar = ProgressBar::new_spinner().with_style(style).with_finish(ProgressFinish::AndClear);
+  bar.enable_steady_tick(Duration::from_millis(100));
+  bar
+}
+
 /// Progress goes to a bar in `bars` on a terminal, else to a plain line on stderr at the start of
 /// each try and one at the end.
 fn pull_one(hub: &Hub, m: &hub::ModelInfo, bars: &MultiProgress) -> Result<PathBuf> {
@@ -320,7 +326,7 @@ fn pull_one(hub: &Hub, m: &hub::ModelInfo, bars: &MultiProgress) -> Result<PathB
     "{msg}: {percent:>3}% {decimal_bytes} / {decimal_total_bytes}, {decimal_bytes_per_sec}",
   )?;
   let (mut bar, mut retries): (Option<(ProgressBar, u64)>, u32) = (None, 0);
-  let mut spinner: Option<ProgressBar> = None;
+  let mut prepare: Option<ProgressBar> = None;
   let path = hub.pull(m.name, |p| {
     if let Some(step) = p.preparing {
       let step = match step {
@@ -332,13 +338,7 @@ fn pull_one(hub: &Hub, m: &hub::ModelInfo, bars: &MultiProgress) -> Result<PathB
       if plain {
         eprintln!("{msg}");
       } else {
-        let style = ProgressStyle::with_template("{spinner} {msg} {elapsed}").unwrap();
-        let new = || {
-          let s = bars.add(ProgressBar::new_spinner().with_style(style));
-          s.enable_steady_tick(Duration::from_millis(100));
-          s.with_finish(ProgressFinish::AndClear)
-        };
-        spinner.get_or_insert_with(new).set_message(msg);
+        prepare.get_or_insert_with(|| bars.add(self::spinner())).set_message(msg);
       }
       return ControlFlow::Continue(());
     }
