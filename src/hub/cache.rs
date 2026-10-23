@@ -74,16 +74,18 @@ impl Hub {
   }
 
   /// Downloads the file at `main` unless that revision is cached, as huggingface_hub does. A
-  /// dropped or stalled download resumes up to `RETRIES` more times, after 1, 2 and 4 s.
+  /// dropped or stalled download resumes up to `RETRIES` more times, after 1, 2 and 4 s. Returns
+  /// the repository lock still held, so that `remove` can't delete the file before the caller is
+  /// done with it.
   pub(super) fn pull_file(
     &self,
     repo: &str,
     file: &str,
     mut progress: impl FnMut(Progress<'_>) -> ControlFlow<()>,
-  ) -> Result<PathBuf> {
+  ) -> Result<(PathBuf, File)> {
     let agent = agent(IDLE);
     let remote = head(&agent, repo, file)?;
-    self.install(repo, file, &remote, |part| {
+    self.install_locked(repo, file, &remote, |part| {
       let mut retry = 0;
       loop {
         match download(&agent, &remote.url, part, remote.size, &mut progress) {
@@ -104,14 +106,14 @@ impl Hub {
   }
 
   /// Holds `<root>/.locks/<repo folder>/<name>.lock` until the file is dropped.
-  pub(super) fn lock(&self, repo: &str, name: &str) -> Result<File> {
+  fn lock(&self, repo: &str, name: &str) -> Result<File> {
     let dir = self.root.join(".locks").join(self.folder(repo).file_name().unwrap());
     fs::create_dir_all(&dir)?;
     hold(&dir.join(format!("{name}.lock")))
   }
 
-  /// Links the file into its snapshot, `fetch`ing the blob into `<etag>.incomplete` first when it
-  /// is missing, then points `refs/main` at the snapshot.
+  /// `install_locked`, releasing the lock at once.
+  #[cfg(test)]
   fn install(
     &self,
     repo: &str,
@@ -119,13 +121,26 @@ impl Hub {
     remote: &Remote,
     fetch: impl FnOnce(&Path) -> Result<()>,
   ) -> Result<PathBuf> {
+    self.install_locked(repo, file, remote, fetch).map(|(path, _)| path)
+  }
+
+  /// Links the file into its snapshot, `fetch`ing the blob into `<etag>.incomplete` first when it
+  /// is missing, then points `refs/main` at the snapshot. Returns the repository lock, held since
+  /// before the download.
+  fn install_locked(
+    &self,
+    repo: &str,
+    file: &str,
+    remote: &Remote,
+    fetch: impl FnOnce(&Path) -> Result<()>,
+  ) -> Result<(PathBuf, File)> {
     if !hex(&remote.commit, &[40]) || !hex(&remote.etag, &[40, 64]) {
       let (commit, etag) = (&remote.commit, &remote.etag);
       return Err(Error::Hub(format!(
         "unexpected commit {commit:?} or etag {etag:?} from the Hub"
       )));
     }
-    let _repo = self.lock(repo, "wavo")?;
+    let lock = self.lock(repo, "wavo")?;
     let dir = self.folder(repo);
     let pointer = dir.join("snapshots").join(&remote.commit).join(file);
     if !pointer.exists() {
@@ -152,7 +167,7 @@ impl Hub {
       fs::write(&tmp, &remote.commit)?;
       fs::rename(&tmp, &refs)?;
     }
-    Ok(pointer)
+    Ok((pointer, lock))
   }
 
   /// Deletes the file from every snapshot along with its blobs, then the snapshots and refs left

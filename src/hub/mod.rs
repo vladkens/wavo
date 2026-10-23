@@ -358,12 +358,12 @@ impl Hub {
     mut progress: impl FnMut(Progress<'_>) -> ControlFlow<()>,
   ) -> Result<PathBuf> {
     let m = lookup(name)?;
-    let path = self.pull_file(&m.repo(), &m.file(), &mut progress)?;
+    // The repository lock, held from the download through preparing, as `remove` takes it: the
+    // file stays while it is read.
+    let (path, _repo) = self.pull_file(&m.repo(), &m.file(), &mut progress)?;
     if !self.prepare {
       return Ok(path);
     }
-    // Under the repository lock, as `remove` takes it: the file stays while it is read.
-    let _repo = self.lock(&m.repo(), "wavo")?;
     let size = std::fs::metadata(&path)?.len();
     crate::Model::prepare(&path, |step| {
       progress(Progress { done: size, total: size, retrying: None, preparing: Some(step) })

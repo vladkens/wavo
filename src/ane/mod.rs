@@ -62,17 +62,20 @@ fn cache() -> Result<PathBuf> {
 }
 
 /// `<stem>.<id>`: what names the GGUF's compiled models. In a Hugging Face cache the file is a
-/// link to `blobs/<sha256>`, and the id is the start of that hash, so copies in two caches share
-/// a compiled model. Elsewhere it is FNV-1a over the file's size, modification time and first and
-/// last MiB: the header names every tensor with its offset, the tail holds weights, and a file
-/// rewritten in place has a new time.
+/// link to `blobs/<sha256>` (which a newer `hf` links on into its shared store), and the id is the
+/// start of that hash, so copies in two caches share a compiled model. Elsewhere it is FNV-1a over
+/// the file's size, modification time and first and last MiB: the header names every tensor with
+/// its offset, the tail holds weights, and a file rewritten in place has a new time.
 fn name(path: &Path) -> Result<String> {
   let stem = path.file_stem().unwrap_or_default().to_string_lossy();
   let stem: String = stem.chars().map(|c| if c == '.' { '_' } else { safe(c) }).collect();
-  let real = fs::canonicalize(path)?;
-  let blob = real.file_name().unwrap_or_default().to_string_lossy();
-  let in_blobs = real.parent().and_then(Path::file_name).is_some_and(|d| d == "blobs");
-  if in_blobs && blob.len() == 64 && blob.bytes().all(|b| b.is_ascii_hexdigit()) {
+  let sha = |p: &Path| {
+    let blob = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let in_blobs = p.parent().and_then(Path::file_name).is_some_and(|d| d == "blobs");
+    (in_blobs && blob.len() == 64 && blob.bytes().all(|b| b.is_ascii_hexdigit())).then_some(blob)
+  };
+  // The blob itself, or the snapshot's link to it: one hop, not into the shared store.
+  if let Some(blob) = sha(path).or_else(|| fs::read_link(path).ok().as_deref().and_then(sha)) {
     return Ok(format!("{stem}.{}", &blob[..16]));
   }
 
@@ -344,6 +347,15 @@ mod tests {
     let link = dir.join("parakeet-tdt-0.6b-v3-Q8_0.gguf");
     std::os::unix::fs::symlink(dir.join("blobs").join(&sha), &link).unwrap();
     assert_eq!(name(&link).unwrap(), "parakeet-tdt-0_6b-v3-Q8_0.0123456789abcdef");
+    // A newer hf's shared store: the repo blob links on to `blobs/<xx>/<hash>`.
+    let shared = dir.join("shared");
+    fs::create_dir_all(shared.join("blobs/ab")).unwrap();
+    fs::write(shared.join("blobs/ab/cdef"), [1; 100]).unwrap();
+    std::os::unix::fs::symlink(shared.join("blobs/ab/cdef"), shared.join("blobs").join(&sha))
+      .unwrap();
+    let pointer = shared.join("m.gguf");
+    std::os::unix::fs::symlink(Path::new("blobs").join(&sha), &pointer).unwrap();
+    assert_eq!(name(&pointer).unwrap(), "m.0123456789abcdef");
 
     // Outside a Hugging Face cache: by content and time.
     let (a, b) = (dir.join("m.gguf"), dir.join("copy").join("m.gguf"));
