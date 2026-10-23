@@ -192,11 +192,9 @@ found by `wavo` and the other way round.
 On an Apple Silicon Mac with macOS 15 or later, `wavo pull` also prepares Parakeet and GigaAM for
 the Neural Engine: it compiles the model's encoder for Core ML once, which takes 15–30 s and as much
 disk as the model, in `~/Library/Caches/wavo`. From then on `wavo run` uses the Neural Engine for
-them (`wavo list` shows which are ready) and splits audio into pieces of up to 15 s. Its
-arithmetic is close to the GPU's, not equal: on an hour of English read speech in pieces of up to
-15 s, 0.05–0.07% of the words differ from the GPU's (case and punctuation aside) and 3–4% of the
-pieces differ at all, mostly in a comma or a capital letter. `--backend gpu` runs on the GPU
-anyway, `--backend ane` fails rather than fall back. Whisper and Moonshine always run on the GPU,
+them (`wavo list` shows which are ready) and splits audio into pieces of up to 15 s. Its text is
+close to the GPU's, not equal ([numbers](https://docs.rs/wavo/latest/wavo/#neural-engine)).
+`--backend gpu` runs on the GPU anyway, `--backend ane` fails rather than fall back. Whisper and Moonshine always run on the GPU,
 where they are faster.
 
 ### Server
@@ -303,9 +301,9 @@ for GigaAM and Moonshine (`model.max_audio_ms()`: 25 s for GigaAM, 30 s for Whis
 length, as `wavo run` does. On the Neural Engine the window is 15 s, and `model.transcribe` splits
 longer audio there itself. On a Mac, `hub.pull` also prepares Parakeet and GigaAM for the Neural
 Engine, `wavo::Model::prepare` does it for a file you manage, and `Model::load` then runs them
-there. The system caches this per program, so your app prepares for itself even when `wavo pull`
-already did (then it takes one load of 10–30 s, without rebuilding);
-`Model::load_with(path, Backend::Gpu)` picks the GPU. The [API docs](https://docs.rs/wavo) have the
+there; your app prepares for itself even when `wavo pull` already did
+([why](https://docs.rs/wavo/latest/wavo/#neural-engine)). `Model::load_with(path, Backend::Gpu)`
+picks the GPU. The [API docs](https://docs.rs/wavo) have the
 details, including downloading on a thread with progress and cancel, as
 [examples/hub.rs](examples/hub.rs) does.
 

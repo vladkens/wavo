@@ -314,8 +314,8 @@ impl Hub {
   /// whole download takes.
   ///
   /// Then, for Parakeet and GigaAM on a Mac with a Neural Engine, it
-  /// [prepares](crate::Model::prepare) the file for it: 15–40 s the first time, under a second
-  /// once prepared. Elsewhere, for the other families and with [`prepare(false)`](Self::prepare),
+  /// [prepares](crate::Model::prepare) the file for it, which takes the longest the first time.
+  /// Elsewhere, for the other families and with [`prepare(false)`](Self::prepare),
   /// this step is skipped.
   ///
   /// `progress` is called when the download starts, after every chunk it receives (often: throttle
