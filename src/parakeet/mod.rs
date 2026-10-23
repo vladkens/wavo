@@ -14,23 +14,18 @@ use decoder::Decoder;
 use encoder::Encoder;
 use frontend::{F_MAX, Frontend, HOP, MELS, N_FFT, PRE_EMPHASIS, WINDOW};
 
+use crate::ane::Backend;
 use crate::conformer::{self, Attention};
 use crate::error::{Error, Result, bail};
 use crate::gguf::Gguf;
-use crate::gpu::Gpu;
 use crate::sentencepiece::Tokenizer;
 use crate::{Token, Transcript};
 
 /// Encoder frame length: 10 ms hop × subsampling 8.
 const FRAME_MS: u32 = 80;
 
-enum Backend {
-  Gpu(Box<(Gpu, Encoder)>),
-  Ane(crate::ane::Model),
-}
-
 pub struct Parakeet {
-  backend: Backend,
+  backend: Backend<Encoder>,
   frontend: Frontend,
   decoder: Decoder,
   tok: Tokenizer,
@@ -107,14 +102,7 @@ impl Parakeet {
     // The decoder loads on the CPU while the GPU starts and the encoder uploads.
     let (backend, decoder) = std::thread::scope(|s| {
       let decoder = s.spawn(|| Decoder::new(g, vocab.len(), blank));
-      let backend = match ane {
-        Some(model) => Backend::Ane(model),
-        None => {
-          let gpu = Gpu::new(true)?;
-          let encoder = Encoder::new(&gpu, g, cfg, ch, joint)?;
-          Backend::Gpu(Box::new((gpu, encoder)))
-        }
-      };
+      let backend = Backend::new(ane, |gpu| Encoder::new(gpu, g, cfg, ch, joint))?;
       Ok::<_, Error>((backend, decoder.join().unwrap()?))
     })?;
     let tok = Tokenizer::new(&vocab);
@@ -122,10 +110,7 @@ impl Parakeet {
   }
 
   pub fn device(&self) -> &crate::Device {
-    match &self.backend {
-      Backend::Gpu(gpu) => gpu.0.info(),
-      Backend::Ane(_) => crate::ane::device(),
-    }
+    self.backend.device()
   }
 
   pub fn transcribe(&self, pcm: &[f32]) -> Result<Transcript> {

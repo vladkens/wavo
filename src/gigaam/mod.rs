@@ -13,10 +13,10 @@ use decoder::Decoder;
 use encoder::Encoder;
 use frontend::Frontend;
 
+use crate::ane::Backend;
 use crate::conformer::{self, Attention};
 use crate::error::{Result, bail};
 use crate::gguf::Gguf;
-use crate::gpu::Gpu;
 use crate::sentencepiece::{self, Tokenizer};
 use crate::{Token, Transcript};
 
@@ -30,13 +30,8 @@ enum Head {
   Ctc { blank: usize },
 }
 
-enum Backend {
-  Gpu(Box<(Gpu, Encoder)>),
-  Ane(crate::ane::Model),
-}
-
 pub struct Gigaam {
-  backend: Backend,
+  backend: Backend<Encoder>,
   frontend: Frontend,
   head: Head,
   tok: Tokenizer,
@@ -106,23 +101,15 @@ impl Gigaam {
       Head::Ctc { blank }
     };
     let frontend = Frontend::new(g, cfg.mels)?;
-    let backend = match ane {
-      Some(model) => Backend::Ane(model),
-      None => {
-        let gpu = Gpu::new(true)?;
-        let (name, dims) = &cfg.head;
-        let encoder = Encoder::new(&gpu, g, cfg.conformer, cfg.mels, cfg.theta, (name, dims))?;
-        Backend::Gpu(Box::new((gpu, encoder)))
-      }
-    };
+    let backend = Backend::new(ane, |gpu| {
+      let (name, dims) = &cfg.head;
+      Encoder::new(gpu, g, cfg.conformer, cfg.mels, cfg.theta, (name, dims))
+    })?;
     Ok(Self { backend, frontend, head, tok })
   }
 
   pub fn device(&self) -> &crate::Device {
-    match &self.backend {
-      Backend::Gpu(gpu) => gpu.0.info(),
-      Backend::Ane(_) => crate::ane::device(),
-    }
+    self.backend.device()
   }
 
   pub fn transcribe(&self, pcm: &[f32]) -> Result<Transcript> {

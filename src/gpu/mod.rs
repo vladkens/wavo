@@ -40,10 +40,10 @@ pub struct Device {
   /// or `32.0.15.9144` on DX12. No format is promised; empty when the driver reports neither, as
   /// on Metal.
   pub driver: String,
-  /// The kernels wavo runs on the adapter: from [`devices`], those its features allow; from
-  /// [`Model::device`](crate::Model::device), the GEMM's after its probe at load, which falls
-  /// back to [`Kernels::Portable`] when the driver computes it wrong (other fast kernels fall
-  /// back one by one).
+  /// The kernels wavo runs on the adapter: from [`devices`](crate::devices), those its features
+  /// allow; from [`Model::device`](crate::Model::device), the GEMM's after its probe at load,
+  /// which falls back to [`Kernels::Portable`] when the driver computes it wrong (other fast
+  /// kernels fall back one by one).
   pub kernels: Kernels,
 }
 
@@ -100,29 +100,7 @@ pub enum Kernels {
   CoreMl,
 }
 
-/// Every GPU adapter wavo can run a model on, through Vulkan, Metal or DX12, starting with the
-/// one [`Model::load`](crate::Model::load) picks on the GPU (see
-/// [`Model::device`](crate::Model::device) for how), and last the Mac's Neural Engine when it has
-/// one that Core ML can use (Apple Silicon, macOS 15 or later, not in a virtual machine): Parakeet
-/// and GigaAM run there once [prepared](crate::Model::prepare). The adapters'
-/// [`kernels`](Device::kernels) are those their features allow.
-///
-/// Only the adapters' info and features are read: no device is created and no kernel compiles, so
-/// it takes milliseconds and works without a model, for example to warn about a
-/// [`SoftwareGpu`](DeviceKind::SoftwareGpu) before downloading one.
-///
-/// # Errors
-///
-/// [`Error::Adapter`]: no adapter, so `Model::load` would fail too.
-///
-/// # Examples
-///
-/// ```no_run
-/// for device in wavo::devices()? {
-///   println!("{device}: {:?}", device.kernels); // Apple M2 (Metal, integrated): Matrix8
-/// }
-/// # Ok::<(), wavo::Error>(())
-/// ```
+/// The GPU adapters for [`crate::devices`], the one `adapter()` picks first.
 pub fn devices() -> Result<Vec<Device>> {
   let first = adapter()?;
   let info = first.get_info();
@@ -135,9 +113,7 @@ pub fn devices() -> Result<Vec<Device>> {
     rest.remove(i);
   }
 
-  let gpus = std::iter::once(first).chain(rest).map(|a| Device::new(&a.get_info(), kernels(&a)));
-  let ane = crate::ane::available().then(|| crate::ane::device().clone());
-  Ok(gpus.chain(ane).collect())
+  Ok(std::iter::once(first).chain(rest).map(|a| Device::new(&a.get_info(), kernels(&a))).collect())
 }
 
 /// The kernels `adapter`'s features allow, before their probes.

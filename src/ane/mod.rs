@@ -3,11 +3,19 @@
 //! program with one fixed 15 s window, compiled once by `prepare` and run through Core ML. The
 //! frontend and the decoder stay on the CPU.
 //!
-//! Compiled models live in `~/Library/Caches/wavo/`, outside the Hugging Face cache, as
-//! `<stem>.<id>.v<GRAPH>.mlmodelc`: the GGUF's file name without `.gguf` (dots as `_`), an id of
-//! its content and the graph version. A prepare drops the other ids and versions of its stem, the
-//! older revisions of the model, so the cache holds one compiled model per model name, plus those
-//! of files deleted elsewhere until 30 days without a load.
+//! Compiled models live in `~/Library/Caches/wavo/`, outside the Hugging Face cache:
+//!
+//! ```text
+//! lock                                         held by prepare, prune and remove
+//! <stem>.<id>.v<GRAPH>.mlmodelc                the compiled model
+//! <stem>.<id>.v<GRAPH>.<program>.loaded        a program loaded it; holds its stamp
+//! <stem>.<id>.v<GRAPH>.tmp                     a build in progress
+//! ```
+//!
+//! `<stem>` is the GGUF's file name without `.gguf` (dots as `_`) and `<id>` a hash of its content.
+//! A prepare drops the other ids and versions of its stem, the older revisions of the model, so
+//! the cache holds one compiled model per model name, plus those of files deleted elsewhere until
+//! 30 days without a load.
 
 pub mod conformer;
 #[cfg_attr(not(target_os = "macos"), path = "unsupported.rs")]
@@ -23,10 +31,11 @@ use std::sync::OnceLock;
 use std::time::{Duration, UNIX_EPOCH};
 
 pub use conformer::Graph;
-pub use coreml::{Model, available};
+pub use coreml::Model;
 pub use mil::{Program, Var};
 
 use crate::gguf::Gguf;
+use crate::gpu::Gpu;
 use crate::{Api, Device, DeviceKind, Error, Kernels, PrepareStep, Result};
 
 /// The audio window of every program, in samples (15 s): most dictation is shorter, and longer
@@ -51,8 +60,39 @@ pub fn device() -> &'static Device {
   })
 }
 
+/// Where a family's encoder `E` runs: the GPU, or the Neural Engine's program.
+pub enum Backend<E> {
+  Gpu(Box<(Gpu, E)>),
+  Ane(Model),
+}
+
+impl<E> Backend<E> {
+  /// `ane` when given, else a GPU and the encoder `encoder` loads on it.
+  pub fn new(ane: Option<Model>, encoder: impl FnOnce(&Gpu) -> Result<E>) -> Result<Self> {
+    let Some(model) = ane else {
+      let gpu = Gpu::new(true)?;
+      let e = encoder(&gpu)?;
+      return Ok(Self::Gpu(Box::new((gpu, e))));
+    };
+    Ok(Self::Ane(model))
+  }
+
+  pub fn device(&self) -> &Device {
+    match self {
+      Self::Gpu(gpu) => gpu.0.info(),
+      Self::Ane(_) => device(),
+    }
+  }
+}
+
 fn unsupported(why: &str) -> Error {
   Error::NeuralEngine(why.into())
+}
+
+/// Whether this Mac has a Neural Engine Core ML can use; probed once.
+pub fn available() -> bool {
+  static AVAILABLE: OnceLock<bool> = OnceLock::new();
+  *AVAILABLE.get_or_init(coreml::available)
 }
 
 fn cache() -> Result<PathBuf> {
@@ -61,39 +101,25 @@ fn cache() -> Result<PathBuf> {
   Ok(PathBuf::from(home).join("Library/Caches/wavo"))
 }
 
-/// `<stem>.<id>`: what names the GGUF's compiled models. In a Hugging Face cache the file is a
-/// link to `blobs/<sha256>` (which a newer `hf` links on into its shared store), and the id is the
-/// start of that hash, so copies in two caches share a compiled model. Elsewhere it is FNV-1a over
-/// the file's size, modification time and first and last MiB: the header names every tensor with
-/// its offset, the tail holds weights, and a file rewritten in place has a new time.
+/// Holds the cache's one lock until the file is dropped, creating the folder.
+fn lock(dir: &Path) -> Result<File> {
+  fs::create_dir_all(dir)?;
+  let lock = File::options().create(true).truncate(false).write(true).open(dir.join("lock"))?;
+  lock.lock()?;
+  Ok(lock)
+}
+
+/// `<stem>.<id>`, what names the GGUF's compiled models: `<id>` is FNV-1a over the file's size and
+/// its first and last MiB (the header names every tensor with its offset, the tail holds weights),
+/// so copies of a file share them.
 fn name(path: &Path) -> Result<String> {
+  const PART: u64 = 1 << 20;
   let stem = path.file_stem().unwrap_or_default().to_string_lossy();
   let stem: String = stem.chars().map(|c| if c == '.' { '_' } else { safe(c) }).collect();
-  let sha = |p: &Path| {
-    let blob = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let in_blobs = p.parent().and_then(Path::file_name).is_some_and(|d| d == "blobs");
-    (in_blobs && blob.len() == 64 && blob.bytes().all(|b| b.is_ascii_hexdigit())).then_some(blob)
-  };
-  // Links followed one hop at a time up to the blob (the snapshot's link, or one to it), not on
-  // into the shared store.
-  let mut hop = path.to_path_buf();
-  for _ in 0..8 {
-    if let Some(blob) = sha(&hop) {
-      return Ok(format!("{stem}.{}", &blob[..16]));
-    }
-
-    let Ok(next) = fs::read_link(&hop) else { break };
-    hop = hop.parent().unwrap_or(Path::new("")).join(next);
-  }
-
-  const PART: u64 = 1 << 20;
   let mut f = File::open(path)?;
-  let meta = f.metadata()?;
-  let len = meta.len();
-  let time = meta.modified()?.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+  let len = f.metadata()?.len();
   let mut h = FNV;
   fnv(&mut h, &len.to_le_bytes());
-  fnv(&mut h, &time.to_le_bytes());
   let mut buf = vec![0; PART.min(len) as usize];
   f.read_exact(&mut buf)?;
   fnv(&mut h, &buf);
@@ -122,89 +148,91 @@ fn compiled(path: &Path) -> Result<PathBuf> {
   Ok(cache()?.join(format!("{}.v{GRAPH}.mlmodelc", name(path)?)))
 }
 
-/// The marker a load in this program touches next to a compiled model,
-/// `<compiled stem>.<program>.<stamp>.loaded`. The system caches its Neural Engine compile per
-/// executable (by content) and drops it on OS updates, and a load without that cache takes
-/// 10–30 s, so the stamp hashes the executable's size and time and the OS version: a rebuilt or
-/// updated program or OS finds no marker.
-fn loaded(compiled: &Path) -> (PathBuf, String) {
-  let exe = std::env::current_exe().ok();
-  let name = exe.as_deref().and_then(Path::file_stem).map(|s| s.to_string_lossy().into_owned());
-  let name: String = name.unwrap_or_default().chars().map(safe).collect();
-  let meta = exe.and_then(|p| fs::metadata(p).ok());
-  let time =
-    meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok());
-  let stamp = format!("{:?} {time:?} {}", meta.map(|m| m.len()), coreml::os_version());
-  let mut h = FNV;
-  fnv(&mut h, stamp.as_bytes());
-  let prefix = format!("{}.{name}.", compiled.with_extension("").display());
-  (PathBuf::from(format!("{prefix}{:08x}.loaded", h as u32)), prefix)
+/// This program's marker next to a compiled model, `<compiled stem>.<program>.loaded`, and the
+/// stamp it holds. The system caches its Neural Engine compile per executable and drops it on OS
+/// updates, and a load without that cache takes 10–30 s, so the stamp is the executable's size
+/// and time and the OS version: a rebuilt or updated program or OS finds another one.
+fn marker(compiled: &Path) -> (PathBuf, &'static str) {
+  static STAMP: OnceLock<(String, String)> = OnceLock::new();
+  let (program, stamp) = STAMP.get_or_init(|| {
+    let exe = std::env::current_exe().ok();
+    let name = exe.as_deref().and_then(Path::file_stem).map(|s| s.to_string_lossy().into_owned());
+    let meta = exe.and_then(|p| fs::metadata(p).ok());
+    let time = meta.as_ref().and_then(|m| m.modified().ok());
+    let time = time.and_then(|t| t.duration_since(UNIX_EPOCH).ok());
+    let stamp = format!("{:?} {time:?} {}", meta.map(|m| m.len()), coreml::os_version());
+    (name.unwrap_or_default().chars().map(safe).collect(), stamp)
+  });
+  let marker = format!("{}.{program}.loaded", compiled.with_extension("").display());
+  (PathBuf::from(marker), stamp)
 }
 
-/// Touches this program's marker and deletes its markers of older stamps.
-fn mark(compiled: &Path) -> Result<()> {
-  let (marker, prefix) = loaded(compiled);
-  File::create(&marker)?;
-  for old in
-    fs::read_dir(compiled.parent().unwrap()).into_iter().flatten().flatten().map(|e| e.path())
-  {
-    if old != marker && old.to_string_lossy().starts_with(&prefix) {
-      let _ = fs::remove_file(old);
-    }
-  }
-  Ok(())
+/// Whether this program has loaded `compiled` before: then a load takes about 0.1 s.
+fn loaded(compiled: &Path) -> bool {
+  let (marker, stamp) = marker(compiled);
+  compiled.is_dir() && fs::read(marker).is_ok_and(|s| s == stamp.as_bytes())
 }
 
-/// Whether the GGUF's compiled model is in the cache and this program has loaded it before, on a
-/// Mac that can run it: then a load takes about 0.1 s.
-pub fn prepared(path: &Path) -> bool {
-  coreml::available() && compiled(path).is_ok_and(|p| p.is_dir() && loaded(&p).0.exists())
+/// The GGUF's compiled model when it exists and this program has loaded it before. It doesn't
+/// probe Core ML.
+pub fn prepared(path: &Path) -> Option<PathBuf> {
+  compiled(path).ok().filter(|c| loaded(c))
 }
 
 /// Loads the GGUF's compiled model.
 pub fn load(path: &Path) -> Result<Model> {
-  if !coreml::available() {
-    return Err(unsupported(
-      "no Neural Engine: it needs an Apple Silicon Mac with macOS 15 or later",
-    ));
-  }
   let compiled = compiled(path)?;
-  if !compiled.is_dir() {
+  if !compiled.is_dir() && available() {
     return Err(unsupported(
       "the model is not prepared for the Neural Engine: run `wavo pull` or wavo::Model::prepare",
     ));
   }
-  let model = Model::load(&compiled)?;
-  let _ = mark(&compiled); // a load without its marker still works
+  load_compiled(&compiled)
+}
+
+/// Loads a compiled model and marks it loaded by this program.
+pub fn load_compiled(compiled: &Path) -> Result<Model> {
+  if !available() {
+    return Err(unsupported(
+      "no Neural Engine: it needs an Apple Silicon Mac with macOS 15 or later",
+    ));
+  }
+  let model = Model::load(compiled)?;
+  let _ = mark(compiled); // a load without its marker still works
   Ok(model)
 }
 
+fn mark(compiled: &Path) -> Result<()> {
+  let (marker, stamp) = marker(compiled);
+  Ok(fs::write(marker, stamp)?)
+}
+
 /// Builds and compiles the GGUF's program unless it is in the cache, then loads it once so the
-/// system compiles and caches it for the Neural Engine. `false` on a Mac without one.
+/// system compiles and caches it for the Neural Engine, unless this program has loaded it before.
+/// `false` on a Mac without one.
 pub fn prepare(
   path: &Path,
   g: &Gguf,
   build: Build,
   mut progress: impl FnMut(PrepareStep) -> ControlFlow<()>,
 ) -> Result<bool> {
-  if !coreml::available() {
+  if !available() {
     return Ok(false);
   }
-
-  // One at a time in this process (`wavo pull` pulls models in parallel): a first prepare peaks
-  // at about the model's size in memory.
-  static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-  let _one = ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-  let mut step = |s| if progress(s).is_break() { Err(Error::Cancelled) } else { Ok(()) };
   let target = compiled(path)?;
+  if loaded(&target) {
+    return Ok(true);
+  }
+
+  let mut step = |s| if progress(s).is_break() { Err(Error::Cancelled) } else { Ok(()) };
   let dir = target.parent().unwrap();
-  fs::create_dir_all(dir)?;
+  // One prepare at a time, also across threads (`wavo pull` pulls in parallel): a first one peaks
+  // at about the model's size in memory.
+  let _lock = lock(dir)?;
   prune(dir, &target);
-  let lock = File::create(target.with_extension("lock"))?;
-  lock.lock()?;
   if !target.is_dir() {
     step(PrepareStep::Build)?;
-    let tmp = target.with_extension("tmp"); // one per model: under the lock
+    let tmp = target.with_extension("tmp");
     let _ = fs::remove_dir_all(&tmp);
     let built = (|| {
       let package = tmp.join("model.mlpackage");
@@ -230,28 +258,15 @@ pub fn key(path: &Path) -> Result<Option<String>> {
   if cfg!(target_os = "macos") { name(path).map(Some) } else { Ok(None) }
 }
 
-/// Deletes the compiled models of every graph version named by `key`; returns the bytes freed.
+/// Deletes the compiled models of every graph version named by `key`, waiting for a prepare under
+/// way; returns the bytes freed.
 pub fn remove(key: &str) -> Result<u64> {
   let dir = cache()?;
-  // `prepare`'s lock, which it creates first: none, nothing to delete. Taken before listing so that
-  // a prepare under way finishes first, and left in place: a new file would let another prepare in
-  // meanwhile.
-  let lock = match File::options().write(true).open(dir.join(format!("{key}.v{GRAPH}.lock"))) {
-    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-    lock => lock?,
-  };
-  lock.lock()?;
-  let paths: Vec<PathBuf> = (fs::read_dir(&dir)?.collect::<std::io::Result<Vec<_>>>()?.into_iter())
-    .map(|e| e.path())
-    .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{key}."))))
-    .filter(|p| p.extension().is_none_or(|e| e != "lock"))
-    .collect();
-  let mut freed = 0;
-  for p in paths {
-    freed += size(&p);
-    if p.is_dir() { fs::remove_dir_all(&p)? } else { fs::remove_file(&p)? }
+  if !dir.is_dir() {
+    return Ok(0);
   }
-  Ok(freed)
+  let _lock = lock(&dir)?;
+  Ok(delete(&dir, key))
 }
 
 /// Deletes the GGUF's compiled models; returns the bytes freed.
@@ -259,10 +274,25 @@ pub fn unprepare(path: &Path) -> Result<u64> {
   key(path)?.map_or(Ok(0), |key| remove(&key))
 }
 
-/// Deletes the compiled models that `target`, the one being prepared, replaces: the other ids and
-/// graph versions of its stem (an older revision of the model, a changed file). Also those no
-/// program has loaded for 30 days (by their newest `loaded` marker): of GGUFs deleted behind
-/// wavo's back (`hf cache rm`, another cache folder).
+/// Deletes the entries `<prefix>.*` of the cache folder; returns the bytes freed.
+fn delete(dir: &Path, prefix: &str) -> u64 {
+  let prefix = format!("{prefix}.");
+  let entries = fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path());
+  let mine =
+    entries.filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&prefix)));
+  mine
+    .map(|p| {
+      let n = size(&p);
+      let gone = if p.is_dir() { fs::remove_dir_all(&p) } else { fs::remove_file(&p) };
+      if gone.is_ok() { n } else { 0 }
+    })
+    .sum()
+}
+
+/// Deletes, under the cache lock, the compiled models that `target`, the one being prepared,
+/// replaces: the other ids and graph versions of its stem (an older revision of the model, a
+/// changed file). Also those no program has loaded for 30 days (by their newest marker): of GGUFs
+/// deleted behind wavo's back (`hf cache rm`, another cache folder).
 fn prune(dir: &Path, target: &Path) {
   const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
   let paths: Vec<PathBuf> =
@@ -272,22 +302,11 @@ fn prune(dir: &Path, target: &Path) {
   for compiled in paths.iter().filter(|p| p.extension().is_some_and(|e| e == "mlmodelc")) {
     let stem = name(&compiled.with_extension(""));
     let replaced = compiled != target && model(compiled) == model(target);
-    let mine = || paths.iter().filter(|p| name(p).starts_with(&format!("{stem}.")));
-    let times = mine().chain([compiled]).filter(|p| p.extension().is_none_or(|e| e != "lock"));
-    let times = times.filter_map(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
-    // Skipped while a prepare of the same model holds its lock; lock files stay.
-    let lock = fs::OpenOptions::new()
-      .create(true)
-      .truncate(false)
-      .write(true)
-      .open(compiled.with_extension("lock"));
-    let free = lock.as_ref().is_ok_and(|l| l.try_lock().is_ok());
+    let mine = paths.iter().filter(|p| name(p).starts_with(&format!("{stem}.")));
+    let times = mine.filter_map(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
     let old = || times.max().is_some_and(|t| t.elapsed().is_ok_and(|age| age > MAX_AGE));
-    if free && (replaced || old()) {
-      let _ = fs::remove_dir_all(compiled);
-      mine()
-        .filter(|p| p.extension().is_none_or(|e| e != "lock"))
-        .for_each(|p| _ = fs::remove_file(p));
+    if replaced || old() {
+      delete(dir, &stem);
     }
   }
 }
@@ -344,38 +363,19 @@ mod tests {
     dir
   }
 
-  #[cfg(unix)]
   #[test]
   fn names_follow_the_content() {
     let dir = scratch("names");
-    let sha = "0123456789abcdef".repeat(4);
-    fs::create_dir_all(dir.join("blobs")).unwrap();
-    fs::write(dir.join("blobs").join(&sha), [1; 100]).unwrap();
-    let link = dir.join("parakeet-tdt-0.6b-v3-Q8_0.gguf");
-    std::os::unix::fs::symlink(dir.join("blobs").join(&sha), &link).unwrap();
-    assert_eq!(name(&link).unwrap(), "parakeet-tdt-0_6b-v3-Q8_0.0123456789abcdef");
-    // A newer hf's shared store: the repo blob links on to `blobs/<xx>/<hash>`.
-    let shared = dir.join("shared");
-    fs::create_dir_all(shared.join("blobs/ab")).unwrap();
-    fs::write(shared.join("blobs/ab/cdef"), [1; 100]).unwrap();
-    std::os::unix::fs::symlink(shared.join("blobs/ab/cdef"), shared.join("blobs").join(&sha))
-      .unwrap();
-    let pointer = shared.join("m.gguf");
-    std::os::unix::fs::symlink(Path::new("blobs").join(&sha), &pointer).unwrap();
-    assert_eq!(name(&pointer).unwrap(), "m.0123456789abcdef");
-    let alias = dir.join("alias").join("m.gguf");
-    fs::create_dir_all(alias.parent().unwrap()).unwrap();
-    std::os::unix::fs::symlink(&pointer, &alias).unwrap();
-    assert_eq!(name(&alias).unwrap(), "m.0123456789abcdef");
-
-    // Outside a Hugging Face cache: by content and time.
-    let (a, b) = (dir.join("m.gguf"), dir.join("copy").join("m.gguf"));
-    fs::write(&a, [1; 100]).unwrap();
+    let (a, b, c) =
+      (dir.join("m-0.6b.gguf"), dir.join("copy").join("m-0.6b.gguf"), dir.join("n.gguf"));
     fs::create_dir_all(b.parent().unwrap()).unwrap();
-    fs::write(&b, [2; 100]).unwrap();
-    let (na, nb) = (name(&a).unwrap(), name(&b).unwrap());
-    assert!(na.starts_with("m.") && na.len() == 18, "{na}");
-    assert_ne!(na, nb);
+    fs::write(&a, [1; 100]).unwrap();
+    fs::write(&b, [1; 100]).unwrap();
+    fs::write(&c, [2; 100]).unwrap();
+    let na = name(&a).unwrap();
+    assert!(na.starts_with("m-0_6b.") && na.len() == 23, "{na}");
+    assert_eq!(na, name(&b).unwrap(), "a copy shares the name");
+    assert_ne!(na[7..], name(&c).unwrap()[2..], "other content, another id");
     fs::remove_dir_all(dir).unwrap();
   }
 
@@ -386,20 +386,21 @@ mod tests {
     let dirs = ["m.aaaa.v1", "m.bbbb.v1", "m.aaaa.v0", "n.cccc.v1", "mm.dddd.v1"];
     for d in dirs {
       fs::create_dir_all(dir.join(format!("{d}.mlmodelc"))).unwrap();
-      File::create(dir.join(format!("{d}.lock"))).unwrap();
-      File::create(dir.join(format!("{d}.wavo.0000.loaded"))).unwrap();
+      fs::write(dir.join(format!("{d}.wavo.loaded")), "stamp").unwrap();
     }
+    File::create(dir.join("lock")).unwrap();
     prune(&dir, &target);
     let mut left: Vec<String> =
       fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
     left.sort();
     let mut want: Vec<String> = ["m.aaaa.v1", "n.cccc.v1", "mm.dddd.v1"]
       .iter()
-      .flat_map(|d| ["mlmodelc", "lock", "wavo.0000.loaded"].map(|e| format!("{d}.{e}")))
-      .chain(["m.bbbb.v1.lock".into(), "m.aaaa.v0.lock".into()])
+      .flat_map(|d| ["mlmodelc", "wavo.loaded"].map(|e| format!("{d}.{e}")))
+      .chain(["lock".into()])
       .collect();
     want.sort();
     assert_eq!(left, want);
+    assert_eq!(delete(&dir, "n.cccc"), 5, "the marker's bytes");
     fs::remove_dir_all(dir).unwrap();
   }
 }

@@ -187,11 +187,13 @@
 //! has the system compile it (15–30 s, and as much disk as the GGUF):
 //! [`Hub::pull`][hub-pull] does it after the download, and [`Model::prepare`] does it for a file
 //! you manage. The system keeps its Neural Engine compile per program, so each program prepares
-//! for itself: in a program that prepared before, `prepare` only loads the model (under a
-//! second); in another one, such as yours after `wavo pull`, it reuses the compiled model and
-//! loads it once for 10–30 s. [`Model::load`] then runs the model on the Neural Engine, and on the
-//! GPU in a program that hasn't prepared it; [`Model::load_with`] picks a [`Backend`], and
-//! [`Model::device`] tells which one runs.
+//! for itself: in a program that prepared before, `prepare` returns at once; in another one, such
+//! as yours after `wavo pull`, it reuses the compiled model and loads it once for 10–30 s. A new
+//! build of the program or of macOS counts as a new program, and when the system drops its cache
+//! on its own, for example to free disk space, the next load takes that long once.
+//! [`Model::load`] then runs the model on the Neural Engine, and on the GPU in a program that
+//! hasn't prepared it; [`Model::load_with`] picks a [`Backend`], and [`Model::device`] tells which
+//! one runs.
 //!
 //! ```no_run
 //! # fn main() -> wavo::Result<()> {
@@ -246,8 +248,35 @@ use std::path::Path;
 
 use error::bail;
 pub use error::{Error, Result};
-pub use gpu::{Api, Device, DeviceKind, Kernels, devices};
+pub use gpu::{Api, Device, DeviceKind, Kernels};
 pub use split::split;
+
+/// Every GPU adapter wavo can run a model on, through Vulkan, Metal or DX12, starting with the
+/// one [`Model::load`] picks on the GPU (see [`Model::device`] for how), and last the Mac's
+/// Neural Engine when it has one that Core ML can use (Apple Silicon, macOS 15 or later, not in a
+/// virtual machine): Parakeet and GigaAM run there once [prepared](Model::prepare). The adapters'
+/// [`kernels`](Device::kernels) are those their features allow.
+///
+/// Only the adapters' info and features are read: no device is created and no kernel compiles, so
+/// it takes milliseconds and works without a model, for example to warn about a
+/// [`SoftwareGpu`](DeviceKind::SoftwareGpu) before downloading one.
+///
+/// # Errors
+///
+/// [`Error::Adapter`]: no adapter, so `Model::load` would fail too.
+///
+/// # Examples
+///
+/// ```no_run
+/// for device in wavo::devices()? {
+///   println!("{device}: {:?}", device.kernels); // Apple M2 (Metal, integrated): Matrix8
+/// }
+/// # Ok::<(), wavo::Error>(())
+/// ```
+pub fn devices() -> Result<Vec<Device>> {
+  let ane = ane::available().then(|| ane::device().clone());
+  Ok(gpu::devices()?.into_iter().chain(ane).collect())
+}
 
 /// The code path of the CPU matrix products (`NEON`, `AVX2+FMA` or `portable`), for `wavo debug`;
 /// not part of the API.
@@ -264,8 +293,6 @@ pub struct Model {
   family: Family,
   /// The GGUF's `general.languages`.
   languages: Vec<String>,
-  /// Whether the encoder runs on the Neural Engine.
-  ane: bool,
 }
 
 enum Family {
@@ -336,13 +363,8 @@ const WINDOW_MS: u32 = 60_000;
 #[non_exhaustive]
 pub enum Backend {
   /// The faster one for the model's family on this machine: the Neural Engine for Parakeet and
-  /// GigaAM once [prepared](Model::prepare) in this program, else the GPU. [`Model::load`] uses
-  /// it.
-  ///
-  /// The system caches the Neural Engine's compile of a model per program, and a load without
-  /// that cache takes 10–30 s. A new build of the program or of macOS counts as a new program
-  /// (it runs on the GPU until it prepares), but when the system drops its cache on its own, for
-  /// example to free disk space, the next load takes that long once.
+  /// GigaAM once [prepared](Model::prepare) in this program (see
+  /// [Neural Engine](crate#neural-engine)), else the GPU. [`Model::load`] uses it.
   #[default]
   Auto,
   /// The GPU through wgpu, on every platform: the same text, tokens and timestamps as
@@ -355,18 +377,16 @@ pub enum Backend {
   NeuralEngine,
 }
 
-/// The backend [`Backend::Auto`] prefers per `general.architecture`: on an M1 and M2 the Neural
-/// Engine runs Parakeet's and GigaAM's encoder 4–5× faster than the GPU, Whisper's slower.
-const AUTO: &[(&str, Backend)] = &[
-  ("parakeet", Backend::NeuralEngine),
-  ("gigaam", Backend::NeuralEngine),
-  ("whisper", Backend::Gpu),
-  ("moonshine", Backend::Gpu),
-];
-
-/// The families with a Neural Engine program, and the function that writes it.
+/// The families with a Neural Engine program, and the function that writes it. [`Backend::Auto`]
+/// takes the Neural Engine for them: on an M1 and M2 it runs their encoders 2–5× faster than the
+/// GPU (Whisper's and Moonshine's slower).
 const NEURAL_ENGINE: &[(&str, ane::Build)] =
   &[("parakeet", parakeet::ane::build), ("gigaam", gigaam::ane::build)];
+
+/// The Neural Engine program of a `general.architecture`, if it has one.
+fn program(arch: &str) -> Option<ane::Build> {
+  NEURAL_ENGINE.iter().find(|(a, _)| *a == arch).map(|&(_, build)| build)
+}
 
 /// What [`Model::prepare`] is doing, passed to its callback when each step starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,8 +397,8 @@ pub enum PrepareStep {
   Build,
   /// Core ML compiling the program: seconds.
   Compile,
-  /// Loading it once, which makes the system compile it for the Neural Engine: 10–30 s the first
-  /// time, under a second once the system has it cached.
+  /// Loading it once, which makes the system compile it for the Neural Engine: the longest step
+  /// (see [Neural Engine](crate#neural-engine)).
   Load,
 }
 
@@ -437,12 +457,11 @@ impl Model {
       Backend::NeuralEngine => Some(neural_engine(path, arch)?),
       // A file that isn't prepared in this program, or that Core ML fails to load, runs on the
       // GPU: a first load in this program would compile for the Neural Engine for 10–30 s.
-      Backend::Auto => (auto(arch) == Backend::NeuralEngine && ane::prepared(path))
-        .then(|| neural_engine(path, arch).ok())
-        .flatten(),
+      Backend::Auto => program(arch)
+        .and_then(|_| ane::prepared(path))
+        .and_then(|compiled| ane::load_compiled(&compiled).ok()),
     };
 
-    let on_ane = ane.is_some();
     let family = match arch {
       "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g, ane)?)),
       "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g, ane)?)),
@@ -452,7 +471,7 @@ impl Model {
         "general.architecture is {arch:?}, only gigaam, parakeet, whisper and moonshine are supported"
       ),
     };
-    Ok(Self { family, languages, ane: on_ane })
+    Ok(Self { family, languages })
   }
 
   /// Transcribes 16 kHz mono PCM samples in [-1, 1], passed to the model as they are, in one pass.
@@ -508,10 +527,8 @@ impl Model {
       None => None,
     };
 
-    if self.ane && pcm.len() > ane::WINDOW {
-      let pieces = split(pcm, (ane::WINDOW / 16) as u32).into_iter();
-      let parts = pieces.map(|r| Ok((r.start, self.transcribe_with(&pcm[r], options)?)));
-      return Ok(split::join(parts.collect::<Result<Vec<_>>>()?));
+    if self.on_ane() && pcm.len() > ane::WINDOW {
+      return self.pieces(pcm, (ane::WINDOW / 16) as u32, options);
     }
 
     // One pass over the whole audio: a little past the window still matches the reference (the
@@ -541,7 +558,7 @@ impl Model {
   /// [`transcribe`](Self::transcribe) rejects 1.5 times it. `None` for Parakeet on the GPU, which
   /// has no such window.
   pub fn max_audio_ms(&self) -> Option<u32> {
-    if self.ane {
+    if self.on_ane() {
       return Some((ane::WINDOW / 16) as u32);
     }
 
@@ -590,9 +607,19 @@ impl Model {
   /// ```
   pub fn transcribe_long(&self, pcm: &[f32], options: &Options) -> Result<Transcript> {
     let window = options.window_ms.or(self.max_audio_ms()).unwrap_or(WINDOW_MS);
-    let pieces = split(pcm, window).into_iter();
+    self.pieces(pcm, window, options)
+  }
+
+  /// `pcm` cut by [`split`] into pieces of up to `window_ms`, each through `transcribe_with`, and
+  /// the transcripts joined.
+  fn pieces(&self, pcm: &[f32], window_ms: u32, options: &Options) -> Result<Transcript> {
+    let pieces = split(pcm, window_ms).into_iter();
     let parts = pieces.map(|r| Ok((r.start, self.transcribe_with(&pcm[r], options)?)));
     Ok(split::join(parts.collect::<Result<Vec<_>>>()?))
+  }
+
+  fn on_ane(&self) -> bool {
+    self.device().kind == DeviceKind::NeuralEngine
   }
 
   /// Where the model's encoder runs, as chosen at load: a GPU and the API it reaches it through,
@@ -636,14 +663,12 @@ impl Model {
   ///
   /// It blocks for 15–40 s the first time, mostly while the system compiles the program for the
   /// Neural Engine: run it on a thread of your own, as `Hub::pull` (the `hub` feature), which calls
-  /// it after each download, does. The system keeps that last compile per program, so prepare in
-  /// the program that loads the model: once it has prepared there, `prepare` returns after one
-  /// load of under a second; when another program prepared the file (`wavo pull`, a helper that
-  /// downloads), it skips the build and spends the 10–30 s on that load.
+  /// it after each download, does. Prepare in the program that loads the model (see
+  /// [Neural Engine](crate#neural-engine)): once it has prepared there, `prepare` returns at once.
   ///
   /// The compiled model takes about as much disk as the GGUF, in `~/Library/Caches/wavo/`, named
-  /// by the file's name and content (in a Hugging Face cache its hash, so the same download in
-  /// two caches shares it). One is kept per file name: `prepare` deletes the compiled models of
+  /// by the file's name and a hash of its content, so copies of a file share it. One is kept per
+  /// file name: `prepare` deletes the compiled models of
   /// other content under the same name (an older revision of the model), and those no load has
   /// used for 30 days (of files deleted elsewhere). [`Model::unprepare`] deletes the file's own.
   /// `progress` is called as each step starts; return [`ControlFlow::Break`] to cancel before the
@@ -677,8 +702,7 @@ impl Model {
   ) -> Result<bool> {
     let path = path.as_ref();
     let g = gguf::Gguf::open(path)?;
-    let arch = g.get::<&str>("general.architecture")?;
-    let Some(&(_, build)) = NEURAL_ENGINE.iter().find(|(a, _)| *a == arch) else {
+    let Some(build) = program(g.get::<&str>("general.architecture")?) else {
       return Ok(false);
     };
     ane::prepare(path, &g, build, progress)
@@ -687,14 +711,16 @@ impl Model {
   /// Whether a model file is [prepared](Model::prepare) for the Neural Engine in this program:
   /// `Some(true)` when [`Model::load`] runs it there, `Some(false)` when `prepare` would make it
   /// so, `None` when the family or this machine has no Neural Engine path (or the file can't be
-  /// read). Another program's prepare doesn't count: the system caches the Neural Engine's
-  /// compile per program, so `prepare` in this one is fast (no rebuild) but loads once for
-  /// 10–30 s.
+  /// read). Another program's prepare doesn't count (see [Neural Engine](crate#neural-engine)).
   pub fn prepared(path: impl AsRef<Path>) -> Option<bool> {
     let path = path.as_ref();
+    if !ane::available() {
+      return None;
+    }
+
     let g = gguf::Gguf::open(path).ok()?;
-    let arch = g.get::<&str>("general.architecture").ok()?;
-    (ane::available() && NEURAL_ENGINE.iter().any(|(a, _)| *a == arch)).then(|| ane::prepared(path))
+    program(g.get::<&str>("general.architecture").ok()?)?;
+    Some(ane::prepared(path).is_some())
   }
 
   /// Deletes what [`Model::prepare`] made for a model file, and returns the bytes freed (0 when
@@ -708,12 +734,8 @@ impl Model {
   }
 }
 
-fn auto(arch: &str) -> Backend {
-  AUTO.iter().find(|(a, _)| *a == arch).map_or(Backend::Gpu, |(_, b)| *b)
-}
-
 fn neural_engine(path: &Path, arch: &str) -> Result<ane::Model> {
-  if !NEURAL_ENGINE.iter().any(|(a, _)| *a == arch) {
+  if program(arch).is_none() {
     return Err(Error::NeuralEngine(format!("{arch} models have no Neural Engine program")));
   }
   ane::load(path)
@@ -767,15 +789,5 @@ mod tests {
     fn check<T: Send + Sync>() {}
     check::<super::Model>();
     check::<super::Device>();
-  }
-
-  #[test]
-  fn every_family_has_a_preference() {
-    for arch in ["gigaam", "parakeet", "whisper", "moonshine"] {
-      assert!(AUTO.iter().any(|(a, _)| *a == arch), "{arch}");
-    }
-    for (arch, _) in NEURAL_ENGINE {
-      assert_eq!(auto(arch), Backend::NeuralEngine, "{arch} has a program Auto never uses");
-    }
   }
 }
