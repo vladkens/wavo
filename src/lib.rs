@@ -638,13 +638,15 @@ impl Model {
   /// it after each download, does. The system keeps that last compile per program, so prepare in
   /// the program that loads the model: once it has prepared there, `prepare` returns after one
   /// load of under a second; when another program prepared the file (`wavo pull`, a helper that
-  /// downloads), it skips the build and spends the 10–30 s on that load. The
-  /// compiled model takes about as much disk as the GGUF, in `~/Library/Caches/wavo/`, named by
-  /// a hash of the file (size, modification time and some content), so the same file found
-  /// through another path or cache folder shares it. [`Model::unprepare`] deletes it,
-  /// and `prepare` deletes compiled models no load has used for 30 days (of files deleted
-  /// elsewhere). `progress` is called as each step starts; return [`ControlFlow::Break`] to
-  /// cancel before the next.
+  /// downloads), it skips the build and spends the 10–30 s on that load.
+  ///
+  /// The compiled model takes about as much disk as the GGUF, in `~/Library/Caches/wavo/`, named
+  /// by the file's name and content (in a Hugging Face cache its hash, so the same download in
+  /// two caches shares it). One is kept per file name: `prepare` deletes the compiled models of
+  /// other content under the same name (an older revision of the model), and those no load has
+  /// used for 30 days (of files deleted elsewhere). [`Model::unprepare`] deletes the file's own.
+  /// `progress` is called as each step starts; return [`ControlFlow::Break`] to cancel before the
+  /// next.
   ///
   /// # Errors
   ///

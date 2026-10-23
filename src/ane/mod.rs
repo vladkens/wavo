@@ -3,9 +3,11 @@
 //! program with one fixed 15 s window, compiled once by `prepare` and run through Core ML. The
 //! frontend and the decoder stay on the CPU.
 //!
-//! Compiled models live in `~/Library/Caches/wavo/`, outside the Hugging Face cache, named by a
-//! hash of the GGUF file (size, modification time, first and last MiB) and the graph version:
-//! `<hash>.v<GRAPH>.mlmodelc`.
+//! Compiled models live in `~/Library/Caches/wavo/`, outside the Hugging Face cache, as
+//! `<stem>.<id>.v<GRAPH>.mlmodelc`: the GGUF's file name without `.gguf` (dots as `_`), an id of
+//! its content and the graph version. A prepare drops the other ids and versions of its stem, the
+//! older revisions of the model, so the cache holds one compiled model per model name, plus those
+//! of files deleted elsewhere until 30 days without a load.
 
 pub mod conformer;
 #[cfg_attr(not(target_os = "macos"), path = "unsupported.rs")]
@@ -59,9 +61,21 @@ fn cache() -> Result<PathBuf> {
   Ok(PathBuf::from(home).join("Library/Caches/wavo"))
 }
 
-/// FNV-1a over the file's size, modification time and first and last MiB: the header names every
-/// tensor with its offset, the tail holds weights, and a file rewritten in place has a new time.
-fn hash(path: &Path) -> Result<String> {
+/// `<stem>.<id>`: what names the GGUF's compiled models. In a Hugging Face cache the file is a
+/// link to `blobs/<sha256>`, and the id is the start of that hash, so copies in two caches share
+/// a compiled model. Elsewhere it is FNV-1a over the file's size, modification time and first and
+/// last MiB: the header names every tensor with its offset, the tail holds weights, and a file
+/// rewritten in place has a new time.
+fn name(path: &Path) -> Result<String> {
+  let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+  let stem: String = stem.chars().map(|c| if c == '.' { '_' } else { safe(c) }).collect();
+  let real = fs::canonicalize(path)?;
+  let blob = real.file_name().unwrap_or_default().to_string_lossy();
+  let in_blobs = real.parent().and_then(Path::file_name).is_some_and(|d| d == "blobs");
+  if in_blobs && blob.len() == 64 && blob.bytes().all(|b| b.is_ascii_hexdigit()) {
+    return Ok(format!("{stem}.{}", &blob[..16]));
+  }
+
   const PART: u64 = 1 << 20;
   let mut f = File::open(path)?;
   let meta = f.metadata()?;
@@ -76,7 +90,12 @@ fn hash(path: &Path) -> Result<String> {
   f.seek(SeekFrom::Start(len - buf.len() as u64))?;
   f.read_exact(&mut buf)?;
   fnv(&mut h, &buf);
-  Ok(format!("{h:016x}"))
+  Ok(format!("{stem}.{h:016x}"))
+}
+
+/// `c` where a cache name takes it, else `_`.
+fn safe(c: char) -> char {
+  if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }
 }
 
 /// FNV-1a's 64-bit offset basis, and the hash of `h` extended by `bytes`.
@@ -90,7 +109,7 @@ fn fnv(h: &mut u64, bytes: &[u8]) {
 
 /// The compiled model of a GGUF file, whether it exists or not.
 fn compiled(path: &Path) -> Result<PathBuf> {
-  Ok(cache()?.join(format!("{}.v{GRAPH}.mlmodelc", hash(path)?)))
+  Ok(cache()?.join(format!("{}.v{GRAPH}.mlmodelc", name(path)?)))
 }
 
 /// The marker a load in this program touches next to a compiled model,
@@ -101,9 +120,7 @@ fn compiled(path: &Path) -> Result<PathBuf> {
 fn loaded(compiled: &Path) -> (PathBuf, String) {
   let exe = std::env::current_exe().ok();
   let name = exe.as_deref().and_then(Path::file_stem).map(|s| s.to_string_lossy().into_owned());
-  let name: String = (name.unwrap_or_default().chars())
-    .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-    .collect();
+  let name: String = name.unwrap_or_default().chars().map(safe).collect();
   let meta = exe.and_then(|p| fs::metadata(p).ok());
   let time =
     meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok());
@@ -172,7 +189,7 @@ pub fn prepare(
   let target = compiled(path)?;
   let dir = target.parent().unwrap();
   fs::create_dir_all(dir)?;
-  prune(dir);
+  prune(dir, &target);
   let lock = File::create(target.with_extension("lock"))?;
   lock.lock()?;
   if !target.is_dir() {
@@ -200,7 +217,7 @@ pub fn prepare(
 
 /// What names the GGUF's compiled models, for `remove`; `None` off macOS, where there are none.
 pub fn key(path: &Path) -> Result<Option<String>> {
-  if cfg!(target_os = "macos") { hash(path).map(Some) } else { Ok(None) }
+  if cfg!(target_os = "macos") { name(path).map(Some) } else { Ok(None) }
 }
 
 /// Deletes the compiled models of every graph version named by `key`; returns the bytes freed.
@@ -232,16 +249,19 @@ pub fn unprepare(path: &Path) -> Result<u64> {
   key(path)?.map_or(Ok(0), |key| remove(&key))
 }
 
-/// Deletes compiled models no program has loaded for 30 days (by their newest `loaded` marker):
-/// those of GGUFs deleted behind wavo's back (`hf cache rm`, another cache folder) and of older
-/// graph versions.
-fn prune(dir: &Path) {
+/// Deletes the compiled models that `target`, the one being prepared, replaces: the other ids and
+/// graph versions of its stem (an older revision of the model, a changed file). Also those no
+/// program has loaded for 30 days (by their newest `loaded` marker): of GGUFs deleted behind
+/// wavo's back (`hf cache rm`, another cache folder).
+fn prune(dir: &Path, target: &Path) {
   const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
   let paths: Vec<PathBuf> =
     fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
   let name = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+  let model = |p: &Path| name(p).split('.').next().unwrap_or_default().to_string();
   for compiled in paths.iter().filter(|p| p.extension().is_some_and(|e| e == "mlmodelc")) {
     let stem = name(&compiled.with_extension(""));
+    let replaced = compiled != target && model(compiled) == model(target);
     let mine = || paths.iter().filter(|p| name(p).starts_with(&format!("{stem}.")));
     let times = mine().chain([compiled]).filter(|p| p.extension().is_none_or(|e| e != "lock"));
     let times = times.filter_map(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
@@ -252,7 +272,8 @@ fn prune(dir: &Path) {
       .write(true)
       .open(compiled.with_extension("lock"));
     let free = lock.as_ref().is_ok_and(|l| l.try_lock().is_ok());
-    if free && times.max().is_some_and(|t| t.elapsed().is_ok_and(|age| age > MAX_AGE)) {
+    let old = || times.max().is_some_and(|t| t.elapsed().is_ok_and(|age| age > MAX_AGE));
+    if free && (replaced || old()) {
       let _ = fs::remove_dir_all(compiled);
       mine()
         .filter(|p| p.extension().is_none_or(|e| e != "lock"))
@@ -300,4 +321,62 @@ pub fn mask(len: usize, valid: usize) -> Vec<f32> {
 /// An additive attention mask over keys: 0 for the first `valid` of `len`, −10⁴ for the padding.
 pub fn key_mask(len: usize, valid: usize) -> Vec<f32> {
   (0..len).map(|i| if i < valid { 0.0 } else { -1e4 }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("wavo-ane-{}-{name}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    dir
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn names_follow_the_content() {
+    let dir = scratch("names");
+    let sha = "0123456789abcdef".repeat(4);
+    fs::create_dir_all(dir.join("blobs")).unwrap();
+    fs::write(dir.join("blobs").join(&sha), [1; 100]).unwrap();
+    let link = dir.join("parakeet-tdt-0.6b-v3-Q8_0.gguf");
+    std::os::unix::fs::symlink(dir.join("blobs").join(&sha), &link).unwrap();
+    assert_eq!(name(&link).unwrap(), "parakeet-tdt-0_6b-v3-Q8_0.0123456789abcdef");
+
+    // Outside a Hugging Face cache: by content and time.
+    let (a, b) = (dir.join("m.gguf"), dir.join("copy").join("m.gguf"));
+    fs::write(&a, [1; 100]).unwrap();
+    fs::create_dir_all(b.parent().unwrap()).unwrap();
+    fs::write(&b, [2; 100]).unwrap();
+    let (na, nb) = (name(&a).unwrap(), name(&b).unwrap());
+    assert!(na.starts_with("m.") && na.len() == 18, "{na}");
+    assert_ne!(na, nb);
+    fs::remove_dir_all(dir).unwrap();
+  }
+
+  #[test]
+  fn prune_drops_what_a_prepare_replaces() {
+    let dir = scratch("prune");
+    let target = dir.join("m.aaaa.v1.mlmodelc");
+    let dirs = ["m.aaaa.v1", "m.bbbb.v1", "m.aaaa.v0", "n.cccc.v1", "mm.dddd.v1"];
+    for d in dirs {
+      fs::create_dir_all(dir.join(format!("{d}.mlmodelc"))).unwrap();
+      File::create(dir.join(format!("{d}.lock"))).unwrap();
+      File::create(dir.join(format!("{d}.wavo.0000.loaded"))).unwrap();
+    }
+    prune(&dir, &target);
+    let mut left: Vec<String> =
+      fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    left.sort();
+    let mut want: Vec<String> = ["m.aaaa.v1", "n.cccc.v1", "mm.dddd.v1"]
+      .iter()
+      .flat_map(|d| ["mlmodelc", "lock", "wavo.0000.loaded"].map(|e| format!("{d}.{e}")))
+      .chain(["m.bbbb.v1.lock".into(), "m.aaaa.v0.lock".into()])
+      .collect();
+    want.sort();
+    assert_eq!(left, want);
+    fs::remove_dir_all(dir).unwrap();
+  }
 }
