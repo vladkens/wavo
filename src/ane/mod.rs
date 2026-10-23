@@ -361,7 +361,10 @@ fn sweep_dir(dir: &Path) {
     let Some(stem) = file.strip_suffix(".source") else { continue };
     let Ok(source) = fs::read_to_string(&p) else { continue };
     let (source, id) = (Path::new(&source), stem.rsplit_once('.').map_or(stem, |(id, _)| id));
-    let gone = matches!(source.try_exists(), Ok(false));
+    // A GGUF on an unmounted drive isn't gone.
+    let volume = source.strip_prefix("/Volumes").ok().and_then(|p| p.iter().next());
+    let mounted = volume.is_none_or(|v| Path::new("/Volumes").join(v).exists());
+    let gone = mounted && matches!(source.try_exists(), Ok(false));
     if gone || name(source).is_ok_and(|n| n != id) {
       delete(dir, stem);
     }
