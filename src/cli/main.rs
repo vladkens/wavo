@@ -23,7 +23,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
-use models::Source;
 use wavo::hub::{self, Hub, MODELS};
 use wavo::{Backend, PrepareStep};
 
@@ -158,22 +157,22 @@ enum Download {
 
 /// A model by name, downloaded when `download` allows, or a `.gguf` path.
 fn model_path(arg: &str, download: Download, on: Backend) -> Result<PathBuf> {
-  let m = match models::resolve(arg)? {
-    Source::Path(path) if path.is_file() => return Ok(path),
-    Source::Path(path) => bail!("{}: no such file", path.display()),
-    Source::Model(m) => m,
-  };
   // `--backend gpu` skips preparing for the Neural Engine after a download.
   let hub = Hub::new().prepare(on != Backend::Gpu);
-  if let Some(path) = hub.find(m.name) {
-    return Ok(path);
-  }
+  let e = match hub.resolve(arg) {
+    Ok(path) => return Ok(path),
+    Err(e) => e,
+  };
+
+  // A known name that `resolve` didn't find is not downloaded.
+  let Ok(m) = hub::lookup(arg) else { return Err(e.into()) };
   let (name, size) = (m.name, models::gb(m.size));
   let question = format!("{name} is not downloaded ({size}). Download it now?");
   if download == Download::Yes || download == Download::Ask && ask(&question) {
     return pull_one(&hub, m, &MultiProgress::new()).with_context(|| format!("pulling {name}"));
   }
-  bail!("{name} is not in {hub}; run: wavo pull {name} ({size})")
+
+  bail!("{e}; run: wavo pull {name} ({size})")
 }
 
 /// Asks on stderr, yes by default. No without a terminal on stdin and stderr, so a script never
@@ -284,10 +283,11 @@ fn run(args: &[&str]) -> Result<()> {
 
 /// A model by name, for the commands that manage the cache.
 fn named(arg: &str) -> Result<&'static hub::ModelInfo> {
-  match models::resolve(arg)? {
-    Source::Model(m) => Ok(m),
-    Source::Path(_) => bail!("expected a model name, not a path: {arg}"),
-  }
+  ensure!(
+    !arg.ends_with(".gguf") && !arg.contains(['/', '\\']),
+    "expected a model name, not a path: {arg}"
+  );
+  Ok(hub::lookup(arg)?)
 }
 
 /// One thread and progress bar per distinct model.
@@ -384,13 +384,8 @@ fn pull_one(hub: &Hub, m: &hub::ModelInfo, bars: &MultiProgress) -> Result<PathB
   Ok(path)
 }
 
-/// The models in `hub`'s cache, in `MODELS` order.
-fn downloaded(hub: &Hub) -> Vec<(&'static hub::ModelInfo, PathBuf)> {
-  MODELS.iter().filter_map(|m| hub.find(m.name).map(|path| (m, path))).collect()
-}
-
 fn list() -> Result<()> {
-  let found = downloaded(&Hub::new());
+  let found = Hub::new().downloaded();
   // Whether each runs on the Neural Engine; a column only where one can.
   let ane: Vec<_> = found.iter().map(|(_, path)| wavo::Model::prepared(path)).collect();
   let column = ane.iter().any(Option::is_some);

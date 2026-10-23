@@ -254,7 +254,7 @@ impl Server {
 
   /// The downloaded models in OpenAI's list format, the ones given on the command line first.
   fn list(&self) -> Reply {
-    let mut found: Vec<_> = crate::downloaded(&Hub::new()).into_iter().map(|(m, _)| m).collect();
+    let mut found: Vec<_> = Hub::new().downloaded().into_iter().map(|(m, _)| m).collect();
     let given = |m: &ModelInfo| self.models.iter().position(|x| x.info.name == m.name);
     found.sort_by_key(|m| given(m).unwrap_or(usize::MAX));
     let model = |m: &ModelInfo| {
@@ -303,7 +303,8 @@ impl Server {
       return Err(fail(400, format!("output {output:?} is not one of txt, srt, vtt, json")));
     };
     let model = &self.models[0];
-    if let Some(code) = query("language").filter(|c| !model.info.langs.contains(c)) {
+    let listed = |c: &&str| model.model.languages().iter().any(|l| l == c);
+    if let Some(code) = query("language").filter(|c| !listed(c)) {
       let name = model.info.name;
       return Err(fail(
         400,
@@ -417,9 +418,12 @@ fn reply(m: &Loaded, pcm: &[f32], o: &wavo::Options, format: &str, lenient: bool
     "srt" => (TEXT, output::srt(&cues())),
     "vtt" => ("text/vtt; charset=utf-8", output::vtt(&cues())),
     _ => {
-      // The language asked for, else the model's only one.
-      let langs = m.info.langs;
-      let language = o.language.as_deref().or((langs.len() == 1).then(|| langs[0]));
+      // The language asked for, else the one the model's GGUF lists alone.
+      let only = match m.model.languages() {
+        [only] => Some(only.as_str()),
+        _ => None,
+      };
+      let language = o.language.as_deref().or(only);
       (JSON, output::verbose_json(&t, &cues(), language.unwrap_or_default(), ms) + "\n")
     }
   };

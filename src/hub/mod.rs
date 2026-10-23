@@ -57,27 +57,41 @@ pub struct ModelInfo {
   pub size: u64,
   /// The languages it transcribes, for people: `English`, `Russian`, `25 European languages`, …
   pub languages: &'static str,
-  /// The languages it transcribes, for programs: the codes its GGUF lists in `general.languages`,
-  /// in that order. They are short BCP-47 codes, ISO 639-1 where one exists (`en`, `ru`), else
-  /// ISO 639-3 (`haw`, `yue`); Whisper's lists keep its own `jw` for Javanese (ISO `jv`). A
-  /// fine-tune can list its base model's languages: Breeze-ASR-25, tuned for Taiwanese Mandarin
-  /// and English, lists Whisper's 99.
+  /// The languages it is meant for, for programs: `["he"]` for the Hebrew fine-tunes, `["zh",
+  /// "en"]` for Breeze-ASR-25, every language for the multilingual models. The codes are short
+  /// BCP-47, ISO 639-1 where one exists (`en`, `ru`), else ISO 639-3 (`haw`, `yue`); Whisper's
+  /// keep its own `jw` for Javanese (ISO `jv`).
+  ///
+  /// A fine-tune takes more codes in [`Options::language`](crate::Options::language) than it is
+  /// meant for: those of its base model, which its GGUF lists in `general.languages` and the
+  /// loaded model's [`Model::languages`](crate::Model::languages) returns. `whisper-turbo-he`
+  /// takes Whisper's 100. Check a code against that list, not this one.
   ///
   /// # Examples
   ///
-  /// The models that transcribe Russian:
+  /// The models that transcribe Russian, and those made for Hebrew alone:
   ///
   /// ```
-  /// let ru: Vec<&str> = (wavo::hub::MODELS.iter())
-  ///   .filter(|m| m.langs.contains(&"ru"))
-  ///   .map(|m| m.name)
-  ///   .collect();
+  /// use wavo::hub::{MODELS, ModelInfo};
+  ///
+  /// let names = |f: fn(&&ModelInfo) -> bool| MODELS.iter().filter(f).map(|m| m.name).collect();
+  /// let ru: Vec<&str> = names(|m| m.langs.contains(&"ru"));
   /// assert!(ru.contains(&"gigaam-v3") && ru.contains(&"parakeet-v3"));
   /// assert!(!ru.contains(&"parakeet-v2"));
+  ///
+  /// let he: Vec<&str> = names(|m| m.langs == ["he"]);
+  /// assert_eq!(he, ["parakeet-he", "whisper-turbo-he"]);
   /// ```
   pub langs: &'static [&'static str],
   /// Whether the text comes cased and punctuated; `false` is lowercase without punctuation.
   pub punctuated: bool,
+  /// The model family, as the crate docs name it: `Parakeet`, `GigaAM`, `Whisper` or `Moonshine`.
+  pub family: &'static str,
+  /// Who made the model, such as `NVIDIA` or `ivrit.ai`; for a fine-tune, who tuned it.
+  pub maker: &'static str,
+  /// The URL of the original model's card, such as
+  /// `https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3`: its license, languages and benchmarks.
+  pub card: &'static str,
 }
 
 impl ModelInfo {
@@ -101,15 +115,11 @@ const VK: &str = "vladkens";
 static EN: &[&str] = &["en"];
 static HE: &[&str] = &["he"];
 static RU: &[&str] = &["ru"];
+static ZH_EN: &[&str] = &["zh", "en"];
 /// transcribe.cpp's `V3_LANGUAGES`, in the model card's order.
 static PARAKEET_V3: &[&str] = &[
   "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt",
   "pl", "pt", "ro", "ru", "sk", "sl", "es", "sv", "uk",
-];
-/// [`PARAKEET_V3`] as Parakeet Ultra's GGUF orders them.
-static PARAKEET_ULTRA: &[&str] = &[
-  "en", "de", "fr", "es", "it", "pt", "ru", "uk", "hr", "sl", "lv", "lt", "et", "fi", "sv", "da",
-  "nl", "pl", "cs", "sk", "hu", "ro", "bg", "el", "mt",
 ];
 /// Whisper's language tokens sorted as strings, hence `haw` (`<|haw|>`) before `ha`.
 static WHISPER: &[&str] = &[
@@ -135,30 +145,30 @@ static WHISPER_V3: &[&str] = &[
 /// Every model wavo can download by name, as in the crate's [model table](crate#models).
 #[rustfmt::skip]
 pub static MODELS: &[ModelInfo] = &[
-  ModelInfo { name: "parakeet-v3", owner: HC, full_name: "parakeet-tdt-0.6b-v3", size: 739_508_576, languages: "25 European languages", langs: PARAKEET_V3, punctuated: true },
-  ModelInfo { name: "parakeet-v2", owner: HC, full_name: "parakeet-tdt-0.6b-v2", size: 729_574_912, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "parakeet-ultra", owner: HC, full_name: "parakeet-ultra", size: 740_363_168, languages: "25 European languages", langs: PARAKEET_ULTRA, punctuated: true },
-  ModelInfo { name: "parakeet-he", owner: VK, full_name: "parakeet-tdt-0.6b-v3-he", size: 740_915_360, languages: "Hebrew", langs: HE, punctuated: true },
-  ModelInfo { name: "gigaam-v3", owner: HC, full_name: "gigaam-v3-e2e-rnnt", size: 273_724_832, languages: "Russian", langs: RU, punctuated: true },
-  ModelInfo { name: "gigaam-v3-e2e-ctc", owner: HC, full_name: "gigaam-v3-e2e-ctc", size: 272_151_136, languages: "Russian", langs: RU, punctuated: true },
-  ModelInfo { name: "gigaam-v3-rnnt", owner: HC, full_name: "gigaam-v3-rnnt", size: 273_022_880, languages: "Russian", langs: RU, punctuated: false },
-  ModelInfo { name: "gigaam-v3-ctc", owner: HC, full_name: "gigaam-v3-ctc", size: 271_803_328, languages: "Russian", langs: RU, punctuated: false },
-  ModelInfo { name: "whisper-turbo", owner: HC, full_name: "whisper-large-v3-turbo", size: 886_381_760, languages: "100 languages", langs: WHISPER_V3, punctuated: true },
-  ModelInfo { name: "whisper-turbo-he", owner: VK, full_name: "ivrit-whisper-large-v3-turbo", size: 886_381_920, languages: "Hebrew", langs: WHISPER_V3, punctuated: true },
-  ModelInfo { name: "whisper-tiny", owner: HC, full_name: "whisper-tiny", size: 45_981_088, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-base", owner: HC, full_name: "whisper-base", size: 84_962_880, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-small", owner: HC, full_name: "whisper-small", size: 269_751_136, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-medium", owner: HC, full_name: "whisper-medium", size: 831_538_144, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-large-v3", owner: HC, full_name: "whisper-large-v3", size: 1_668_741_440, languages: "100 languages", langs: WHISPER_V3, punctuated: true },
-  ModelInfo { name: "whisper-tiny.en", owner: HC, full_name: "whisper-tiny.en", size: 45_904_544, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "whisper-base.en", owner: HC, full_name: "whisper-base.en", size: 84_886_208, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "whisper-small.en", owner: HC, full_name: "whisper-small.en", size: 269_674_144, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "whisper-medium.en", owner: HC, full_name: "whisper-medium.en", size: 831_460_928, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "whisper-large", owner: HC, full_name: "whisper-large", size: 1_667_964_192, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-large-v2", owner: HC, full_name: "whisper-large-v2", size: 1_667_964_224, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "breeze-asr-25", owner: HC, full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "moonshine-tiny", owner: HC, full_name: "moonshine-tiny", size: 35_466_912, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "moonshine-base", owner: HC, full_name: "moonshine-base", size: 77_476_480, languages: "English", langs: EN, punctuated: true },
+  ModelInfo { name: "parakeet-v3", owner: HC, full_name: "parakeet-tdt-0.6b-v3", size: 739_508_576, languages: "25 European languages", langs: PARAKEET_V3, punctuated: true, family: "Parakeet", maker: "NVIDIA", card: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3" },
+  ModelInfo { name: "parakeet-v2", owner: HC, full_name: "parakeet-tdt-0.6b-v2", size: 729_574_912, languages: "English", langs: EN, punctuated: true, family: "Parakeet", maker: "NVIDIA", card: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2" },
+  ModelInfo { name: "parakeet-ultra", owner: HC, full_name: "parakeet-ultra", size: 740_363_168, languages: "25 European languages", langs: PARAKEET_V3, punctuated: true, family: "Parakeet", maker: "Moondream", card: "https://huggingface.co/moondream/parakeet-ultra" },
+  ModelInfo { name: "parakeet-he", owner: VK, full_name: "parakeet-tdt-0.6b-v3-he", size: 740_915_360, languages: "Hebrew", langs: HE, punctuated: true, family: "Parakeet", maker: "Yakov Kolani", card: "https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he" },
+  ModelInfo { name: "gigaam-v3", owner: HC, full_name: "gigaam-v3-e2e-rnnt", size: 273_724_832, languages: "Russian", langs: RU, punctuated: true, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
+  ModelInfo { name: "gigaam-v3-e2e-ctc", owner: HC, full_name: "gigaam-v3-e2e-ctc", size: 272_151_136, languages: "Russian", langs: RU, punctuated: true, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
+  ModelInfo { name: "gigaam-v3-rnnt", owner: HC, full_name: "gigaam-v3-rnnt", size: 273_022_880, languages: "Russian", langs: RU, punctuated: false, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
+  ModelInfo { name: "gigaam-v3-ctc", owner: HC, full_name: "gigaam-v3-ctc", size: 271_803_328, languages: "Russian", langs: RU, punctuated: false, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
+  ModelInfo { name: "whisper-turbo", owner: HC, full_name: "whisper-large-v3-turbo", size: 886_381_760, languages: "100 languages", langs: WHISPER_V3, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-large-v3-turbo" },
+  ModelInfo { name: "whisper-turbo-he", owner: VK, full_name: "ivrit-whisper-large-v3-turbo", size: 886_381_920, languages: "Hebrew", langs: HE, punctuated: true, family: "Whisper", maker: "ivrit.ai", card: "https://huggingface.co/ivrit-ai/whisper-large-v3-turbo" },
+  ModelInfo { name: "whisper-tiny", owner: HC, full_name: "whisper-tiny", size: 45_981_088, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-tiny" },
+  ModelInfo { name: "whisper-base", owner: HC, full_name: "whisper-base", size: 84_962_880, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-base" },
+  ModelInfo { name: "whisper-small", owner: HC, full_name: "whisper-small", size: 269_751_136, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-small" },
+  ModelInfo { name: "whisper-medium", owner: HC, full_name: "whisper-medium", size: 831_538_144, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-medium" },
+  ModelInfo { name: "whisper-large-v3", owner: HC, full_name: "whisper-large-v3", size: 1_668_741_440, languages: "100 languages", langs: WHISPER_V3, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-large-v3" },
+  ModelInfo { name: "whisper-tiny.en", owner: HC, full_name: "whisper-tiny.en", size: 45_904_544, languages: "English", langs: EN, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-tiny.en" },
+  ModelInfo { name: "whisper-base.en", owner: HC, full_name: "whisper-base.en", size: 84_886_208, languages: "English", langs: EN, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-base.en" },
+  ModelInfo { name: "whisper-small.en", owner: HC, full_name: "whisper-small.en", size: 269_674_144, languages: "English", langs: EN, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-small.en" },
+  ModelInfo { name: "whisper-medium.en", owner: HC, full_name: "whisper-medium.en", size: 831_460_928, languages: "English", langs: EN, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-medium.en" },
+  ModelInfo { name: "whisper-large", owner: HC, full_name: "whisper-large", size: 1_667_964_192, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-large" },
+  ModelInfo { name: "whisper-large-v2", owner: HC, full_name: "whisper-large-v2", size: 1_667_964_224, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-large-v2" },
+  ModelInfo { name: "breeze-asr-25", owner: HC, full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", langs: ZH_EN, punctuated: true, family: "Whisper", maker: "MediaTek Research", card: "https://huggingface.co/MediaTek-Research/Breeze-ASR-25" },
+  ModelInfo { name: "moonshine-tiny", owner: HC, full_name: "moonshine-tiny", size: 35_466_912, languages: "English", langs: EN, punctuated: true, family: "Moonshine", maker: "Useful Sensors", card: "https://huggingface.co/UsefulSensors/moonshine-tiny" },
+  ModelInfo { name: "moonshine-base", owner: HC, full_name: "moonshine-base", size: 77_476_480, languages: "English", langs: EN, punctuated: true, family: "Moonshine", maker: "Useful Sensors", card: "https://huggingface.co/UsefulSensors/moonshine-base" },
 ];
 
 /// The model a short or full name stands for.
@@ -303,6 +313,60 @@ impl Hub {
   pub fn find(&self, name: &str) -> Option<PathBuf> {
     let m = lookup(name).ok()?;
     self.find_file(&m.repo(), &m.file())
+  }
+
+  /// The model file a name or path stands for, such as a command line's MODEL argument. Never
+  /// uses the network.
+  ///
+  /// An argument that ends in `.gguf` or has a path separator (`/` or `\`, on every system) is
+  /// a path, returned as is when the file exists. Any other argument is a model's short or full
+  /// name, never a file in the current folder: `parakeet-v3` is the downloaded file of that model
+  /// even beside a file named `parakeet-v3`; pass `./parakeet-v3` for the file.
+  ///
+  /// # Errors
+  ///
+  /// - [`Error::Io`] of kind [`NotFound`](std::io::ErrorKind::NotFound): a path that is not a file
+  ///   (`<path>: no such file`), or a model that isn't downloaded (`<name> is not in <root>`);
+  ///   [`pull`](Self::pull) it then.
+  /// - [`Error::UnknownModel`]: a name that is not in [`MODELS`], with the closest name when it
+  ///   looks like a typo.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use std::io::ErrorKind;
+  /// use wavo::{Error, hub::Hub};
+  ///
+  /// let hub = Hub::at("/no/such/cache");
+  /// let missing = hub.resolve("gigaam-v3").unwrap_err();
+  /// assert!(matches!(&missing, Error::Io(e) if e.kind() == ErrorKind::NotFound));
+  /// assert!(matches!(hub.resolve("gigam-v3"), Err(Error::UnknownModel { .. })));
+  /// assert!(matches!(hub.resolve("models/my.gguf"), Err(Error::Io(_))));
+  /// ```
+  pub fn resolve(&self, name_or_path: &str) -> Result<PathBuf> {
+    let not_found =
+      |what: String| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, what));
+    if name_or_path.ends_with(".gguf") || name_or_path.contains(['/', '\\']) {
+      let path = Path::new(name_or_path);
+      if path.is_file() {
+        return Ok(path.into());
+      }
+
+      return Err(not_found(format!("{name_or_path}: no such file")));
+    }
+
+    let m = lookup(name_or_path)?;
+    self.find(m.name).ok_or_else(|| not_found(format!("{} is not in {self}", m.name)))
+  }
+
+  /// The models of [`MODELS`] downloaded to this cache, in its order, with their files. Never uses
+  /// the network.
+  ///
+  /// ```
+  /// assert!(wavo::hub::Hub::at("/no/such/cache").downloaded().is_empty());
+  /// ```
+  pub fn downloaded(&self) -> Vec<(&'static ModelInfo, PathBuf)> {
+    MODELS.iter().filter_map(|m| self.find(m.name).map(|path| (m, path))).collect()
   }
 
   /// Downloads a model by short or full name, unless its latest revision is in the cache already,
@@ -480,6 +544,34 @@ mod tests {
         assert_eq!(codes.len(), n, "{}: {}", m.name, m.languages);
       }
     }
+  }
+
+  #[test]
+  fn catalog_fields() {
+    for m in MODELS {
+      assert!(["Parakeet", "GigaAM", "Whisper", "Moonshine"].contains(&m.family), "{}", m.name);
+      assert!(!m.maker.is_empty() && !m.languages.is_empty(), "{}", m.name);
+      let repo: Vec<&str> =
+        m.card.strip_prefix("https://huggingface.co/").unwrap_or("").split('/').collect();
+      assert!(repo.len() == 2 && !repo.contains(&""), "{}: {}", m.name, m.card);
+    }
+  }
+
+  #[test]
+  fn resolve() {
+    let hub = Hub::at("/nowhere");
+    let error = |arg| hub.resolve(arg).unwrap_err().to_string();
+    assert_eq!(error("gigaam-v3-e2e-rnnt"), "gigaam-v3 is not in /nowhere");
+    assert_eq!(error("dir/m.gguf"), "dir/m.gguf: no such file");
+    assert_eq!(error("m.gguf"), "m.gguf: no such file");
+    assert_eq!(error(r"C:\models\x.GGUF"), r"C:\models\x.GGUF: no such file");
+    assert!(error("gigam-v3").contains("did you mean gigaam-v3?"));
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    assert_eq!(hub.resolve(file.to_str().unwrap()).unwrap(), file);
+    // A bare name is a model's even when a file of that name is in the current folder.
+    assert!(Path::new("Cargo.toml").is_file());
+    assert!(matches!(hub.resolve("Cargo.toml"), Err(Error::UnknownModel { .. })));
+    assert!(hub.downloaded().is_empty());
   }
 
   #[test]

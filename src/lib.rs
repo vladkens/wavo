@@ -344,8 +344,8 @@ pub struct Transcript {
 #[non_exhaustive]
 pub struct Options {
   /// The language of the speech, as one of the codes the model lists (its GGUF's
-  /// `general.languages`, which `hub::ModelInfo::langs` repeats): `en`, `he`, `zh`. `None`, the
-  /// default, leaves it to the model.
+  /// `general.languages`, which can hold more than the languages `hub::ModelInfo::langs` says
+  /// the model is meant for): `en`, `he`, `zh`. `None`, the default, leaves it to the model.
   ///
   /// A multilingual Whisper model then transcribes in this language instead of detecting one
   /// from the first 30 s: on short or accented speech detection can pick a close language, such

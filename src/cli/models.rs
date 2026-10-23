@@ -2,26 +2,11 @@
 //! MODEL arguments: a name from `wavo::hub::MODELS` or a path to a `.gguf`.
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use anyhow::Result;
-use wavo::hub::{self, ModelInfo};
+use wavo::hub::ModelInfo;
 
 pub const DEFAULT: &str = "parakeet-ultra";
-
-/// What a MODEL argument names.
-pub enum Source {
-  Path(PathBuf),
-  Model(&'static ModelInfo),
-}
-
-/// A path when the argument ends in `.gguf` or has a path separator, else a known name.
-pub fn resolve(arg: &str) -> Result<Source> {
-  if arg.ends_with(".gguf") || arg.contains(['/', '\\']) {
-    return Ok(Source::Path(arg.into()));
-  }
-  Ok(Source::Model(hub::lookup(arg)?))
-}
 
 /// The model's line in the help: its languages, then what sets it apart.
 pub fn about(m: &ModelInfo) -> String {
@@ -89,6 +74,8 @@ pub fn gb(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+  use wavo::hub;
+
   use super::*;
 
   #[test]
@@ -117,20 +104,11 @@ mod tests {
 
   #[test]
   fn names_and_help() {
-    assert!(matches!(resolve("gigaam-v3-e2e-rnnt"), Ok(Source::Model(m)) if m.name == "gigaam-v3"));
-    assert!(resolve("parakeet3").is_err());
     assert_eq!(hub::lookup(DEFAULT).unwrap().full_name, "parakeet-ultra");
     let about = |name| about(hub::lookup(name).unwrap());
     assert_eq!(about("gigaam-v3"), "Russian");
     assert_eq!(about("gigaam-v3-e2e-ctc"), "Russian, CTC head");
     assert_eq!(about("gigaam-v3-ctc"), "Russian, lowercase without punctuation, CTC head");
     assert_eq!(about("whisper-turbo"), "100 languages");
-  }
-
-  #[test]
-  fn paths() {
-    for arg in ["model.gguf", "./model", "dir/x", r"C:\models\x.GGUF", "a\\b"] {
-      assert!(matches!(resolve(arg), Ok(Source::Path(p)) if p == Path::new(arg)), "{arg}");
-    }
   }
 }
