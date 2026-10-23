@@ -63,8 +63,9 @@ pub struct ModelInfo {
   /// keep its own `jw` for Javanese (ISO `jv`).
   ///
   /// A fine-tune takes more codes in [`Options::language`](crate::Options::language) than it is
-  /// meant for: those of its base model, which its GGUF lists in `general.languages`.
-  /// `whisper-turbo-he` takes Whisper's 100. Check a code against that list, not this one.
+  /// meant for: those of its base model, which its GGUF lists in `general.languages` and the
+  /// loaded model's [`Model::languages`](crate::Model::languages) returns. `whisper-turbo-he`
+  /// takes Whisper's 100. Check a code against that list, not this one.
   ///
   /// # Examples
   ///
