@@ -28,7 +28,8 @@ build:
 	ls -lh target/release/wavo
 
 update:
-	cargo upgrade -i
+	cargo upgrade --incompatible
+	cargo update
 
 clean:
 	cargo clean
