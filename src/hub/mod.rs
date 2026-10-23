@@ -314,17 +314,21 @@ impl Hub {
     self.find_file(&m.repo(), &m.file())
   }
 
-  /// The model file a name or path stands for, such as a command line's MODEL argument: an
-  /// existing file as is, else the downloaded file of a model by short or full name. Never uses
-  /// the network.
+  /// The model file a name or path stands for, such as a command line's MODEL argument. Never
+  /// uses the network.
+  ///
+  /// An argument that ends in `.gguf` or has a path separator (`/` or `\`, on every system) is
+  /// a path, returned as is when the file exists. Any other argument is a model's short or full
+  /// name, never a file in the current folder: `parakeet-v3` is the downloaded file of that model
+  /// even beside a file named `parakeet-v3`; pass `./parakeet-v3` for the file.
   ///
   /// # Errors
   ///
-  /// - [`Error::Io`] of kind [`NotFound`](std::io::ErrorKind::NotFound): no such file, for an
-  ///   argument that ends in `.gguf` or has a path separator (`<path>: no such file`), or the model
-  ///   isn't downloaded (`<name> is not in <root>`); [`pull`](Self::pull) it then.
-  /// - [`Error::UnknownModel`]: any other argument that is not a name in [`MODELS`], with the
-  ///   closest name when it looks like a typo.
+  /// - [`Error::Io`] of kind [`NotFound`](std::io::ErrorKind::NotFound): a path that is not a file
+  ///   (`<path>: no such file`), or a model that isn't downloaded (`<name> is not in <root>`);
+  ///   [`pull`](Self::pull) it then.
+  /// - [`Error::UnknownModel`]: a name that is not in [`MODELS`], with the closest name when it
+  ///   looks like a typo.
   ///
   /// # Examples
   ///
@@ -339,14 +343,14 @@ impl Hub {
   /// assert!(matches!(hub.resolve("models/my.gguf"), Err(Error::Io(_))));
   /// ```
   pub fn resolve(&self, name_or_path: &str) -> Result<PathBuf> {
-    let path = Path::new(name_or_path);
-    if path.is_file() {
-      return Ok(path.into());
-    }
-
     let not_found =
       |what: String| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, what));
     if name_or_path.ends_with(".gguf") || name_or_path.contains(['/', '\\']) {
+      let path = Path::new(name_or_path);
+      if path.is_file() {
+        return Ok(path.into());
+      }
+
       return Err(not_found(format!("{name_or_path}: no such file")));
     }
 
@@ -559,9 +563,13 @@ mod tests {
     assert_eq!(error("gigaam-v3-e2e-rnnt"), "gigaam-v3 is not in /nowhere");
     assert_eq!(error("dir/m.gguf"), "dir/m.gguf: no such file");
     assert_eq!(error("m.gguf"), "m.gguf: no such file");
+    assert_eq!(error(r"C:\models\x.GGUF"), r"C:\models\x.GGUF: no such file");
     assert!(error("gigam-v3").contains("did you mean gigaam-v3?"));
     let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     assert_eq!(hub.resolve(file.to_str().unwrap()).unwrap(), file);
+    // A bare name is a model's even when a file of that name is in the current folder.
+    assert!(Path::new("Cargo.toml").is_file());
+    assert!(matches!(hub.resolve("Cargo.toml"), Err(Error::UnknownModel { .. })));
     assert!(hub.downloaded().is_empty());
   }
 
