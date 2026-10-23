@@ -85,10 +85,11 @@ fn read_fixture(name: &str, sample: &str) -> (String, Option<Vec<(String, u32)>>
   (text.to_string(), Some(tokens), segments)
 }
 
-/// The GGUF's `general.languages` is the model's `langs` in `hub::MODELS`, and the model takes its
-/// first code exactly when `takes_language` says so.
+/// The GGUF's `general.languages` holds every language the model's `langs` in `hub::MODELS` is
+/// meant for, and the model takes its first code exactly when `takes_language` says so.
 fn check_languages(name: &str, model: &wavo::Model) {
-  assert_eq!(model.languages(), wavo::hub::lookup(name).unwrap().langs, "{name}: languages");
+  let (langs, codes) = (wavo::hub::lookup(name).unwrap().langs, model.languages());
+  assert!(langs.iter().all(|c| codes.iter().any(|x| x == c)), "{name}: languages {codes:?}");
   let mut options = wavo::Options::default();
   options.language = model.languages().first().cloned();
   let takes = model.transcribe_with(&[], &options).is_ok();

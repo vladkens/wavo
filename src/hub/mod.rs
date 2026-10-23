@@ -57,27 +57,40 @@ pub struct ModelInfo {
   pub size: u64,
   /// The languages it transcribes, for people: `English`, `Russian`, `25 European languages`, …
   pub languages: &'static str,
-  /// The languages it transcribes, for programs: the codes its GGUF lists in `general.languages`,
-  /// in that order. They are short BCP-47 codes, ISO 639-1 where one exists (`en`, `ru`), else
-  /// ISO 639-3 (`haw`, `yue`); Whisper's lists keep its own `jw` for Javanese (ISO `jv`). A
-  /// fine-tune can list its base model's languages: Breeze-ASR-25, tuned for Taiwanese Mandarin
-  /// and English, lists Whisper's 99.
+  /// The languages it is meant for, for programs: `["he"]` for the Hebrew fine-tunes, `["zh",
+  /// "en"]` for Breeze-ASR-25, every language for the multilingual models. The codes are short
+  /// BCP-47, ISO 639-1 where one exists (`en`, `ru`), else ISO 639-3 (`haw`, `yue`); Whisper's
+  /// keep its own `jw` for Javanese (ISO `jv`).
+  ///
+  /// A fine-tune takes more codes in [`Options::language`](crate::Options::language) than it is
+  /// meant for: those of its base model, which its GGUF lists in `general.languages`.
+  /// `whisper-turbo-he` takes Whisper's 100. Check a code against that list, not this one.
   ///
   /// # Examples
   ///
-  /// The models that transcribe Russian:
+  /// The models that transcribe Russian, and those made for Hebrew alone:
   ///
   /// ```
-  /// let ru: Vec<&str> = (wavo::hub::MODELS.iter())
-  ///   .filter(|m| m.langs.contains(&"ru"))
-  ///   .map(|m| m.name)
-  ///   .collect();
+  /// use wavo::hub::{MODELS, ModelInfo};
+  ///
+  /// let names = |f: fn(&&ModelInfo) -> bool| MODELS.iter().filter(f).map(|m| m.name).collect();
+  /// let ru: Vec<&str> = names(|m| m.langs.contains(&"ru"));
   /// assert!(ru.contains(&"gigaam-v3") && ru.contains(&"parakeet-v3"));
   /// assert!(!ru.contains(&"parakeet-v2"));
+  ///
+  /// let he: Vec<&str> = names(|m| m.langs == ["he"]);
+  /// assert_eq!(he, ["parakeet-he", "whisper-turbo-he"]);
   /// ```
   pub langs: &'static [&'static str],
   /// Whether the text comes cased and punctuated; `false` is lowercase without punctuation.
   pub punctuated: bool,
+  /// The model family, as the crate docs name it: `Parakeet`, `GigaAM`, `Whisper` or `Moonshine`.
+  pub family: &'static str,
+  /// Who made the model, such as `NVIDIA` or `ivrit.ai`; for a fine-tune, who tuned it.
+  pub maker: &'static str,
+  /// The URL of the original model's card, such as
+  /// `https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3`: its license, languages and benchmarks.
+  pub card: &'static str,
 }
 
 impl ModelInfo {
@@ -101,15 +114,11 @@ const VK: &str = "vladkens";
 static EN: &[&str] = &["en"];
 static HE: &[&str] = &["he"];
 static RU: &[&str] = &["ru"];
+static ZH_EN: &[&str] = &["zh", "en"];
 /// transcribe.cpp's `V3_LANGUAGES`, in the model card's order.
 static PARAKEET_V3: &[&str] = &[
   "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt",
   "pl", "pt", "ro", "ru", "sk", "sl", "es", "sv", "uk",
-];
-/// [`PARAKEET_V3`] as Parakeet Ultra's GGUF orders them.
-static PARAKEET_ULTRA: &[&str] = &[
-  "en", "de", "fr", "es", "it", "pt", "ru", "uk", "hr", "sl", "lv", "lt", "et", "fi", "sv", "da",
-  "nl", "pl", "cs", "sk", "hu", "ro", "bg", "el", "mt",
 ];
 /// Whisper's language tokens sorted as strings, hence `haw` (`<|haw|>`) before `ha`.
 static WHISPER: &[&str] = &[
@@ -135,30 +144,30 @@ static WHISPER_V3: &[&str] = &[
 /// Every model wavo can download by name, as in the crate's [model table](crate#models).
 #[rustfmt::skip]
 pub static MODELS: &[ModelInfo] = &[
-  ModelInfo { name: "parakeet-v3", owner: HC, full_name: "parakeet-tdt-0.6b-v3", size: 739_508_576, languages: "25 European languages", langs: PARAKEET_V3, punctuated: true },
-  ModelInfo { name: "parakeet-v2", owner: HC, full_name: "parakeet-tdt-0.6b-v2", size: 729_574_912, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "parakeet-ultra", owner: HC, full_name: "parakeet-ultra", size: 740_363_168, languages: "25 European languages", langs: PARAKEET_ULTRA, punctuated: true },
-  ModelInfo { name: "parakeet-he", owner: VK, full_name: "parakeet-tdt-0.6b-v3-he", size: 740_915_360, languages: "Hebrew", langs: HE, punctuated: true },
-  ModelInfo { name: "gigaam-v3", owner: HC, full_name: "gigaam-v3-e2e-rnnt", size: 273_724_832, languages: "Russian", langs: RU, punctuated: true },
-  ModelInfo { name: "gigaam-v3-e2e-ctc", owner: HC, full_name: "gigaam-v3-e2e-ctc", size: 272_151_136, languages: "Russian", langs: RU, punctuated: true },
-  ModelInfo { name: "gigaam-v3-rnnt", owner: HC, full_name: "gigaam-v3-rnnt", size: 273_022_880, languages: "Russian", langs: RU, punctuated: false },
-  ModelInfo { name: "gigaam-v3-ctc", owner: HC, full_name: "gigaam-v3-ctc", size: 271_803_328, languages: "Russian", langs: RU, punctuated: false },
-  ModelInfo { name: "whisper-turbo", owner: HC, full_name: "whisper-large-v3-turbo", size: 886_381_760, languages: "100 languages", langs: WHISPER_V3, punctuated: true },
-  ModelInfo { name: "whisper-turbo-he", owner: VK, full_name: "ivrit-whisper-large-v3-turbo", size: 886_381_920, languages: "Hebrew", langs: WHISPER_V3, punctuated: true },
-  ModelInfo { name: "whisper-tiny", owner: HC, full_name: "whisper-tiny", size: 45_981_088, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-base", owner: HC, full_name: "whisper-base", size: 84_962_880, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-small", owner: HC, full_name: "whisper-small", size: 269_751_136, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-medium", owner: HC, full_name: "whisper-medium", size: 831_538_144, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-large-v3", owner: HC, full_name: "whisper-large-v3", size: 1_668_741_440, languages: "100 languages", langs: WHISPER_V3, punctuated: true },
-  ModelInfo { name: "whisper-tiny.en", owner: HC, full_name: "whisper-tiny.en", size: 45_904_544, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "whisper-base.en", owner: HC, full_name: "whisper-base.en", size: 84_886_208, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "whisper-small.en", owner: HC, full_name: "whisper-small.en", size: 269_674_144, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "whisper-medium.en", owner: HC, full_name: "whisper-medium.en", size: 831_460_928, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "whisper-large", owner: HC, full_name: "whisper-large", size: 1_667_964_192, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "whisper-large-v2", owner: HC, full_name: "whisper-large-v2", size: 1_667_964_224, languages: "99 languages", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "breeze-asr-25", owner: HC, full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", langs: WHISPER, punctuated: true },
-  ModelInfo { name: "moonshine-tiny", owner: HC, full_name: "moonshine-tiny", size: 35_466_912, languages: "English", langs: EN, punctuated: true },
-  ModelInfo { name: "moonshine-base", owner: HC, full_name: "moonshine-base", size: 77_476_480, languages: "English", langs: EN, punctuated: true },
+  ModelInfo { name: "parakeet-v3", owner: HC, full_name: "parakeet-tdt-0.6b-v3", size: 739_508_576, languages: "25 European languages", langs: PARAKEET_V3, punctuated: true, family: "Parakeet", maker: "NVIDIA", card: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3" },
+  ModelInfo { name: "parakeet-v2", owner: HC, full_name: "parakeet-tdt-0.6b-v2", size: 729_574_912, languages: "English", langs: EN, punctuated: true, family: "Parakeet", maker: "NVIDIA", card: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2" },
+  ModelInfo { name: "parakeet-ultra", owner: HC, full_name: "parakeet-ultra", size: 740_363_168, languages: "25 European languages", langs: PARAKEET_V3, punctuated: true, family: "Parakeet", maker: "Moondream", card: "https://huggingface.co/moondream/parakeet-ultra" },
+  ModelInfo { name: "parakeet-he", owner: VK, full_name: "parakeet-tdt-0.6b-v3-he", size: 740_915_360, languages: "Hebrew", langs: HE, punctuated: true, family: "Parakeet", maker: "Yakov Kolani", card: "https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he" },
+  ModelInfo { name: "gigaam-v3", owner: HC, full_name: "gigaam-v3-e2e-rnnt", size: 273_724_832, languages: "Russian", langs: RU, punctuated: true, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
+  ModelInfo { name: "gigaam-v3-e2e-ctc", owner: HC, full_name: "gigaam-v3-e2e-ctc", size: 272_151_136, languages: "Russian", langs: RU, punctuated: true, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
+  ModelInfo { name: "gigaam-v3-rnnt", owner: HC, full_name: "gigaam-v3-rnnt", size: 273_022_880, languages: "Russian", langs: RU, punctuated: false, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
+  ModelInfo { name: "gigaam-v3-ctc", owner: HC, full_name: "gigaam-v3-ctc", size: 271_803_328, languages: "Russian", langs: RU, punctuated: false, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
+  ModelInfo { name: "whisper-turbo", owner: HC, full_name: "whisper-large-v3-turbo", size: 886_381_760, languages: "100 languages", langs: WHISPER_V3, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-large-v3-turbo" },
+  ModelInfo { name: "whisper-turbo-he", owner: VK, full_name: "ivrit-whisper-large-v3-turbo", size: 886_381_920, languages: "Hebrew", langs: HE, punctuated: true, family: "Whisper", maker: "ivrit.ai", card: "https://huggingface.co/ivrit-ai/whisper-large-v3-turbo" },
+  ModelInfo { name: "whisper-tiny", owner: HC, full_name: "whisper-tiny", size: 45_981_088, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-tiny" },
+  ModelInfo { name: "whisper-base", owner: HC, full_name: "whisper-base", size: 84_962_880, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-base" },
+  ModelInfo { name: "whisper-small", owner: HC, full_name: "whisper-small", size: 269_751_136, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-small" },
+  ModelInfo { name: "whisper-medium", owner: HC, full_name: "whisper-medium", size: 831_538_144, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-medium" },
+  ModelInfo { name: "whisper-large-v3", owner: HC, full_name: "whisper-large-v3", size: 1_668_741_440, languages: "100 languages", langs: WHISPER_V3, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-large-v3" },
+  ModelInfo { name: "whisper-tiny.en", owner: HC, full_name: "whisper-tiny.en", size: 45_904_544, languages: "English", langs: EN, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-tiny.en" },
+  ModelInfo { name: "whisper-base.en", owner: HC, full_name: "whisper-base.en", size: 84_886_208, languages: "English", langs: EN, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-base.en" },
+  ModelInfo { name: "whisper-small.en", owner: HC, full_name: "whisper-small.en", size: 269_674_144, languages: "English", langs: EN, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-small.en" },
+  ModelInfo { name: "whisper-medium.en", owner: HC, full_name: "whisper-medium.en", size: 831_460_928, languages: "English", langs: EN, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-medium.en" },
+  ModelInfo { name: "whisper-large", owner: HC, full_name: "whisper-large", size: 1_667_964_192, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-large" },
+  ModelInfo { name: "whisper-large-v2", owner: HC, full_name: "whisper-large-v2", size: 1_667_964_224, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-large-v2" },
+  ModelInfo { name: "breeze-asr-25", owner: HC, full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", langs: ZH_EN, punctuated: true, family: "Whisper", maker: "MediaTek Research", card: "https://huggingface.co/MediaTek-Research/Breeze-ASR-25" },
+  ModelInfo { name: "moonshine-tiny", owner: HC, full_name: "moonshine-tiny", size: 35_466_912, languages: "English", langs: EN, punctuated: true, family: "Moonshine", maker: "Useful Sensors", card: "https://huggingface.co/UsefulSensors/moonshine-tiny" },
+  ModelInfo { name: "moonshine-base", owner: HC, full_name: "moonshine-base", size: 77_476_480, languages: "English", langs: EN, punctuated: true, family: "Moonshine", maker: "Useful Sensors", card: "https://huggingface.co/UsefulSensors/moonshine-base" },
 ];
 
 /// The model a short or full name stands for.
@@ -529,6 +538,17 @@ mod tests {
       if let Ok(n) = m.languages.split(' ').next().unwrap().parse::<usize>() {
         assert_eq!(codes.len(), n, "{}: {}", m.name, m.languages);
       }
+    }
+  }
+
+  #[test]
+  fn catalog_fields() {
+    for m in MODELS {
+      assert!(["Parakeet", "GigaAM", "Whisper", "Moonshine"].contains(&m.family), "{}", m.name);
+      assert!(!m.maker.is_empty() && !m.languages.is_empty(), "{}", m.name);
+      let repo: Vec<&str> =
+        m.card.strip_prefix("https://huggingface.co/").unwrap_or("").split('/').collect();
+      assert!(repo.len() == 2 && !repo.contains(&""), "{}: {}", m.name, m.card);
     }
   }
 
