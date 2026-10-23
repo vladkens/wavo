@@ -172,6 +172,10 @@ pub fn multipart(content_type: &str, body: &[u8]) -> Res<Vec<Part>> {
   let form = kind.eq_ignore_ascii_case("multipart/form-data");
   let boundary = param(content_type, "boundary").filter(|_| form);
   let boundary = boundary.ok_or_else(|| fail(415, "send the request as multipart/form-data"))?;
+  if !(1..=70).contains(&boundary.len()) {
+    return Err(fail(400, "a multipart boundary is 1 to 70 characters (RFC 2046)"));
+  }
+
   let bad = || fail(400, "a broken multipart/form-data body");
   // Each part ends at a line end and a delimiter; the first delimiter needs no line end.
   let delimiter = format!("\r\n--{boundary}").into_bytes();
@@ -319,6 +323,12 @@ mod tests {
     assert_eq!(empty, []);
     assert_eq!(multipart("application/json", b"{}").unwrap_err().status, 415);
     assert_eq!(multipart("multipart/form-data", b"").unwrap_err().status, 415);
+    for boundary in ["\"\"", &"b".repeat(71)] {
+      let content_type = format!("multipart/form-data; boundary={boundary}");
+      assert_eq!(multipart(&content_type, b"--\r\n").unwrap_err().status, 400, "{boundary}");
+    }
+    let longest = format!("multipart/form-data; boundary={}", "b".repeat(70));
+    assert_eq!(multipart(&longest, format!("--{}--", "b".repeat(70)).as_bytes()).unwrap(), []);
     let unclosed = b"--XyZ\r\nContent-Disposition: form-data; name=a\r\n\r\nvalue";
     assert_eq!(multipart("multipart/form-data; boundary=XyZ", unclosed).unwrap_err().status, 400);
   }
