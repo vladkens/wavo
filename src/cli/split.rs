@@ -1,17 +1,14 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! The transcripts of long audio's pieces (cut by `wavo::split`) joined back into one, for
+//! Long audio through `Model::transcribe_long`, with where each piece starts for subtitles, for
 //! `wavo run` and `wavo serve`.
 
-use wavo::{DeviceKind, Model, Options, Token, Transcript};
+use std::ops::ControlFlow;
 
-/// Audio splits into pieces of up to this for models without a window of their own, as
-/// `Model::transcribe_long` does.
-const SEGMENT_MS: u32 = 60_000;
+use wavo::{Model, Options, Transcript};
 
-/// As `Model::transcribe_long`, but piece by piece: `each(i, n)` runs before piece `i` of `n`,
-/// and the index of each piece's first token comes back too, as subtitles start a word there.
-/// Pieces are up to `segment_ms` (0: one pass), else the model's window, else `SEGMENT_MS`; on the
-/// Neural Engine never past its window.
+/// `Model::transcribe_long` with pieces of up to `segment_ms` (0: one pass, else the library's
+/// default) and `each(done, n)` after each piece. The index of each piece's first token comes
+/// back too, as subtitles start a word there.
 pub fn transcribe(
   model: &Model,
   pcm: &[f32],
@@ -19,69 +16,14 @@ pub fn transcribe(
   options: &Options,
   mut each: impl FnMut(usize, usize),
 ) -> wavo::Result<(Transcript, Vec<usize>)> {
-  let mut max_ms = segment_ms.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
-  if model.device().kind == DeviceKind::NeuralEngine {
-    // Its window caps the pieces, so subtitles see every cut.
-    let window = model.max_audio_ms().unwrap_or(u32::MAX);
-    max_ms = if max_ms == 0 { window } else { max_ms.min(window) };
-  }
-
-  let ranges = wavo::split(pcm, if max_ms == 0 { u32::MAX } else { max_ms });
-  let n = ranges.len();
-  let parts = ranges.into_iter().enumerate().map(|(i, r)| {
-    each(i, n);
-    Ok((r.start, model.transcribe_with(&pcm[r], options)?))
-  });
-  Ok(join(parts.collect::<wavo::Result<Vec<_>>>()?))
-}
-
-/// Joins the transcripts of pieces starting at the given samples: texts with a space, token times
-/// shifted to the whole audio. Also returns the index of each piece's first token, where
-/// subtitles start a new word.
-pub fn join(parts: impl IntoIterator<Item = (usize, Transcript)>) -> (Transcript, Vec<usize>) {
-  let (mut out, mut starts) = (Transcript::default(), Vec::new());
-  for (start, part) in parts {
-    starts.push(out.tokens.len());
-    if !part.text.is_empty() {
-      out.text += if out.text.is_empty() { "" } else { " " };
-      out.text += &part.text;
-    }
-    let offset = (start / 16) as u32; // a multiple of 160 samples: whole ms
-    let shift = |mut t: Token| {
-      t.start_ms += offset;
-      t
-    };
-    out.tokens.extend(part.tokens.into_iter().map(shift));
-  }
-  (out, starts)
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn join_shifts_tokens_and_skips_empty_texts() {
-    let token = |id, start_ms| {
-      let mut t = Token::default();
-      (t.id, t.piece, t.start_ms) = (id, format!("▁{id}"), start_ms);
-      t
-    };
-    let part = |text: &str, tokens| {
-      let mut t = Transcript::default();
-      (t.text, t.tokens) = (text.into(), tokens);
-      t
-    };
-    let (t, starts) = join([
-      (0, part("a b", vec![token(1, 40), token(2, 80)])),
-      (16 * 20_000, part("", vec![])),
-      (16 * 30_010, part("c", vec![token(3, 0)])),
-    ]);
-    assert_eq!(t.text, "a b c");
-    let times: Vec<(u32, u32)> = t.tokens.iter().map(|t| (t.id, t.start_ms)).collect();
-    assert_eq!(times, [(1, 40), (2, 80), (3, 30_010)]);
-    assert_eq!(starts, [0, 2, 2]);
-    let one = part("x", vec![token(7, 120)]);
-    assert_eq!(join([(0, one.clone())]).0, one, "a single piece from 0 is unchanged");
-  }
+  let mut options = options.clone();
+  options.window_ms = segment_ms.map(|ms| if ms == 0 { u32::MAX } else { ms });
+  let (mut starts, mut tokens) = (Vec::new(), 0);
+  let transcript = model.transcribe_long(pcm, &options, |piece| {
+    starts.push(tokens);
+    tokens += piece.transcript.tokens.len();
+    each(piece.index + 1, piece.count);
+    ControlFlow::Continue(())
+  })?;
+  Ok((transcript, starts))
 }

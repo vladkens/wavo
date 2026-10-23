@@ -48,6 +48,8 @@ pub enum Error {
   /// [`Options::language`](crate::Options::language) names a language the model can't take: one
   /// it doesn't list, or any for a model that detects among several languages itself (Parakeet
   /// v3). The message lists the model's codes when the code isn't one of them.
+  /// [`Model::languages`](crate::Model::languages) and
+  /// [`Model::takes_language`](crate::Model::takes_language) tell beforehand.
   #[error("{0}")]
   Language(String),
   /// The Neural Engine can't run the model: this machine has none (it needs Apple Silicon and
@@ -56,8 +58,10 @@ pub enum Error {
   #[error("Neural Engine: {0}")]
   NeuralEngine(String),
   /// A progress callback returned [`ControlFlow::Break`](std::ops::ControlFlow::Break): the one
-  /// of [`Model::prepare`](crate::Model::prepare), or with the `hub` feature of `Hub::pull`,
-  /// whose partial download stays in the cache for the next pull of the model to resume.
+  /// of [`Model::prepare`](crate::Model::prepare), of
+  /// [`Model::transcribe_long`](crate::Model::transcribe_long), or with the `hub` feature of
+  /// `Hub::pull`, whose partial download stays in the cache for the next pull of the model to
+  /// resume.
   #[error("cancelled")]
   Cancelled,
   /// A name that is neither a short nor a full name in [`hub::MODELS`](crate::hub::MODELS).

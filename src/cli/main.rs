@@ -263,7 +263,8 @@ fn run(args: &[&str]) -> Result<()> {
     bar.suspend(|| eprintln!("warning: {warning}"));
   }
 
-  let each = |i, n| bar.set_message(format!("transcribing {}/{n}", i + 1));
+  bar.set_message("transcribing");
+  let each = |done: usize, n| bar.set_message(format!("transcribing {}/{n}", (done + 1).min(n)));
   let (transcript, starts) = split::transcribe(&model, &pcm, segment, &options, each)?;
   bar.finish_and_clear();
   // Silence or noise: not an error, so that a batch of files goes on.

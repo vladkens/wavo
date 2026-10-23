@@ -4,7 +4,7 @@
 
 use std::ops::Range;
 
-use crate::{Token, Transcript};
+use crate::Transcript;
 
 /// Samples per energy frame (10 ms); cuts fall on frame starts.
 const FRAME: usize = 160;
@@ -27,8 +27,8 @@ const MIN_MS: u32 = 5000;
 /// one piece. It never fails: empty audio gives one empty range.
 ///
 /// [`Model::transcribe_long`](crate::Model::transcribe_long) splits with it; use it directly to
-/// transcribe the pieces yourself, for example with progress, and shift each piece's token
-/// `start_ms` by its start (`range.start / 16` ms; cuts fall on whole milliseconds).
+/// transcribe the pieces in your own way, and shift each piece's token `start_ms` by its start
+/// (`range.start / 16` ms; cuts fall on whole milliseconds).
 ///
 /// # Examples
 ///
@@ -64,23 +64,15 @@ pub fn split(pcm: &[f32], max_ms: u32) -> Vec<Range<usize>> {
   out
 }
 
-/// Joins the transcripts of pieces starting at the given samples: texts with a space, token times
-/// shifted to the whole audio.
-pub(crate) fn join(parts: impl IntoIterator<Item = (usize, Transcript)>) -> Transcript {
-  let mut out = Transcript::default();
-  for (start, part) in parts {
-    if !part.text.is_empty() {
-      out.text += if out.text.is_empty() { "" } else { " " };
-      out.text += &part.text;
-    }
-    let offset = (start / 16) as u32; // a multiple of 160 samples: whole ms
-    let shift = |mut t: Token| {
-      t.start_ms += offset;
-      t
-    };
-    out.tokens.extend(part.tokens.into_iter().map(shift));
+/// Appends the transcript of the next piece, its token times already from the start of the
+/// audio: texts joined with a space, an empty one skipped.
+pub(crate) fn append(out: &mut Transcript, part: Transcript) {
+  if !part.text.is_empty() {
+    out.text += if out.text.is_empty() { "" } else { " " };
+    out.text += &part.text;
   }
-  out
+
+  out.tokens.extend(part.tokens);
 }
 
 #[cfg(test)]
@@ -170,26 +162,17 @@ mod tests {
   }
 
   #[test]
-  fn join_shifts_tokens_and_skips_empty_texts() {
-    let token = |id, start_ms| {
-      let mut t = Token::default();
-      (t.id, t.piece, t.start_ms) = (id, format!("▁{id}"), start_ms);
-      t
+  fn append_joins_texts_and_skips_empty_ones() {
+    let part = |text: &str, ids: &[u32]| Transcript {
+      text: text.into(),
+      tokens: ids.iter().map(|&id| crate::Token { id, ..Default::default() }).collect(),
     };
-    let part = |text: &str, tokens| {
-      let mut t = Transcript::default();
-      (t.text, t.tokens) = (text.into(), tokens);
-      t
-    };
-    let t = join([
-      (0, part("a b", vec![token(1, 40), token(2, 80)])),
-      (16 * 20_000, part("", vec![])),
-      (16 * 30_010, part("c", vec![token(3, 0)])),
-    ]);
+    let mut t = Transcript::default();
+    for p in [part("a b", &[1, 2]), part("", &[]), part("c", &[3])] {
+      append(&mut t, p);
+    }
+
     assert_eq!(t.text, "a b c");
-    let times: Vec<(u32, u32)> = t.tokens.iter().map(|t| (t.id, t.start_ms)).collect();
-    assert_eq!(times, [(1, 40), (2, 80), (3, 30_010)]);
-    let one = part("x", vec![token(7, 120)]);
-    assert_eq!(join([(0, one.clone())]), one, "a single piece from 0 is unchanged");
+    assert_eq!(t.tokens.iter().map(|t| t.id).collect::<Vec<_>>(), [1, 2, 3]);
   }
 }

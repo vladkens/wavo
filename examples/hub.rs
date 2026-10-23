@@ -1,6 +1,6 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Lists the models, downloads one on a thread while the main thread shows its progress, then
-//! transcribes a 16 kHz mono WAV with it:
+//! transcribes a 16 kHz mono WAV of any length with it, piece by piece:
 //!
 //! `cargo run --release --example hub --no-default-features --features hub -- MODEL AUDIO.wav`
 //!
@@ -69,8 +69,13 @@ fn main() -> Result<()> {
   }
   let pcm = reader.samples::<i16>().map(|s| Ok(s? as f32 / 32768.0)).collect::<Result<Vec<_>>>()?;
 
+  // Audio of any length, split at pauses, with the pieces' progress.
   let model = wavo::Model::load(&path)?;
-  let transcript = model.transcribe(&pcm)?;
+  let transcript = model.transcribe_long(&pcm, &wavo::Options::default(), |piece| {
+    eprint!("\rtranscribing: {}/{}", piece.index + 1, piece.count);
+    ControlFlow::Continue(())
+  })?;
+  eprintln!();
 
   println!("{}", transcript.text);
   let first = transcript.tokens.first().map_or(0, |t| t.start_ms);

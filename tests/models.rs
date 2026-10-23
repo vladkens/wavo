@@ -9,24 +9,9 @@
 //! The tests need the `hub` feature, for `hub::MODELS`: the default features have it.
 #![cfg(feature = "hub")]
 
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
-
-/// The library's GGUF reader, to read metadata the API doesn't expose. It fails through `error`.
-#[path = "../src/gguf.rs"]
-#[allow(dead_code)]
-mod gguf;
-
-mod error {
-  pub use wavo::Result;
-
-  macro_rules! bail {
-    ($($arg:tt)*) => {
-      return Err(wavo::Error::Model(format!($($arg)*)))
-    };
-  }
-  pub(crate) use bail;
-}
 
 /// One model at a time: they share the GPU anyway, and several large ones at once overrun the
 /// memory of an 8 GB card.
@@ -100,18 +85,20 @@ fn read_fixture(name: &str, sample: &str) -> (String, Option<Vec<(String, u32)>>
   (text.to_string(), Some(tokens), segments)
 }
 
-/// The GGUF's `general.languages` is the model's `langs` in `hub::MODELS`.
-fn check_languages(name: &str, path: &Path) {
-  let g = gguf::Gguf::open(path).unwrap();
-  let codes: Vec<&str> = g.array("general.languages").unwrap();
-  assert_eq!(codes, wavo::hub::lookup(name).unwrap().langs, "{name}: general.languages");
+/// The GGUF's `general.languages` is the model's `langs` in `hub::MODELS`, and the model takes its
+/// first code exactly when `takes_language` says so.
+fn check_languages(name: &str, model: &wavo::Model) {
+  assert_eq!(model.languages(), wavo::hub::lookup(name).unwrap().langs, "{name}: languages");
+  let mut options = wavo::Options::default();
+  options.language = model.languages().first().cloned();
+  let takes = model.transcribe_with(&[], &options).is_ok();
+  assert_eq!(model.takes_language(), takes, "{name}: takes_language");
 }
 
 fn check(name: &str, samples: &[&str]) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
-  let path = model_path(name);
-  check_languages(name, &path);
-  let model = wavo::Model::load_with(&path, wavo::Backend::Gpu).unwrap();
+  let model = wavo::Model::load_with(model_path(name), wavo::Backend::Gpu).unwrap();
+  check_languages(name, &model);
   for sample in samples {
     let (clip, language) = match sample.split_once("+lang=") {
       Some((clip, code)) => (clip, Some(code.to_string())),
@@ -156,6 +143,48 @@ fn too_long(name: &str, sample: &str) {
   assert!(matches!(got, Err(wavo::Error::AudioTooLong { .. })), "{name} {sample}: {got:?}");
 }
 
+/// `transcribe_long` on a clip repeated past 40 s, in pieces of up to 15 s: the callback gets
+/// each piece in order, with its start and the transcript `transcribe` gives its audio, shifted
+/// there; the pieces make the transcript; and `Break` cancels after the first piece.
+fn long(name: &str, sample: &str) {
+  let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
+  let model = wavo::Model::load_with(model_path(name), wavo::Backend::Gpu).unwrap();
+  let clip = read_sample(sample);
+  let pcm = clip.repeat(16_000 * 40 / clip.len() + 1);
+  let mut options = wavo::Options::default();
+  options.window_ms = Some(15_000);
+  let mut pieces = Vec::new();
+  let got = model.transcribe_long(&pcm, &options, |p| {
+    pieces.push((p.index, p.count, p.start_ms, p.transcript.clone()));
+    ControlFlow::Continue(())
+  });
+  let got = got.unwrap();
+
+  let ranges = wavo::split(&pcm, 15_000);
+  let n = ranges.len();
+  assert!(n >= 3, "{name} {sample}: {n} pieces");
+  assert_eq!(pieces.len(), n, "{name} {sample}: pieces");
+  let (mut text, mut tokens) = (Vec::new(), Vec::new());
+  for (i, ((index, count, start_ms, piece), r)) in pieces.into_iter().zip(ranges).enumerate() {
+    let start = (r.start / 16) as u32;
+    assert_eq!((index, count, start_ms), (i, n, start), "{name} {sample}: {i}");
+    let mut alone = model.transcribe(&pcm[r]).unwrap();
+    alone.tokens.iter_mut().for_each(|t| t.start_ms += start);
+    assert_eq!(piece, alone, "{name} {sample}: piece {i}");
+    text.extend((!piece.text.is_empty()).then_some(piece.text));
+    tokens.extend(piece.tokens);
+  }
+
+  assert_eq!((got.text, got.tokens), (text.join(" "), tokens), "{name} {sample}: joined");
+  let mut calls = 0;
+  let cancelled = model.transcribe_long(&pcm, &options, |_| {
+    calls += 1;
+    ControlFlow::Break(())
+  });
+  assert!(matches!(cancelled, Err(wavo::Error::Cancelled)), "{name} {sample}: {cancelled:?}");
+  assert_eq!(calls, 1, "{name} {sample}: calls after Break");
+}
+
 /// Neural Engine agreement. F16 activations, 8-bit weights and arithmetic that differs between
 /// chip generations change a word now and then, drop a comma or move a token by a frame or two,
 /// so per clip, against the fixture when it fits the 15 s window, else against the GPU's
@@ -170,8 +199,6 @@ fn too_long(name: &str, sample: &str) {
 /// Engine. The corpus check that goes with it is `make compare BACKEND=ane` (agents.md).
 #[cfg(target_os = "macos")]
 fn check_ane(name: &str, frame_ms: u32, samples: &[&str]) {
-  use std::ops::ControlFlow;
-
   use wavo::{Backend, DeviceKind, Model};
   type Tokens = Vec<(String, u32)>;
 
@@ -202,11 +229,26 @@ fn check_ane(name: &str, frame_ms: u32, samples: &[&str]) {
       let (text, want, _) = read_fixture(name, sample);
       vec![(text, want.unwrap(), ane.transcribe(&pcm).unwrap())]
     } else {
+      // `transcribe_long`'s pieces stay within the window even when asked for longer ones.
       let gpu = gpu.get_or_insert_with(|| Model::load_with(&path, Backend::Gpu).unwrap());
-      (wavo::split(&pcm, window).into_iter())
-        .map(|r| {
-          let want = gpu.transcribe(&pcm[r.clone()]).unwrap();
-          (want.text.clone(), tokens(&want), ane.transcribe(&pcm[r]).unwrap())
+      let mut options = wavo::Options::default();
+      options.window_ms = Some(u32::MAX);
+      let mut got = Vec::new();
+      let long = ane.transcribe_long(&pcm, &options, |p| {
+        got.push((p.start_ms, p.transcript.clone()));
+        ControlFlow::Continue(())
+      });
+      long.unwrap();
+
+      let ranges = wavo::split(&pcm, window);
+      let starts: Vec<u32> = got.iter().map(|g| g.0).collect();
+      let want: Vec<u32> = ranges.iter().map(|r| (r.start / 16) as u32).collect();
+      assert_eq!(starts, want, "{at}: piece starts");
+      (ranges.into_iter().zip(got))
+        .map(|(r, (start, got))| {
+          let want = gpu.transcribe(&pcm[r]).unwrap();
+          let shifted = tokens(&want).into_iter().map(|(p, ms)| (p, ms + start)).collect();
+          (want.text.clone(), shifted, got)
         })
         .collect()
     };
@@ -312,6 +354,7 @@ const GIGAAM: &[&str] = &["ru", "ru-short", "ru-long"];
 fn gigaam_v3_e2e_rnnt() {
   check("gigaam-v3-e2e-rnnt", GIGAAM);
   too_long("gigaam-v3-e2e-rnnt", "ru-long");
+  long("gigaam-v3-e2e-rnnt", "ru");
 }
 
 #[test]
@@ -364,6 +407,7 @@ fn parakeet_tdt_v2() {
 #[test]
 fn parakeet_tdt_v3() {
   check("parakeet-tdt-0.6b-v3", &["jfk", "ru-short", "uk-short"]);
+  long("parakeet-tdt-0.6b-v3", "jfk");
 }
 
 // uk-long (29 s) is within the 30 s that transcribe.cpp takes in one pass; past them its VAD head

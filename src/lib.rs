@@ -105,19 +105,22 @@
 //! window at pauses itself. [`Model::transcribe_long`] takes audio of any length: it cuts it at its
 //! quietest moments with [`split`] into pieces of up to the model's window (60 s for Parakeet, or
 //! [`Options::window_ms`]), transcribes each, and joins the transcripts with token times from the
-//! start of the audio.
+//! start of the audio. After each piece it passes a [`Piece`] to a callback, which can show
+//! progress or the text so far, and cancel the rest by returning [`ControlFlow::Break`]:
 //!
 //! ```no_run
 //! # fn main() -> wavo::Result<()> {
+//! use std::ops::ControlFlow;
+//!
 //! let model = wavo::Model::load("gigaam-v3-e2e-rnnt-Q8_0.gguf")?;
 //! let pcm = vec![0.0f32; 16_000 * 600]; // ten minutes
-//! let transcript = model.transcribe_long(&pcm, &wavo::Options::default())?;
+//! let transcript = model.transcribe_long(&pcm, &wavo::Options::default(), |piece| {
+//!   eprintln!("{}/{}: {}", piece.index + 1, piece.count, piece.transcript.text);
+//!   ControlFlow::Continue(())
+//! })?;
 //! # Ok(())
 //! # }
 //! ```
-//!
-//! To show progress or cancel between pieces, cut with [`split`] and call `transcribe_with` per
-//! piece yourself, shifting each piece's token `start_ms` by its start (`range.start / 16`).
 //!
 //! # Download a model
 //!
@@ -310,6 +313,21 @@ enum Family {
   Moonshine(Box<moonshine::Moonshine>),
 }
 
+/// A piece of the audio that [`Model::transcribe_long`] has transcribed, passed to its callback.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct Piece<'a> {
+  /// Its position among the pieces, from 0.
+  pub index: usize,
+  /// How many pieces the audio is cut into, the same for each piece: 1 when it fits in one.
+  pub count: usize,
+  /// Where the piece starts, in milliseconds from the start of the audio.
+  pub start_ms: u32,
+  /// The piece's transcript, with token `start_ms` from the start of the whole audio: it is
+  /// joined to the previous pieces' as it is.
+  pub transcript: &'a Transcript,
+}
+
 /// The text of a recording and the tokens it is made of.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
@@ -335,13 +353,15 @@ pub struct Options {
   /// Whisper writes that language anyway, often as a rough translation. A model of one language
   /// (GigaAM, Parakeet v2, Moonshine, Whisper `.en`) takes its own code and runs as without it.
   /// Parakeet v3 has no way to be told a language, so any code fails with it, as does a code the
-  /// model doesn't list: see [`Error::Language`].
+  /// model doesn't list: see [`Error::Language`]. [`Model::languages`] lists the codes and
+  /// [`Model::takes_language`] says whether the model takes one at all.
   pub language: Option<String>,
   /// The longest piece, in milliseconds, [`Model::transcribe_long`] cuts the audio into with
   /// [`split`]. `None`, the default, takes the model's [`max_audio_ms`](Model::max_audio_ms), or
   /// 60 000 for Parakeet, which has none. Below 5000 counts as 5000; `u32::MAX` runs the whole
-  /// audio in one piece, as `transcribe_with` does. GigaAM and Moonshine fail on pieces past 1.5
-  /// times their window: see [`Error::AudioTooLong`]. `transcribe_with` ignores it.
+  /// audio in one piece, as `transcribe_with` does. On the Neural Engine the pieces never pass its
+  /// 15 s window. GigaAM and Moonshine fail on pieces past 1.5 times their window: see
+  /// [`Error::AudioTooLong`]. `transcribe_with` ignores it.
   pub window_ms: Option<u32>,
 }
 
@@ -530,14 +550,13 @@ impl Model {
   /// # Ok::<(), wavo::Error>(())
   /// ```
   pub fn transcribe_with(&self, pcm: &[f32], options: &Options) -> Result<Transcript> {
-    let tokens = matches!(&self.family, Family::Whisper(m) if m.multilingual());
     let language = match &options.language {
-      Some(code) => language(code, &self.languages, tokens)?,
+      Some(code) => language(code, &self.languages, self.language_tokens())?,
       None => None,
     };
 
     if self.on_ane() && pcm.len() > ane::WINDOW {
-      return self.pieces(pcm, (ane::WINDOW / 16) as u32, options);
+      return self.pieces(pcm, (ane::WINDOW / 16) as u32, options, |_| ControlFlow::Continue(()));
     }
 
     // One pass over the whole audio: a little past the window still matches the reference (the
@@ -593,38 +612,114 @@ impl Model {
   /// space: GigaAM `ctc` and `rnnt` spell words letter by letter with a space token between them,
   /// and none falls between two pieces.
   ///
-  /// The pieces run one after another on the calling thread; to report progress or cancel
-  /// between them, cut with [`split`] and transcribe the pieces yourself.
+  /// The pieces run one after another on the calling thread. After each, `on_piece` gets it as a
+  /// [`Piece`]: its index, the number of pieces, its start and its transcript, for progress or to
+  /// show the text so far. Return [`ControlFlow::Break`] to stop before the next piece; the
+  /// transcript so far is dropped.
   ///
   /// # Errors
   ///
   /// As [`transcribe_with`](Self::transcribe_with), from the first piece that fails: also
   /// [`Error::AudioTooLong`] when [`Options::window_ms`] is past 1.5 times the window of GigaAM or
-  /// Moonshine.
+  /// Moonshine, and [`Error::Cancelled`] when `on_piece` returned [`ControlFlow::Break`], also
+  /// after the last piece.
   ///
   /// # Examples
   ///
   /// ```no_run
-  /// let model = wavo::Model::load("gigaam-v3-e2e-rnnt-Q8_0.gguf")?;
-  /// # let pcm = vec![0.0f32; 16_000 * 3600];
-  /// let transcript = model.transcribe_long(&pcm, &wavo::Options::default())?; // an hour
+  /// use std::ops::ControlFlow;
   ///
+  /// let model = wavo::Model::load("gigaam-v3-e2e-rnnt-Q8_0.gguf")?;
+  /// let pcm = vec![0.0f32; 16_000 * 3600]; // an hour
   /// let mut options = wavo::Options::default();
   /// options.window_ms = Some(15_000); // shorter pieces
-  /// let transcript = model.transcribe_long(&pcm, &options)?;
+  /// let transcript = model.transcribe_long(&pcm, &options, |piece| {
+  ///   eprint!("\r{}/{} pieces", piece.index + 1, piece.count);
+  ///   ControlFlow::Continue(())
+  /// })?;
   /// # Ok::<(), wavo::Error>(())
   /// ```
-  pub fn transcribe_long(&self, pcm: &[f32], options: &Options) -> Result<Transcript> {
-    let window = options.window_ms.or(self.max_audio_ms()).unwrap_or(WINDOW_MS);
-    self.pieces(pcm, window, options)
+  pub fn transcribe_long(
+    &self,
+    pcm: &[f32],
+    options: &Options,
+    on_piece: impl FnMut(Piece<'_>) -> ControlFlow<()>,
+  ) -> Result<Transcript> {
+    let mut window = options.window_ms.or(self.max_audio_ms()).unwrap_or(WINDOW_MS);
+    if self.on_ane() {
+      // Within its window, so that no piece is split again out of `on_piece`'s sight.
+      window = window.min((ane::WINDOW / 16) as u32);
+    }
+
+    self.pieces(pcm, window, options, on_piece)
   }
 
-  /// `pcm` cut by [`split`] into pieces of up to `window_ms`, each through `transcribe_with`, and
-  /// the transcripts joined.
-  fn pieces(&self, pcm: &[f32], window_ms: u32, options: &Options) -> Result<Transcript> {
-    let pieces = split(pcm, window_ms).into_iter();
-    let parts = pieces.map(|r| Ok((r.start, self.transcribe_with(&pcm[r], options)?)));
-    Ok(split::join(parts.collect::<Result<Vec<_>>>()?))
+  /// `pcm` cut by [`split`] into pieces of up to `window_ms`, each through `transcribe_with` and
+  /// `on_piece`, and the transcripts joined.
+  fn pieces(
+    &self,
+    pcm: &[f32],
+    window_ms: u32,
+    options: &Options,
+    mut on_piece: impl FnMut(Piece<'_>) -> ControlFlow<()>,
+  ) -> Result<Transcript> {
+    let ranges = split(pcm, window_ms);
+    let (count, mut out) = (ranges.len(), Transcript::default());
+    for (index, r) in ranges.into_iter().enumerate() {
+      let start_ms = (r.start / 16) as u32; // a multiple of 160 samples: whole ms
+      let mut transcript = self.transcribe_with(&pcm[r], options)?;
+      transcript.tokens.iter_mut().for_each(|t| t.start_ms += start_ms);
+      if on_piece(Piece { index, count, start_ms, transcript: &transcript }).is_break() {
+        return Err(Error::Cancelled);
+      }
+
+      split::append(&mut out, transcript);
+    }
+
+    Ok(out)
+  }
+
+  /// The languages the model transcribes: the codes its GGUF lists in `general.languages`, such
+  /// as `en` or `he`, in its order: about 100 for multilingual Whisper, one for a model of one
+  /// language. Empty only for a GGUF without the key.
+  ///
+  /// [`Options::language`] takes one of them when [`takes_language`](Self::takes_language) is
+  /// true; any other code, or any code when it is false, fails with [`Error::Language`].
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// let model = wavo::Model::load("whisper-large-v3-turbo-Q8_0.gguf")?;
+  /// assert!(model.languages().iter().any(|code| code == "he"));
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn languages(&self) -> &[String] {
+    &self.languages
+  }
+
+  /// Whether [`Options::language`] may be set, to one of [`languages`](Self::languages): true for
+  /// multilingual Whisper models, which then transcribe in that language, and for models of one
+  /// language, which take their own code and run as without it. False for models that detect
+  /// among several languages themselves and can't be told one (Parakeet v3 and ultra): every code
+  /// fails there with [`Error::Language`], so leave the option `None`.
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// let model = wavo::Model::load("parakeet-tdt-0.6b-v3-Q8_0.gguf")?;
+  /// let mut options = wavo::Options::default();
+  /// if model.takes_language() {
+  ///   options.language = Some("de".into());
+  /// }
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn takes_language(&self) -> bool {
+    self.language_tokens() || self.languages.len() == 1
+  }
+
+  /// Whether the model has a token per language to be told one with: multilingual Whisper.
+  fn language_tokens(&self) -> bool {
+    matches!(&self.family, Family::Whisper(m) if m.multilingual())
   }
 
   fn on_ane(&self) -> bool {
