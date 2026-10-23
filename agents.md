@@ -44,7 +44,7 @@ the `Makefile` and `.github/workflows/main.yml`.
   Rust and WGSL, tests excluded. The CLI (`src/cli/`) stays roughly ≤ 900 lines: hand-rolled
   argument parsing, JSON and SRT, no clap or serde. `wavo debug` (`src/cli/debug.rs`) is counted
   separately and stays roughly ≤ 450 lines, and so is `wavo serve` (`src/cli/serve.rs` and
-  `http.rs`), roughly ≤ 650 lines: HTTP hand-rolled on `std::net` with `httparse`, no HTTP
+  `http.rs`), roughly ≤ 750 lines: HTTP hand-rolled on `std::net` with `httparse`, no HTTP
   framework or async runtime. `src/hub/` stays roughly ≤ 600 lines with its docs.
   Simplify before growing past any budget.
 - Every public item has a doc comment with its units and failure cases; examples are doctests.
@@ -145,13 +145,9 @@ the `Makefile` and `.github/workflows/main.yml`.
      lowercase line; the body says what changed, the checks run and numbers for speed work.
   5. The orchestrating agent reviews the diff, reruns the checks and sends findings back until
      the PR is clean, then hands it to the person. CI runs only `make test`, so `make test-all`
-     and benchmarks stay local. Copilot reviews every PR: fix what is right, answer the rest in
-     the thread. Once the orchestrator accepts the solution, the implementing agent
-     runs `codex -C <worktree> review -c model_reasoning_effort=xhigh "Review the changes on the
-     current branch against origin/main (git diff origin/main...HEAD). Do not run GPU tests or
-     benchmarks; they were run."` if available (`--base` can't be combined with a prompt; the GPU
-     is shared) and fixes or rejects each finding with a reason; the orchestrator checks that last
-     diff before handing the PR over.
+     and benchmarks stay local. Reviews by bots or other models, when the person's setup runs
+     them, are handled the same way: fix what is right, answer or reject the rest with a reason;
+     the orchestrator checks that last diff before handing the PR over.
   6. The person does the final review and squash-merges. Never commit or push to `main` directly.
   7. On conflicts, rebase onto `main`, rerun the checks and push with `--force-with-lease`.
 - A release goes through a PR too: a branch with one `release: vX.Y.Z` commit (changelog
