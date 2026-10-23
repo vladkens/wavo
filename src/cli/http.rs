@@ -8,6 +8,8 @@ use std::ops::Range;
 
 /// The longest request head (request line and headers), and line of a chunked body, in bytes.
 const MAX_HEAD: usize = 64 << 10;
+/// The most fields a form may have, the unnamed ones too.
+const MAX_PARTS: usize = 32;
 
 /// Why a request fails: its status code and a message for the client and the log.
 #[derive(Debug, PartialEq)]
@@ -186,6 +188,10 @@ pub fn multipart(content_type: &str, body: &[u8]) -> Res<Vec<Part>> {
       return Err(bad());
     }
 
+    if parts.len() == MAX_PARTS {
+      return Err(fail(400, format!("a form of over {MAX_PARTS} fields")));
+    }
+
     let mut headers = [httparse::EMPTY_HEADER; 16];
     let Ok(httparse::Status::Complete((n, headers))) =
       httparse::parse_headers(&body[pos + 2..], &mut headers)
@@ -331,6 +337,13 @@ mod tests {
     assert_eq!(multipart(&longest, format!("--{}--", "b".repeat(70)).as_bytes()).unwrap(), []);
     let unclosed = b"--XyZ\r\nContent-Disposition: form-data; name=a\r\n\r\nvalue";
     assert_eq!(multipart("multipart/form-data; boundary=XyZ", unclosed).unwrap_err().status, 400);
+    let form = |n: usize| format!("--XyZ{}--", "\r\n\r\n\r\n--XyZ".repeat(n)); // unnamed, empty
+    assert_eq!(
+      multipart("multipart/form-data; boundary=XyZ", form(32).as_bytes()).unwrap().len(),
+      32
+    );
+    let e = multipart("multipart/form-data; boundary=XyZ", form(33).as_bytes()).unwrap_err();
+    assert_eq!(e, fail(400, "a form of over 32 fields"));
   }
 
   #[test]

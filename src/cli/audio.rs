@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow, bail};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Resampler};
-use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, TrackType};
@@ -77,12 +77,7 @@ fn decode(
   let mut format = symphonia::default::get_probe().probe(&hint, source, options.0, options.1)?;
   let track = format.default_track(TrackType::Audio).context("no audio track")?;
   let params = track.codec_params.as_ref().and_then(|p| p.audio()).context("not audio")?.clone();
-  let (id, rate) = (track.id, params.sample_rate.context("unknown sample rate")? as usize);
-  // The resampler's buffers grow with the rate: a header claiming GHz would take gigabytes.
-  if !(1000..=384_000).contains(&rate) {
-    bail!("a sample rate of {rate} Hz: wavo takes 1 to 384 kHz");
-  }
-
+  let (id, rate) = (track.id, bounded(&params)?);
   let codecs = symphonia::default::get_codecs();
   let mut decoder = codecs.make_audio_decoder(&params, &AudioDecoderOptions::default())?;
   let (mut pcm, mut frame) = (Vec::new(), Vec::new());
@@ -108,6 +103,25 @@ fn decode(
     }
   }
   Ok((pcm, rate))
+}
+
+/// The sample rate of a track with `params`, checked against headers that would make the
+/// resampler or the decoder allocate gigabytes: a rate of GHz, or packets of billions of samples.
+fn bounded(params: &AudioCodecParameters) -> Result<usize> {
+  let rate = params.sample_rate.context("unknown sample rate")? as usize;
+  if !(1000..=384_000).contains(&rate) {
+    bail!("a sample rate of {rate} Hz: wavo takes 1 to 384 kHz");
+  }
+
+  // FLAC's largest, 65535 frames of 8 channels, is half of it.
+  const MAX_PACKET: u64 = 1 << 20;
+  let channels = params.channels.as_ref().map_or(1, |c| c.count()) as u64;
+  let samples = params.max_frames_per_packet.unwrap_or(0).saturating_mul(channels);
+  if samples > MAX_PACKET {
+    bail!("packets of {samples} samples: wavo takes up to {MAX_PACKET}");
+  }
+
+  Ok(rate)
 }
 
 #[cfg(test)]
@@ -174,6 +188,19 @@ mod tests {
     w.finalize().unwrap();
     let e = decode_bytes(wav.into_inner(), None, 1).unwrap_err().to_string();
     assert_eq!(e, "a sample rate of 2000000 Hz: wavo takes 1 to 384 kHz");
+  }
+
+  #[test]
+  fn headers_that_would_take_gigabytes() {
+    use symphonia::core::audio::Channels;
+    let mut params = AudioCodecParameters::new();
+    params.with_sample_rate(16000).with_channels(Channels::Discrete(8));
+    assert_eq!(bounded(&params).unwrap(), 16000, "no packet size");
+    assert_eq!(bounded(params.clone().with_max_frames_per_packet(65535)).unwrap(), 16000, "FLAC");
+    let e = bounded(params.with_max_frames_per_packet(1 << 18)).unwrap_err().to_string();
+    assert_eq!(e, "packets of 2097152 samples: wavo takes up to 1048576", "8 channels count");
+    let e = bounded(params.with_max_frames_per_packet(u64::MAX)).unwrap_err().to_string();
+    assert_eq!(e, format!("packets of {} samples: wavo takes up to 1048576", u64::MAX));
   }
 
   #[test]
