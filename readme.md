@@ -13,10 +13,9 @@
 
 `wavo` turns speech into text locally, on the GPU, in pure Rust. Give it a recording of any
 length, a voice note or a two-hour meeting, and get the text with timestamps. It runs the open ASR
-models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes with
-practically the same output, faster than transcribe.cpp on Apple Silicon and NVIDIA GPUs, on par
-or slower on integrated Intel GPUs for some models. Use it as a command-line tool with an
-ollama-like model manager, or as a library that builds with a plain `cargo build`.
+models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes. Use it
+as a command-line tool with an ollama-like model manager, or as a library that builds with a plain
+`cargo build`.
 
 ## 🌟 Features
 
@@ -25,9 +24,8 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
 - 🎧 Any common format: wav, mp3, m4a, flac, ogg (Vorbis), resampled for you
 - 🦀 Pure Rust library: no CMake, C++ toolchain, Python or ONNX Runtime to install
 - ⚡ Runs on the GPU: Metal on Apple Silicon, Vulkan on Linux and Windows (DX12 without Vulkan)
-- 🏎️ Faster than transcribe.cpp on the same model files on Apple Silicon and NVIDIA (see
-  [Speed](#-speed)), and loads in about 0.1 s on an M2
-- 🎯 Same text, tokens and timestamps as transcribe.cpp on its test clips
+- 🏎️ Fast: an hour of audio in under a minute on an M2 with Parakeet or GigaAM (see
+  [Speed](#-speed)), and a model loads in about 0.1 s
 - 📦 `pull` / `list` / `rm` models, shared with the Hugging Face cache that `hf` uses
 - 📝 Plain text, JSON with a start time for every token, or SRT subtitles
 - 🔌 `wavo serve`: a local server for apps built on OpenAI's transcription API
@@ -207,65 +205,20 @@ of audio, and answers more with 503.
 
 ## ⚡ Speed
 
-Transcribe times are warm medians of `wavo bench MODEL CLIP` against `transcribe-bench` of
-transcribe.cpp at 5bb2deb, on the same Q8_0 file and clip; cells are wavo / transcribe.cpp. Bold
-marks the better side where the gap is over 3%.
+Time to transcribe one minute of audio and the real-time factor (RTF: processing time ÷ audio
+length); lower is better. Measured with `wavo run` on an hour-long
+[LibriVox reading](https://archive.org/details/memoirsofsherlockholmesv3_1502_librivox), model
+load and mp3 decoding included, on an **Apple M2** (10-core GPU), 2026-10-21.
 
-**Apple M2** (10-core GPU, 24 GiB, macOS 27) against transcribe.cpp on Metal, an 11 s clip (`jfk`,
-GigaAM `ru-short`), 2026-10-09 to 11; the GPU changes since left these models within noise on the
-M2.
-
-| Model | Transcribe, ms | Load, ms | Peak memory, MiB |
-|---|---|---|---|
-| `gigaam-v3` | **96** / 100 | **44** / 104 | **302** / 325 |
-| `parakeet-v2` | **143** / 199 | **81** / 245 | **740** / 820 |
-| `parakeet-v3` | **154** / 215 | **89** / 245 | **763** / 884 |
-| `whisper-turbo` | **1240** / 1390 | **105** / 298 | **1018** / 1055 |
-
-For dictation, where a model is loaded for each recording, load plus the first call takes 142 /
-217 ms (`gigaam-v3`), 256 / 468 ms (`parakeet-v3`) and 1437 / 1756 ms (`whisper-turbo`).
-Whisper's other sizes and Moonshine are faster too
-([Whisper plan](docs/plans/completed/20261010-whisper.md),
-[Moonshine plan](docs/plans/20261011-moonshine.md)).
-
-**Apple M5** (10-core GPU, macOS 27.0.1) against transcribe.cpp on Metal, 2026-10-12. On the M5
-both multiply on the GPU's neural accelerators through the Metal 4 tensor API. Clips: `jfk` 11 s,
-`ru` 4.5 s, `ru-long` 34 s, `dots` 35 s.
-
-| Model | Clip | wavo, ms | transcribe.cpp, ms |
-|---|---|---|---|
-| `gigaam-v3` | `ru` / `ru-long` | **17.3 / 87** | 20.7 / 120 |
-| `parakeet-v3` | `jfk` / `dots` | **60 / 185** | 94 / 313 |
-| `whisper-turbo` | `jfk` | **420** | 573 |
-| `moonshine-tiny` | `jfk` | **20.3** | 70 |
-| `moonshine-base` | `jfk` | **30.9** | 120 |
-
-**NVIDIA RTX 4060 Laptop** (Windows 11, Vulkan) against transcribe.cpp's Vulkan build, 2026-10-11
-to 13. Clips: `jfk` 11 s, `ru` 4.5 s, `ru-long` 34 s, `dots` 35 s.
-
-| Model | Clip | wavo, ms | transcribe.cpp, ms |
-|---|---|---|---|
-| `gigaam-v3` | `ru` / `ru-long` | **16.9 / 70** | 134 / 1064 |
-| `parakeet-v3` | `jfk` / `dots` | **68 / 180** | 88 / 249 |
-| `parakeet-v3`, first call | `jfk` | **77** | 99 |
-| `whisper-turbo` | `jfk` / `ru-long` | **197 / 452** | 226 / 503 |
-| `whisper-small` | `jfk` | **69** | 101 |
-| `whisper-medium` | `jfk` | **198** | 226 |
-| `whisper-large-v3` | `jfk` | **375** | 427 |
-| `whisper-tiny` | `jfk` / `dots` | **23 / 89** | 43 / 135 |
-| `moonshine-tiny` | `dots` | **90** | 144 |
-| `moonshine-base` | `dots` | **141** | 227 |
-
-**Intel N100** (integrated GPU, Linux, portable kernels) against transcribe.cpp's Vulkan build,
-2026-10-12. `whisper-turbo` against the reference's CPU build, as its Vulkan build times out there.
-Details in the [speed plan](docs/plans/20261012-speed.md).
-
-| Model | Clip | wavo, ms | transcribe.cpp, ms |
-|---|---|---|---|
-| `gigaam-v3` | `ru` / `ru-long` | **524 / 4170** | 1091 / 7994 |
-| `parakeet-v3` | `jfk` / `dots` | **2199 / 5702** | 3271 / 8830 |
-| `whisper-tiny` | `jfk` / `dots` | **649 / 1696** | 1340 / 3052 |
-| `whisper-turbo` | `jfk` | **23224** | 41676 (CPU) |
+| Model | 1 min of audio | RTF |
+|---|---:|---:|
+| `gigaam-v3` | 0.51 s | 0.0085 |
+| `parakeet-v3` | 0.88 s | 0.0146 |
+| `parakeet-v2` | 0.82 s | 0.0136 |
+| `whisper-turbo` | 3.32 s | 0.0553 |
+| `whisper-tiny` | 0.36 s | 0.0061 |
+| `moonshine-tiny` | 0.33 s | 0.0055 |
+| `moonshine-base` | 0.50 s | 0.0083 |
 
 ## 📚 Library usage
 
