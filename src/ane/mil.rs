@@ -7,11 +7,11 @@
 //! then per blob a 64-byte record (0xDEADBEEF, data type, size, data offset) followed by its data,
 //! each record and data at a multiple of 64 bytes. A tensor refers to its record's offset.
 //!
-//! Adapted from coremltools (BSD-3-Clause, Apple; the notice is in LICENSE): the message field
-//! numbers and data type codes from `mlmodel/format/Model.proto`, `MIL.proto` and
-//! `FeatureTypes.proto`; the weight file layout from `mlmodel/src/MILBlob/Blob/StorageFormat.hpp`;
-//! the package layout and `Manifest.json` from `modelpackage/src/ModelPackage.cpp`; op names and
-//! their inputs from the iOS 15–18 opsets in `coremltools/converters/mil/mil/ops/defs/`.
+//! Written from the format as coremltools describes it, no code taken: the message field numbers
+//! and data type codes from `mlmodel/format/Model.proto`, `MIL.proto` and `FeatureTypes.proto`;
+//! the weight file layout from `mlmodel/src/MILBlob/Blob/StorageFormat.hpp`; the package layout
+//! and `Manifest.json` from `modelpackage/src/ModelPackage.cpp`; op names and their inputs from
+//! the iOS 15–18 opsets in `coremltools/converters/mil/mil/ops/defs/`.
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
