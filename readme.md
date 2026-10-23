@@ -46,9 +46,9 @@ how I build now.
 
 | Name | Size | Languages | Output |
 |---|---|---|---|
-| `parakeet-v3` (default) | 0.74 GB | 25 European languages | cased, punctuated |
+| `parakeet-v3` | 0.74 GB | 25 European languages | cased, punctuated |
 | `parakeet-v2` | 0.73 GB | English | cased, punctuated |
-| `parakeet-ultra` | 0.74 GB | 25 European languages | cased, punctuated |
+| `parakeet-ultra` (default) | 0.74 GB | 25 European languages | cased, punctuated |
 | `parakeet-he` | 0.74 GB | Hebrew | cased, punctuated |
 | `gigaam-v3` | 0.27 GB | Russian | cased, punctuated |
 | `gigaam-v3-e2e-ctc` | 0.27 GB | Russian | cased, punctuated |
@@ -147,16 +147,16 @@ cargo install --git https://github.com/vladkens/wavo
 ## 🚀 Usage
 
 ```sh
-wavo talk.m4a                         # transcribe with parakeet-v3, the same as wavo run talk.m4a
+wavo talk.m4a                         # transcribe with parakeet-ultra, the same as wavo run talk.m4a
 wavo run gigaam-v3 talk.mp3           # or with another model
 wavo run whisper-turbo talk.mp3 -y    # download a missing model without asking
-wavo pull parakeet-v3                 # download a model
+wavo pull parakeet-ultra              # download a model
 wavo pull gigaam-v3 whisper-turbo     # or several at once
 wavo run talk.wav --json              # text and every token with its start time
 wavo run talk.wav --srt > talk.srt    # subtitles
 wavo run whisper-turbo talk.mp3 --language he  # Whisper: set the language, not detect it
 wavo list                             # downloaded models
-wavo rm parakeet-v3                   # delete one
+wavo rm parakeet-ultra                # delete one
 wavo bench gigaam-v3 talk.wav         # load time and speed on your machine
 wavo debug                            # your system, GPUs and models, to paste into an issue
 ```
@@ -180,7 +180,7 @@ found by `wavo` and the other way round.
 locally instead:
 
 ```sh
-wavo serve                                       # parakeet-v3 on http://127.0.0.1:8000
+wavo serve                                       # parakeet-ultra on http://127.0.0.1:8000
 wavo serve whisper-turbo gigaam-v3 --port 9000   # these models, loaded up front
 wavo serve --host 0.0.0.0 --api-key KEY          # on the network, with a key (or WAVO_API_KEY)
 
@@ -234,9 +234,9 @@ use std::ops::ControlFlow;
 use wavo::hub::Hub;
 
 let hub = Hub::new(); // the Hugging Face cache, shared with `hf` and `wavo pull`
-let path = match hub.find("parakeet-v3") {
+let path = match hub.find("parakeet-ultra") {
   Some(path) => path,
-  None => hub.pull("parakeet-v3", |p| {
+  None => hub.pull("parakeet-ultra", |p| {
     eprint!("\r{} / {} MB", p.done / 1_000_000, p.total / 1_000_000);
     ControlFlow::Continue(()) // Break cancels; the next pull resumes
   })?,

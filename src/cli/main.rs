@@ -30,17 +30,17 @@ const USAGE: &str = "\
 Usage: wavo COMMAND ...
 
 Commands:
-  run [MODEL] AUDIO [OPTIONS]  transcribe AUDIO with MODEL (parakeet-v3 by default)
+  run [MODEL] AUDIO [OPTIONS]  transcribe AUDIO with MODEL (parakeet-ultra by default)
   pull MODEL...                download models
   list                         list downloaded models
   rm MODEL                     delete a downloaded model
   bench MODEL AUDIO [-n N]     time the model load, the first call and N more calls (10)
-  serve [MODEL...] [OPTIONS]   serve the models (parakeet-v3 by default; the first answers
-                               unknown model names) over OpenAI's transcription API
+  serve [MODEL...] [OPTIONS]   serve the models (parakeet-ultra by default; the first
+                               answers unknown model names) over OpenAI's transcription API
   debug                        print the system, its GPUs and the models, for a bug report
 
 Quick start:
-  wavo AUDIO [OPTIONS]         the same as wavo run AUDIO: transcribe with parakeet-v3,
+  wavo AUDIO [OPTIONS]         the same as wavo run AUDIO: transcribe with parakeet-ultra,
                                offering to download it first if it is missing
 
 Run options:

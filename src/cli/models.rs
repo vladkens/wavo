@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use wavo::hub::{self, ModelInfo};
 
-pub const DEFAULT: &str = "parakeet-v3";
+pub const DEFAULT: &str = "parakeet-ultra";
 
 /// What a MODEL argument names.
 pub enum Source {
@@ -119,7 +119,7 @@ mod tests {
   fn names_and_help() {
     assert!(matches!(resolve("gigaam-v3-e2e-rnnt"), Ok(Source::Model(m)) if m.name == "gigaam-v3"));
     assert!(resolve("parakeet3").is_err());
-    assert_eq!(hub::lookup(DEFAULT).unwrap().full_name, "parakeet-tdt-0.6b-v3");
+    assert_eq!(hub::lookup(DEFAULT).unwrap().full_name, "parakeet-ultra");
     let about = |name| about(hub::lookup(name).unwrap());
     assert_eq!(about("gigaam-v3"), "Russian");
     assert_eq!(about("gigaam-v3-e2e-ctc"), "Russian, CTC head");
