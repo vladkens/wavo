@@ -86,11 +86,34 @@
 //! ```
 //!
 //! [`Model::transcribe_with`] takes [`Options`] as well: the language of the speech, for Whisper
-//! to transcribe instead of detecting one.
+//! to transcribe instead of detecting one. Both run the audio through the model as it is, in one
+//! pass: for recordings longer than the model's window, see [Long audio](#long-audio).
 //!
 //! Load a model once and call `transcribe` as often as needed; loading takes about 0.1–0.2 s on
 //! an Apple M2. [`Model::device`] names the GPU and API it runs on, for a log line or a settings
 //! screen, and [`devices`] lists the GPUs before any model is loaded.
+//!
+//! # Long audio
+//!
+//! Models are trained on pieces of up to [`Model::max_audio_ms`]: 25 s for GigaAM, 30 s for
+//! Whisper and Moonshine. Past that, `transcribe` loses accuracy, and GigaAM and Moonshine return
+//! [`Error::AudioTooLong`] past 1.5 times it; Whisper runs its own 30 s windows and Parakeet takes
+//! any length in one pass. [`Model::transcribe_long`] takes audio of any length: it cuts it at its
+//! quietest moments with [`split`] into pieces of up to the model's window (60 s for Parakeet, or
+//! [`Options::window_ms`]), transcribes each, and joins the transcripts with token times from the
+//! start of the audio.
+//!
+//! ```no_run
+//! # fn main() -> wavo::Result<()> {
+//! let model = wavo::Model::load("gigaam-v3-e2e-rnnt-Q8_0.gguf")?;
+//! let pcm = vec![0.0f32; 16_000 * 600]; // ten minutes
+//! let transcript = model.transcribe_long(&pcm, &wavo::Options::default())?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! To show progress or cancel between pieces, cut with [`split`] and call `transcribe_with` per
+//! piece yourself, shifting each piece's token `start_ms` by its start (`range.start / 16`).
 //!
 //! # Download a model
 //!
@@ -156,12 +179,6 @@
 //!
 //! - **Decoding and resampling.** `transcribe` takes 16 kHz mono `f32` only. Decode other formats,
 //!   downmix to mono and resample yourself; the `wavo` CLI uses `symphonia` and `rubato`.
-//! - **Long audio.** Accuracy drops past [`Model::max_audio_ms`], and GigaAM and Moonshine
-//!   return [`Error::AudioTooLong`] past 1.5 times it; Whisper runs its own 30 s windows over any
-//!   length, and Parakeet takes any length. Split longer audio at pauses, transcribe
-//!   the pieces and shift their tokens' `start_ms` by each piece's offset, as `wavo run` does
-//!   in [`src/cli/split.rs`](https://github.com/vladkens/wavo/blob/main/src/cli/split.rs): it
-//!   cuts at the quietest moments by frame energy.
 //! - **Voice activity detection and streaming.** Neither is built in: pass whole recordings or the
 //!   pieces your own VAD cuts.
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -180,6 +197,7 @@ pub mod hub;
 mod moonshine;
 mod parakeet;
 mod sentencepiece;
+mod split;
 mod transformer;
 mod whisper;
 
@@ -188,6 +206,7 @@ use std::path::Path;
 use error::bail;
 pub use error::{Error, Result};
 pub use gpu::{Api, Device, DeviceKind, Kernels, devices};
+pub use split::split;
 
 /// The code path of the CPU matrix products (`NEON`, `AVX2+FMA` or `portable`), for `wavo debug`;
 /// not part of the API.
@@ -224,8 +243,8 @@ pub struct Transcript {
   pub tokens: Vec<Token>,
 }
 
-/// Options for [`Model::transcribe_with`]. Start from `Options::default()`, which
-/// [`Model::transcribe`] uses, and set the fields to change.
+/// Options for [`Model::transcribe_with`] and [`Model::transcribe_long`]. Start from
+/// `Options::default()`, which [`Model::transcribe`] uses, and set the fields to change.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
 pub struct Options {
@@ -241,6 +260,12 @@ pub struct Options {
   /// Parakeet v3 has no way to be told a language, so any code fails with it, as does a code the
   /// model doesn't list: see [`Error::Language`].
   pub language: Option<String>,
+  /// The longest piece, in milliseconds, [`Model::transcribe_long`] cuts the audio into with
+  /// [`split`]. `None`, the default, takes the model's [`max_audio_ms`](Model::max_audio_ms), or
+  /// 60 000 for Parakeet, which has none. Below 5000 counts as 5000; `u32::MAX` runs the whole
+  /// audio in one piece, as `transcribe_with` does. GigaAM and Moonshine fail on pieces past 1.5
+  /// times their window: see [`Error::AudioTooLong`]. `transcribe_with` ignores it.
+  pub window_ms: Option<u32>,
 }
 
 /// One token of a [`Transcript`].
@@ -258,6 +283,10 @@ pub struct Token {
   /// start of its segment; 0 for Moonshine, which has no timestamps.
   pub start_ms: u32,
 }
+
+/// The longest piece [`Model::transcribe_long`] cuts by default for a model without a window, in
+/// ms: Parakeet, whose time per second of audio grows past a minute (its attention is quadratic).
+const WINDOW_MS: u32 = 60_000;
 
 impl Model {
   /// Loads a model from its GGUF file and uploads its weights to the GPU.
@@ -294,12 +323,13 @@ impl Model {
     Ok(Self { family, languages })
   }
 
-  /// Transcribes 16 kHz mono PCM samples in [-1, 1].
+  /// Transcribes 16 kHz mono PCM samples in [-1, 1], passed to the model as they are, in one pass.
   ///
-  /// Split audio longer than [`max_audio_ms`](Self::max_audio_ms) first (see
-  /// [Left to the caller](crate#left-to-the-caller)): GigaAM and Moonshine run it in one pass,
-  /// which loses text past the window and fails past 1.5 times it. Whisper and Parakeet take any
-  /// length. Audio too short for one encoder frame gives an empty transcript.
+  /// For audio longer than [`max_audio_ms`](Self::max_audio_ms), use
+  /// [`transcribe_long`](Self::transcribe_long) (see [Long audio](crate#long-audio)): GigaAM and
+  /// Moonshine run it in one pass, which loses text past the window and fails past 1.5 times it.
+  /// Whisper and Parakeet take any length. Audio too short for one encoder frame gives an empty
+  /// transcript.
   ///
   /// # Errors
   ///
@@ -320,7 +350,7 @@ impl Model {
     self.transcribe_with(pcm, &Options::default())
   }
 
-  /// [`transcribe`](Self::transcribe) with [`Options`].
+  /// [`transcribe`](Self::transcribe) with [`Options`]; [`Options::window_ms`] doesn't apply.
   ///
   /// # Errors
   ///
@@ -364,10 +394,10 @@ impl Model {
   }
 
   /// The longest audio, in milliseconds, the model was trained on: 25 000 for GigaAM, 30 000 for
-  /// Whisper and Moonshine. Split long audio into segments up to this length: Whisper runs longer
-  /// audio in windows of it, GigaAM and Moonshine lose text past it and
-  /// [`transcribe`](Self::transcribe) rejects 1.5 times it. `None` for Parakeet, which has no such
-  /// window.
+  /// Whisper and Moonshine. [`transcribe_long`](Self::transcribe_long) splits long audio into
+  /// pieces of up to this length: Whisper runs longer audio in windows of it, GigaAM and Moonshine
+  /// lose text past it and [`transcribe`](Self::transcribe) rejects 1.5 times it. `None` for
+  /// Parakeet, which has no such window.
   pub fn max_audio_ms(&self) -> Option<u32> {
     match &self.family {
       // No GGUF key holds GigaAM's window; transcribe.cpp hardcodes the same 25 s.
@@ -378,6 +408,45 @@ impl Model {
       Family::Moonshine(_) => Some(30_000),
       Family::Parakeet(_) => None,
     }
+  }
+
+  /// Transcribes 16 kHz mono PCM samples in [-1, 1] of any length: cut at pauses by [`split`]
+  /// into pieces of up to [`Options::window_ms`] (by default the model's
+  /// [`max_audio_ms`](Self::max_audio_ms), or 60 s for Parakeet), each transcribed by
+  /// [`transcribe_with`](Self::transcribe_with) on its own. The texts are joined with a space
+  /// (an empty one is skipped), and the tokens follow each other with `start_ms` from the start of
+  /// `pcm`. Audio that fits in one piece gives the same transcript as `transcribe_with`.
+  ///
+  /// Each piece's first token starts a word, though with a character vocabulary it has no `▁` or
+  /// space: GigaAM `ctc` and `rnnt` spell words letter by letter with a space token between them,
+  /// and none falls between two pieces.
+  ///
+  /// The pieces run one after another on the calling thread; to report progress or cancel
+  /// between them, cut with [`split`] and transcribe the pieces yourself.
+  ///
+  /// # Errors
+  ///
+  /// As [`transcribe_with`](Self::transcribe_with), from the first piece that fails: also
+  /// [`Error::AudioTooLong`] when [`Options::window_ms`] is past 1.5 times the window of GigaAM or
+  /// Moonshine.
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// let model = wavo::Model::load("gigaam-v3-e2e-rnnt-Q8_0.gguf")?;
+  /// # let pcm = vec![0.0f32; 16_000 * 3600];
+  /// let transcript = model.transcribe_long(&pcm, &wavo::Options::default())?; // an hour
+  ///
+  /// let mut options = wavo::Options::default();
+  /// options.window_ms = Some(15_000); // shorter pieces
+  /// let transcript = model.transcribe_long(&pcm, &options)?;
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn transcribe_long(&self, pcm: &[f32], options: &Options) -> Result<Transcript> {
+    let window = options.window_ms.or(self.max_audio_ms()).unwrap_or(WINDOW_MS);
+    let pieces = split(pcm, window).into_iter();
+    let parts = pieces.map(|r| Ok((r.start, self.transcribe_with(&pcm[r], options)?)));
+    Ok(split::join(parts.collect::<Result<Vec<_>>>()?))
   }
 
   /// The GPU the model runs on, and the API it reaches it through, as chosen at load.

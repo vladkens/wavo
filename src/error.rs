@@ -35,7 +35,8 @@ pub enum Error {
   #[error("GPU: {0}")]
   Gpu(String),
   /// The audio is longer than 1.5 times [`Model::max_audio_ms`](crate::Model::max_audio_ms) for
-  /// a model that runs it in one pass (GigaAM, Moonshine): split it first.
+  /// a model that runs it in one pass (GigaAM, Moonshine): split it first, or call
+  /// [`Model::transcribe_long`](crate::Model::transcribe_long).
   #[error("audio is {ms} ms, longer than the model's {max_ms} ms: split it at pauses")]
   AudioTooLong {
     /// The audio's length, in milliseconds, rounded up.
