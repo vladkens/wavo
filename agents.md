@@ -145,13 +145,13 @@ the `Makefile` and `.github/workflows/main.yml`.
      lowercase line; the body says what changed, the checks run and numbers for speed work.
   5. The orchestrating agent reviews the diff, reruns the checks and sends findings back until
      the PR is clean, then hands it to the person. CI runs only `make test`, so `make test-all`
-     and benchmarks stay local. Copilot reviews every PR: fix what is right, answer the rest in
-     the thread. Once the orchestrator accepts the solution, the implementing agent
-     runs `codex -C <worktree> review -c model_reasoning_effort=xhigh "Review the changes on the
-     current branch against origin/main (git diff origin/main...HEAD). Do not run GPU tests or
-     benchmarks; they were run."` if available (`--base` can't be combined with a prompt; the GPU
-     is shared) and fixes or rejects each finding with a reason; the orchestrator checks that last
-     diff before handing the PR over.
+     and benchmarks stay local. Once the orchestrator accepts the solution, the implementing
+     agent runs `pr-review <n>` in its worktree: a Codex review whose effort follows the diff
+     (none for a small or docs-only one), once per PR plus one follow-up of later fixes, told not
+     to run GPU tests or benchmarks (the GPU is shared). It fixes or rejects each finding with a
+     reason, pushes once and reports, without forcing another full review; the push hook reminds
+     it while a review is due, and `gh-pr-status` shows the PR as not ready until then. The
+     orchestrator checks that last diff before handing the PR over.
   6. The person does the final review and squash-merges. Never commit or push to `main` directly.
   7. On conflicts, rebase onto `main`, rerun the checks and push with `--force-with-lease`.
 - A release goes through a PR too: a branch with one `release: vX.Y.Z` commit (changelog
