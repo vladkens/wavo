@@ -278,7 +278,8 @@ impl Hub {
   /// the Hub for the latest revision; when the cache has it, nothing else is downloaded and
   /// `progress` is never called. Otherwise the file downloads into
   /// `blobs/<etag>.incomplete`, resuming a part an earlier pull left there, and moves into place
-  /// once complete. A download that breaks off is resumed up to [`RETRIES`] more times.
+  /// once complete. A download that breaks off, or receives nothing for 30 s, is resumed up to
+  /// [`RETRIES`] more times. There is no limit on the time a whole download takes.
   ///
   /// `progress` is called when the download starts, after every chunk it receives (often: throttle
   /// your own UI updates), and before every retry. Return [`ControlFlow::Break`] to cancel: the
@@ -287,8 +288,8 @@ impl Hub {
   /// # Errors
   ///
   /// - [`Error::UnknownModel`]: `name` is not in [`MODELS`].
-  /// - [`Error::Http`]: the Hub could not be reached or answered with an error status, or the
-  ///   download broke off more times than it retries.
+  /// - [`Error::Http`]: the Hub could not be reached within 15 s or answered with an error status,
+  ///   or the download broke off or stalled more times than it retries.
   /// - [`Error::Hub`]: the Hub's answer lacks the expected headers, or the file came out at the
   ///   wrong size.
   /// - [`Error::Cancelled`]: `progress` returned [`ControlFlow::Break`].

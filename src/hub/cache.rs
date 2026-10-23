@@ -24,8 +24,20 @@ use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use ureq::unversioned::resolver::DefaultResolver;
+use ureq::unversioned::transport::{
+  Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport,
+};
+
 use super::{Hub, Progress, RETRIES};
 use crate::{Error, Result};
+
+/// How long connecting, TLS handshake included, may take.
+const CONNECT: Duration = Duration::from_secs(15);
+/// How long a response may go without a byte, headers or body, before it counts as broken off.
+const IDLE: Duration = Duration::from_secs(30);
+
+type Ureq<T> = std::result::Result<T, ureq::Error>;
 
 /// What a HEAD of `resolve/main/<file>` says about the latest revision.
 struct Remote {
@@ -69,18 +81,19 @@ impl Hub {
   }
 
   /// Downloads the file at `main` unless that revision is cached, as huggingface_hub does. A
-  /// dropped download resumes up to `RETRIES` more times, after 1, 2 and 4 s.
+  /// dropped or stalled download resumes up to `RETRIES` more times, after 1, 2 and 4 s.
   pub(super) fn pull_file(
     &self,
     repo: &str,
     file: &str,
     mut progress: impl FnMut(Progress<'_>) -> ControlFlow<()>,
   ) -> Result<PathBuf> {
-    let remote = head(repo, file)?;
+    let agent = agent(IDLE);
+    let remote = head(&agent, repo, file)?;
     self.install(repo, file, &remote, |part| {
       let mut retry = 0;
       loop {
-        match download(&remote.url, part, remote.size, &mut progress) {
+        match download(&agent, &remote.url, part, remote.size, &mut progress) {
           Err(e) if retry < RETRIES && transient(&e) => {
             let done = fs::metadata(part).map_or(0, |m| m.len());
             if progress(Progress { done, total: remote.size, retrying: Some(&e) }).is_break() {
@@ -294,11 +307,69 @@ fn http(url: &str, e: ureq::Error) -> Error {
   Error::Http { url: url.into(), status, message: e.to_string() }
 }
 
-fn head(repo: &str, file: &str) -> Result<Remote> {
+/// An agent whose requests fail instead of hanging: on a connection that takes over [`CONNECT`],
+/// and on a response that sends nothing for `idle`. A download as a whole has no time limit.
+fn agent(idle: Duration) -> ureq::Agent {
+  let config = ureq::Agent::config_builder()
+    .timeout_connect(Some(CONNECT))
+    .timeout_recv_response(Some(idle))
+    .build();
+  let connector = DefaultConnector::default().chain(Idle(idle));
+  ureq::Agent::with_parts(config, connector, DefaultResolver::default())
+}
+
+/// Caps every wait for input at its duration. ureq's own `timeout_recv_body` is a budget for the
+/// whole body, which a large file outlasts on a slow line; this one restarts on every read. ureq
+/// may change its `unversioned` transport API in a minor release: recheck this on upgrade.
+#[derive(Debug)]
+struct Idle(Duration);
+
+impl Connector<Box<dyn Transport>> for Idle {
+  type Out = IdleTransport;
+
+  fn connect(
+    &self,
+    _: &ConnectionDetails,
+    chained: Option<Box<dyn Transport>>,
+  ) -> Ureq<Option<IdleTransport>> {
+    Ok(chained.map(|inner| IdleTransport { inner, idle: self.0 }))
+  }
+}
+
+#[derive(Debug)]
+struct IdleTransport {
+  inner: Box<dyn Transport>,
+  idle: Duration,
+}
+
+impl Transport for IdleTransport {
+  fn buffers(&mut self) -> &mut dyn Buffers {
+    self.inner.buffers()
+  }
+
+  fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Ureq<()> {
+    self.inner.transmit_output(amount, timeout)
+  }
+
+  fn await_input(&mut self, timeout: NextTimeout) -> Ureq<bool> {
+    let idle = NextTimeout { after: self.idle.into(), reason: ureq::Timeout::RecvBody };
+    self.inner.await_input(if idle.after < timeout.after { idle } else { timeout })
+  }
+
+  fn is_open(&mut self) -> bool {
+    self.inner.is_open()
+  }
+
+  fn is_tls(&self) -> bool {
+    self.inner.is_tls()
+  }
+}
+
+fn head(agent: &ureq::Agent, repo: &str, file: &str) -> Result<Remote> {
   let endpoint = std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".into());
   let url = format!("{}/{repo}/resolve/main/{file}", endpoint.trim_end_matches('/'));
-  let agent: ureq::Agent = ureq::Agent::config_builder().max_redirects(0).build().into();
-  let resp = agent.head(&url).header("Accept-Encoding", "identity").call();
+  let req = agent.head(&url).config().max_redirects(0).build();
+  let resp = req.header("Accept-Encoding", "identity").call();
   let resp = resp.map_err(|e| http(&url, e))?;
   let header = |k: &str| resp.headers().get(k).and_then(|v| v.to_str().ok());
   let missing = |what: &str| Error::Hub(format!("{url}: no {what}"));
@@ -316,6 +387,7 @@ fn head(repo: &str, file: &str) -> Result<Remote> {
 
 /// Continues `part` from where an interrupted pull stopped, calling `progress` before every chunk.
 fn download(
+  agent: &ureq::Agent,
   url: &str,
   part: &Path,
   size: u64,
@@ -325,7 +397,7 @@ fn download(
   let mut out = OpenOptions::new().create(true).truncate(false).write(true).open(part)?;
   let have = out.metadata()?.len();
   let Some(mut done) = resume_at(have, size) else { return Ok(()) };
-  let resp = ureq::get(url).header("Range", format!("bytes={done}-")).call();
+  let resp = agent.get(url).header("Range", format!("bytes={done}-")).call();
   let resp = resp.map_err(|e| http(url, e))?;
   // A server that ignores Range answers 200 with the whole file.
   if resp.status() != 206 || done != have {
@@ -443,6 +515,7 @@ mod tests {
     let status = |code| http("u", ureq::Error::StatusCode(code));
     assert!(transient(&status(503)) && !transient(&status(404)));
     assert!(transient(&http("u", ureq::Error::Io(io::ErrorKind::ConnectionReset.into()))));
+    assert!(transient(&http("u", ureq::Error::Timeout(ureq::Timeout::Connect))));
     let broke = Error::Http { url: "u".into(), status: None, message: "interrupted".into() };
     assert!(transient(&broke));
     assert!(transient(&io::Error::from(io::ErrorKind::UnexpectedEof).into()));
@@ -716,8 +789,9 @@ mod tests {
   }
 
   /// Serves `body` to one request: honours `Range: bytes=N-` with 206, or always 200 when `range`
-  /// is false, like a mirror that ignores it.
-  fn serve_once(body: &'static [u8], range: bool) -> String {
+  /// is false, like a mirror that ignores it. With `stall` it sends only the first `stall` bytes
+  /// and keeps the connection open until the client hangs up.
+  fn serve_once(body: &'static [u8], range: bool, stall: Option<usize>) -> String {
     use std::io::{BufRead, BufReader};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/f", listener.local_addr().unwrap());
@@ -741,7 +815,8 @@ mod tests {
       let head =
         format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", part.len());
       out.write_all(head.as_bytes()).unwrap();
-      out.write_all(part).unwrap();
+      out.write_all(&part[..stall.unwrap_or(part.len())]).unwrap();
+      let _ = reader.read_to_end(&mut Vec::new());
     });
     url
   }
@@ -752,16 +827,27 @@ mod tests {
     fs::create_dir_all(&hub.root).unwrap();
     let part = hub.root.join("f.incomplete");
     let body: &[u8] = b"hello, world";
-    let go = |range| {
-      fs::write(&part, b"hello").unwrap();
-      download(&serve_once(body, range), &part, body.len() as u64, &mut |_| {
-        ControlFlow::Continue(())
-      })
-      .unwrap();
-      assert_eq!(fs::read(&part).unwrap(), body, "range: {range}");
+    let agent = agent(Duration::from_millis(300));
+    let get = |range, stall| {
+      let url = serve_once(body, range, stall);
+      download(&agent, &url, &part, body.len() as u64, &mut |_| ControlFlow::Continue(()))
     };
-    go(true); // 206: continues after the 5 bytes already there
-    go(false); // 200: the server ignored Range, so the part starts over
+    for range in [true, false] {
+      fs::write(&part, b"hello").unwrap();
+      get(range, None).unwrap();
+      // 206 continues after the 5 bytes already there; 200 ignored Range, so the part starts over.
+      assert_eq!(fs::read(&part).unwrap(), body, "range: {range}");
+    }
+
+    // A body that stops coming fails after the idle time, and the retry continues from there.
+    fs::write(&part, b"hello").unwrap();
+    let start = std::time::Instant::now();
+    let stalled = get(true, Some(2)).unwrap_err();
+    assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
+    assert!(transient(&stalled), "a stall is retried: {stalled}");
+    assert_eq!(fs::read(&part).unwrap(), b"hello, ");
+    get(true, None).unwrap();
+    assert_eq!(fs::read(&part).unwrap(), body);
     fs::remove_dir_all(&hub.root).unwrap();
   }
 }
