@@ -29,7 +29,7 @@ required-features = ["hub"]
 
 [features]
 default = ["cli"]
-cli = ["hub", "dep:anyhow", "dep:indicatif", "dep:rubato", "dep:symphonia"]
+cli = ["hub", "dep:anyhow", "dep:httparse", "dep:indicatif", "dep:rubato", "dep:symphonia"]
 # Model downloads into the Hugging Face cache: `wavo::hub`.
 hub = ["dep:ureq"]
 
@@ -37,6 +37,7 @@ hub = ["dep:ureq"]
 anyhow = { version = "1.0.104", optional = true }
 bytemuck = "1.25.2"
 half = "2.7.1"
+httparse = { version = "1.10.1", optional = true }
 indicatif = { version = "0.18.6", default-features = false, optional = true }
 pollster = "1.0.1"
 rubato = { version = "5.0.1", optional = true }

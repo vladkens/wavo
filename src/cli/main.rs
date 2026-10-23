@@ -10,8 +10,10 @@ macro_rules! out {
 
 mod audio;
 mod debug;
+mod http;
 mod models;
 mod output;
+mod serve;
 mod split;
 
 use std::ops::ControlFlow;
@@ -33,6 +35,8 @@ Commands:
   list                         list downloaded models
   rm MODEL                     delete a downloaded model
   bench MODEL AUDIO [-n N]     time the model load, the first call and N more calls (10)
+  serve [MODEL...] [OPTIONS]   serve the models (parakeet-v3 by default; the first answers
+                               unknown model names) over OpenAI's transcription API
   debug                        print the system, its GPUs and the models, for a bug report
 
 Quick start:
@@ -50,16 +54,23 @@ Run options:
                                Whisper models, instead of detecting it
   -y, --yes                    download a missing model without asking
 
-MODEL is a name below, its full name or a path to a .gguf file. AUDIO is wav, mp3, m4a, flac
-or ogg (Vorbis), downmixed to mono and resampled to 16 kHz.
+Serve options:
+  --host ADDR                  the address to listen on (127.0.0.1)
+  --port PORT                  the port to listen on (8000)
+  --api-key KEY                require `Authorization: Bearer KEY` (or set WAVO_API_KEY)
+  -y, --yes                    download missing models without asking
+  POST /v1/audio/transcriptions takes OpenAI's fields file, model, language and
+  response_format (json, text, srt, vtt, verbose_json); GET /v1/models lists the downloaded
+  models, GET /health the GPU and the loaded models. A downloaded model not listed loads on
+  first use, one at a time.
+
+MODEL is a name below, its full name or a path to a .gguf file (for serve, a name). AUDIO is
+wav, mp3, m4a, flac or ogg (Vorbis), downmixed to mono and resampled to 16 kHz.
 Models live in the Hugging Face cache (HF_HUB_CACHE or HF_HOME), shared with the hf CLI;
-only `wavo pull` and `wavo run` (after asking, or with -y) use the network.
+only `wavo pull`, and `wavo run` and `wavo serve` for a missing model (after asking, or with
+-y), download.
 
 Models:";
-
-/// `wavo run` splits audio into segments of up to this for models without a window of their own,
-/// as `Model::transcribe_long` does.
-const SEGMENT_MS: u32 = 60_000;
 
 fn usage() -> String {
   let mut usage = USAGE.to_string();
@@ -89,7 +100,7 @@ fn broken_pipe(e: &anyhow::Error) -> bool {
 }
 
 /// Win over a file of the same name in `wavo FILE`.
-const COMMANDS: &[&str] = &["help", "run", "pull", "list", "ls", "rm", "bench", "debug"];
+const COMMANDS: &[&str] = &["help", "run", "pull", "list", "ls", "rm", "bench", "serve", "debug"];
 
 fn cli(args: &[&str]) -> Result<()> {
   let help = matches!(args, [] | ["help"]) || args.iter().any(|a| matches!(*a, "-h" | "--help"));
@@ -105,6 +116,7 @@ fn cli(args: &[&str]) -> Result<()> {
       let n = n.parse().ok().filter(|&n| n > 0);
       bench(model, audio, n.context("-n takes a whole number of calls, at least 1")?)?
     }
+    ["serve", args @ ..] => serve::serve(args)?,
     ["debug"] => debug::print()?,
     // wavo AUDIO, also with run options first (wavo -y AUDIO), and whatever looks like a file,
     // so that a mistyped one fails as missing
@@ -238,16 +250,8 @@ fn run(args: &[&str]) -> Result<()> {
     bar.suspend(|| eprintln!("warning: {warning}"));
   }
 
-  // As `Model::transcribe_long` does, but piece by piece: for the progress, and for subtitles,
-  // which start a word at each piece's first token.
-  let max_ms = segment.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
-  let ranges = wavo::split(&pcm, if max_ms == 0 { u32::MAX } else { max_ms });
-  let n = ranges.len();
-  let parts = ranges.into_iter().enumerate().map(|(i, r)| {
-    bar.set_message(format!("transcribing {}/{n}", i + 1));
-    Ok((r.start, model.transcribe_with(&pcm[r], &options)?))
-  });
-  let (transcript, starts) = split::join(parts.collect::<Result<Vec<_>>>()?);
+  let each = |i, n| bar.set_message(format!("transcribing {}/{n}", i + 1));
+  let (transcript, starts) = split::transcribe(&model, &pcm, segment, &options, each)?;
   bar.finish_and_clear();
   // Silence or noise: not an error, so that a batch of files goes on.
   if transcript.text.is_empty() {
@@ -257,11 +261,7 @@ fn run(args: &[&str]) -> Result<()> {
   let (tokens, ms) = (&transcript.tokens, (pcm.len() / 16) as u32);
   let text = match format {
     Some("--json") => output::json(&transcript) + "\n",
-    // Whisper times segments, not tokens, and Moonshine neither.
-    Some(_) if matches!(models::architecture(&path).as_deref(), Some("whisper" | "moonshine")) => {
-      output::srt_segments(tokens, ms)
-    }
-    Some(_) => output::srt(tokens, &starts, ms),
+    Some(_) => output::srt(&output::cues(tokens, &starts, ms, models::timed(&path))),
     None if transcript.text.is_empty() => String::new(),
     None => format!("{}\n", transcript.text),
   };
@@ -425,6 +425,9 @@ mod tests {
     assert!(error("talk.wav --jsn").starts_with("unknown or repeated option --jsn\nusage: "));
     assert!(error("talk.wav -n 5").starts_with("unknown or repeated option -n\n"));
     assert_eq!(error("talk.wav --json --srt"), "--json and --srt: choose one");
+    assert_eq!(error("serve --port 99999"), "--port takes a port");
+    assert!(error("serve --jsn").starts_with("unknown option --jsn\nusage: wavo serve "));
+    assert_eq!(error("serve dir/m.gguf"), "expected a model name, not a path: dir/m.gguf");
   }
 
   #[test]

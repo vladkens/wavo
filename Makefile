@@ -16,9 +16,10 @@ check:
 	RUSTDOCFLAGS="-D warnings" cargo doc $(CARGO_FLAGS) --no-deps --no-default-features
 	RUSTDOCFLAGS="-D warnings" cargo doc $(CARGO_FLAGS) --no-deps --no-default-features --features hub
 
-# The smoke run: unit tests and the smoke models below.
+# The smoke run: unit tests, the smoke models below and `wavo serve` end to end.
 test: test-unit
 	cargo test $(CARGO_FLAGS) --test models -- --exact $(SMOKE_TESTS)
+	cargo test $(CARGO_FLAGS) --test serve
 
 test-all:
 	cargo test $(CARGO_FLAGS)

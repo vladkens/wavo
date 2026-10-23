@@ -30,6 +30,7 @@ ollama-like model manager, or as a library that builds with a plain `cargo build
 - 🎯 Same text, tokens and timestamps as transcribe.cpp on its test clips
 - 📦 `pull` / `list` / `rm` models, shared with the Hugging Face cache that `hf` uses
 - 📝 Plain text, JSON with a start time for every token, or SRT subtitles
+- 🔌 `wavo serve`: a local server for apps built on OpenAI's transcription API
 - 🌍 English, Russian, 25 European languages, and 100 with Whisper
 
 ## 🤖 How it's made
@@ -170,6 +171,39 @@ Audio without recognized speech prints nothing (with `--json`, an empty text) an
 `no speech recognized` on stderr, and still exits with 0, so a batch goes on. Models are stored in
 the Hugging Face cache (`~/.cache/huggingface/hub`), so a model fetched with `hf download` is
 found by `wavo` and the other way round.
+
+### Server
+
+`wavo serve` answers OpenAI's transcription API, so apps and scripts written for OpenAI's
+`whisper-1` (the `openai` Python and JS clients, apps that let you set the API's URL) transcribe
+locally instead:
+
+```sh
+wavo serve                                       # parakeet-v3 on http://127.0.0.1:8000
+wavo serve whisper-turbo gigaam-v3 --port 9000   # these models, loaded up front
+wavo serve --host 0.0.0.0 --api-key KEY          # on the network, with a key (or WAVO_API_KEY)
+
+curl -F file=@talk.mp3 -F model=whisper-1 http://127.0.0.1:8000/v1/audio/transcriptions
+curl -F file=@talk.mp3 -F model=gigaam-v3 -F response_format=srt http://127.0.0.1:8000/v1/audio/transcriptions
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="KEY")  # any key without --api-key
+with open("talk.mp3", "rb") as f:
+  print(client.audio.transcriptions.create(model="whisper-1", file=f).text)
+```
+
+`POST /v1/audio/transcriptions` takes the form fields `file`, `model`, `language` and
+`response_format`: `json` (`{"text": ...}`), `text`, `srt`, `vtt` or `verbose_json` (segments
+with start and end times, and the words for models with token times: not Whisper or Moonshine).
+A `model` that names no wavo model, such as `whisper-1`, goes to the first model given; another
+downloaded model loads on its first request, replacing the one loaded that way before. Long audio
+is split at pauses as in `wavo run`. `GET /v1/models` lists the downloaded models and `GET /health`
+the GPU and the loaded models. `serve` downloads the models it is started with, after asking or
+with `-y`; requests never download. It serves 16 requests at once, each up to 512 MB and 3 hours
+of audio, and answers more with 503.
 
 ## ⚡ Speed
 

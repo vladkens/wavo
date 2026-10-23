@@ -24,9 +24,10 @@ the `Makefile` and `.github/workflows/main.yml`.
   class.
 - The public API is what the rustdoc documents, and the CLI is what `wavo --help` shows: change
   either only with the person's approval. Every public struct and enum is `#[non_exhaustive]`.
-- Only `wavo pull`, `wavo run` and `Hub::pull` use the network: `run` downloads a missing model
-  only after the person confirms on a terminal, or with `-y`; `bench` never does. `pull` blocks:
-  the library starts no download threads.
+- Only `wavo pull`, `wavo run`, `wavo serve` and `Hub::pull` use the network: `run` downloads a
+  missing model only after the person confirms on a terminal, or with `-y`; `bench` never does.
+  `serve` listens on a socket and never downloads, except its startup models as `run` does; a
+  request never does. `pull` blocks: the library starts no download threads.
 - The library leaves resampling to the caller; the CLI does it. `Model::transcribe` runs the audio
   as it is, in one pass, and `Model::transcribe_long` splits long audio at pauses as an option. VAD
   and streaming are in neither.
@@ -42,7 +43,9 @@ the `Makefile` and `.github/workflows/main.yml`.
 - Keep core plus one family (GGUF, GPU, kernels, frontend, encoder, decoder) within ~3k lines of
   Rust and WGSL, tests excluded. The CLI (`src/cli/`) stays roughly ≤ 900 lines: hand-rolled
   argument parsing, JSON and SRT, no clap or serde. `wavo debug` (`src/cli/debug.rs`) is counted
-  separately and stays roughly ≤ 450 lines. `src/hub/` stays roughly ≤ 600 lines with its docs.
+  separately and stays roughly ≤ 450 lines, and so is `wavo serve` (`src/cli/serve.rs` and
+  `http.rs`), roughly ≤ 650 lines: HTTP hand-rolled on `std::net` with `httparse`, no HTTP
+  framework or async runtime. `src/hub/` stays roughly ≤ 600 lines with its docs.
   Simplify before growing past any budget.
 - Every public item has a doc comment with its units and failure cases; examples are doctests.
 - The library returns its own `thiserror` `Error`; only the CLI uses `anyhow`. Comment only

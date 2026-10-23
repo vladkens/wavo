@@ -49,6 +49,11 @@ pub fn architecture(path: &Path) -> Option<String> {
   None
 }
 
+/// Whether the model times its tokens: not Whisper, which times segments, nor Moonshine.
+pub fn timed(path: &Path) -> bool {
+  !matches!(architecture(path).as_deref(), Some("whisper" | "moonshine"))
+}
+
 /// A little-endian unsigned integer of `N` bytes.
 fn int<const N: usize>(f: &mut impl Read) -> Option<u64> {
   let mut b = [0; 8];
