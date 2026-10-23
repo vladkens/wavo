@@ -222,9 +222,9 @@ of audio, and answers more with 503.
 For [Bazarr](https://www.bazarr.media)'s subtitles, `POST /asr` answers as
 [whisper-asr-webservice](https://github.com/ahmetoner/whisper-asr-webservice) does: enable Bazarr's
 Whisper provider and set its endpoint to `http://HOST:8000`, with `wavo serve` started without
-`--api-key`, as Bazarr sends none. The first model transcribes, in the language of the audio
-track's tag, which it must know; wavo doesn't translate, nor detect the language of an untagged
-track (`/detect-language`).
+`--api-key`, as Bazarr sends none; its Test Connection shows wavo's version (`GET /status`). The
+first model transcribes, in the language of the audio track's tag, which it must know; wavo
+doesn't translate, nor detect the language of an untagged track (`/detect-language`).
 
 ## ⚡ Speed
 

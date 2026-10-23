@@ -3,7 +3,7 @@
 //! connection. The models given on the command line stay loaded, the first one answering model
 //! names wavo doesn't know (OpenAI's `whisper-1`); another downloaded model loads on first use,
 //! one at a time. Requests share each model, and their calls take turns on the GPU. `POST /asr`
-//! answers as whisper-asr-webservice does, for Bazarr's subtitles.
+//! and `GET /status` answer as whisper-asr-webservice does, for Bazarr's subtitles.
 
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -226,6 +226,7 @@ impl Server {
 
     match (head.method.as_str(), head.path.as_str()) {
       ("GET", "/health") => Ok(self.health()),
+      ("GET", "/status") => Ok(status()),
       ("GET", "/v1/models") => Ok(self.list()),
       ("POST", "/v1/audio/transcriptions") => self.transcribe(head, r, w),
       ("POST", "/asr") => self.asr(head, r, w),
@@ -419,6 +420,12 @@ fn reply(m: &Loaded, pcm: &[f32], o: &wavo::Options, format: &str, lenient: bool
   };
   let note = format!("{}, {:.1} s of audio", m.info.name, ms as f64 / 1000.0);
   Ok(Reply { content_type, body, note })
+}
+
+/// wavo's version, for Bazarr's Test Connection (whisper-asr-webservice's `GET /status`).
+fn status() -> Reply {
+  let body = format!("{{\"version\": \"wavo {}\"}}\n", env!("CARGO_PKG_VERSION"));
+  Reply { content_type: JSON, body, note: String::new() }
 }
 
 /// The text of the form field `name`, trimmed; 400 when it is over `MAX_FIELD` bytes.
