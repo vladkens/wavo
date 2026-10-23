@@ -88,6 +88,19 @@ is `parakeet-tdt-0.6b-v2`, `parakeet-he` is `parakeet-tdt-0.6b-v3-he`, `gigaam-v
 `ivrit-whisper-large-v3-turbo` and `breeze-asr-25` is `Breeze-ASR-25`; full names and a path to a
 `.gguf` work too.
 
+`parakeet-ultra` is the default: it makes fewer errors than `parakeet-v3` on every benchmark
+group of [Moondream's model card](https://huggingface.co/moondream/parakeet-ultra#benchmarks),
+which also lists each language. Word error rate, %, lower is better, measured by Moondream on an
+NVIDIA GPU, not with wavo:
+
+| Benchmark | `parakeet-v3` | `parakeet-ultra` |
+|---|---:|---:|
+| English, 7 sets of the Open ASR Leaderboard | 6.26 | 5.80 |
+| FLEURS, 25 languages | 11.62 | 9.55 |
+| Business speech (AMI, VoxPopuli, Earnings-22) | 6.15 | 5.79 |
+| Background noise, 9 MUSAN conditions | 6.72 | 5.82 |
+| Long talks, TED-LIUM 3 | 2.71 | 1.94 |
+
 ## 📥 Installation
 
 Download the binary for macOS (Apple Silicon), Linux or Windows from the
@@ -211,12 +224,14 @@ of audio, and answers more with 503.
 Time to transcribe one minute of audio and the real-time factor (RTF: processing time ÷ audio
 length); lower is better. Measured with `wavo run` on an hour-long
 [LibriVox reading](https://archive.org/details/memoirsofsherlockholmesv3_1502_librivox), model
-load and mp3 decoding included, on an **Apple M2** (10-core GPU), 2026-10-21.
+load and mp3 decoding included, on an **Apple M2** (10-core GPU), 2026-10-21 (`parakeet-ultra`
+2026-10-23).
 
 | Model | 1 min of audio | RTF |
 |---|---:|---:|
 | `gigaam-v3` | 0.51 s | 0.0085 |
 | `parakeet-v3` | 0.88 s | 0.0146 |
+| `parakeet-ultra` | 0.87 s | 0.0144 |
 | `parakeet-v2` | 0.82 s | 0.0136 |
 | `whisper-turbo` | 3.32 s | 0.0553 |
 | `whisper-tiny` | 0.36 s | 0.0061 |
