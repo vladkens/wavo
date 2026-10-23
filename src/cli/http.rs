@@ -40,6 +40,8 @@ pub struct Head {
   pub method: String,
   /// The path without the query.
   pub path: String,
+  /// What follows the `?`, as sent: `a=1&b=2`.
+  pub query: String,
   /// Names in lowercase, values as sent.
   pub headers: Vec<(String, String)>,
 }
@@ -74,12 +76,18 @@ pub fn head(r: &mut impl BufRead) -> Res<Option<Head>> {
   }
 
   let (method, path) = (req.method.unwrap_or_default(), req.path.unwrap_or_default());
-  let path = path.split('?').next().unwrap_or_default();
+  let (path, query) = path.split_once('?').unwrap_or((path, ""));
   let header = |h: &httparse::Header| {
     (h.name.to_ascii_lowercase(), String::from_utf8_lossy(h.value).into_owned())
   };
   let headers = req.headers.iter().map(header).collect();
-  Ok(Some(Head { method: method.into(), path: path.into(), headers }))
+  Ok(Some(Head { method: method.into(), path: path.into(), query: query.into(), headers }))
+}
+
+/// The value of `key` in a `query` such as `a=1&b=2`, as sent: not percent-decoded, which the
+/// values `wavo serve` reads (codes and format names) don't need.
+pub fn query<'a>(query: &'a str, key: &str) -> Option<&'a str> {
+  query.split('&').find_map(|p| p.split_once('=').filter(|(k, _)| *k == key).map(|(_, v)| v))
 }
 
 /// Reads the body of the request with `head`, of up to `limit` bytes, by its Content-Length or
@@ -269,6 +277,7 @@ mod tests {
     let raw = b"GET /v1/models?x=1 HTTP/1.1\r\nHost: a\r\nAuthorization: Bearer k\r\n\r\n";
     let head = head(&mut &raw[..]).unwrap().unwrap();
     assert_eq!((head.method.as_str(), head.path.as_str()), ("GET", "/v1/models"));
+    assert_eq!(head.query, "x=1");
     assert_eq!(head.header("authorization"), Some("Bearer k"));
     let parse = |raw: &[u8]| super::head(&mut &raw[..]);
     assert!(matches!(parse(b""), Ok(None)), "closed before a request");
@@ -276,6 +285,19 @@ mod tests {
     assert_eq!(status(&parse(b"\x16\x03\x01 TLS\r\n\r\n")), 400);
     let long = [b"GET / HTTP/1.1\r\nX: ".as_slice(), &[b'a'; 70_000], b"\r\n\r\n"].concat();
     assert_eq!(status(&parse(&long)), 431);
+  }
+
+  #[test]
+  fn queries() {
+    let q = "task=transcribe&language=en&output=srt&encode=false&video_file=%2Fa%20b.mkv";
+    assert_eq!(query(q, "language"), Some("en"));
+    assert_eq!(query(q, "encode"), Some("false"));
+    assert_eq!(query(q, "video_file"), Some("%2Fa%20b.mkv"), "not decoded");
+    assert_eq!(
+      (query(q, "lang"), query("", "output"), query("output", "output")),
+      (None, None, None)
+    );
+    assert_eq!(query("output=&output=srt", "output"), Some(""), "the first one");
   }
 
   #[test]

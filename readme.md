@@ -219,6 +219,13 @@ the GPU and the loaded models. `serve` downloads the models it is started with, 
 with `-y`; requests never download. It serves 16 requests at once, each up to 512 MB and 3 hours
 of audio, and answers more with 503.
 
+For [Bazarr](https://www.bazarr.media)'s subtitles, `POST /asr` answers as
+[whisper-asr-webservice](https://github.com/ahmetoner/whisper-asr-webservice) does: enable Bazarr's
+Whisper provider and set its endpoint to `http://HOST:8000`, with `wavo serve` started without
+`--api-key`, as Bazarr sends none. The first model transcribes, in the language of the audio
+track's tag, which it must know; wavo doesn't translate, nor detect the language of an untagged
+track (`/detect-language`).
+
 ## ⚡ Speed
 
 Time to transcribe one minute of audio and the real-time factor (RTF: processing time ÷ audio
