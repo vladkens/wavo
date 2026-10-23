@@ -2,7 +2,7 @@
 //! The transcripts of long audio's pieces (cut by `wavo::split`) joined back into one, for
 //! `wavo run` and `wavo serve`.
 
-use wavo::{Model, Options, Token, Transcript};
+use wavo::{DeviceKind, Model, Options, Token, Transcript};
 
 /// Audio splits into pieces of up to this for models without a window of their own, as
 /// `Model::transcribe_long` does.
@@ -10,7 +10,8 @@ const SEGMENT_MS: u32 = 60_000;
 
 /// As `Model::transcribe_long`, but piece by piece: `each(i, n)` runs before piece `i` of `n`,
 /// and the index of each piece's first token comes back too, as subtitles start a word there.
-/// Pieces are up to `segment_ms` (0: one pass), else the model's window, else `SEGMENT_MS`.
+/// Pieces are up to `segment_ms` (0: one pass), else the model's window, else `SEGMENT_MS`; on the
+/// Neural Engine never past its window.
 pub fn transcribe(
   model: &Model,
   pcm: &[f32],
@@ -18,7 +19,13 @@ pub fn transcribe(
   options: &Options,
   mut each: impl FnMut(usize, usize),
 ) -> wavo::Result<(Transcript, Vec<usize>)> {
-  let max_ms = segment_ms.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
+  let mut max_ms = segment_ms.or(model.max_audio_ms()).unwrap_or(SEGMENT_MS);
+  if model.device().kind == DeviceKind::NeuralEngine {
+    // Its window caps the pieces, so subtitles see every cut.
+    let window = model.max_audio_ms().unwrap_or(u32::MAX);
+    max_ms = if max_ms == 0 { window } else { max_ms.min(window) };
+  }
+
   let ranges = wavo::split(pcm, if max_ms == 0 { u32::MAX } else { max_ms });
   let n = ranges.len();
   let parts = ranges.into_iter().enumerate().map(|(i, r)| {

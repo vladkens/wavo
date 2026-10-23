@@ -53,7 +53,7 @@ impl Hub {
         let xdg = var("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| user().join(".cache"));
         (xdg.join("huggingface").join("hub"), None)
       });
-    Self { root, from }
+    Self { root, from, prepare: true }
   }
 
   fn folder(&self, repo: &str) -> PathBuf {
@@ -74,13 +74,15 @@ impl Hub {
   }
 
   /// Downloads the file at `main` unless that revision is cached, as huggingface_hub does. A
-  /// dropped or stalled download resumes up to `RETRIES` more times, after 1, 2 and 4 s.
+  /// dropped or stalled download resumes up to `RETRIES` more times, after 1, 2 and 4 s. Returns
+  /// the repository lock still held, so that `remove` can't delete the file before the caller is
+  /// done with it.
   pub(super) fn pull_file(
     &self,
     repo: &str,
     file: &str,
     mut progress: impl FnMut(Progress<'_>) -> ControlFlow<()>,
-  ) -> Result<PathBuf> {
+  ) -> Result<(PathBuf, File)> {
     let agent = agent(IDLE);
     let remote = head(&agent, repo, file)?;
     self.install(repo, file, &remote, |part| {
@@ -89,7 +91,9 @@ impl Hub {
         match download(&agent, &remote.url, part, remote.size, &mut progress) {
           Err(e) if retry < RETRIES && transient(&e) => {
             let done = fs::metadata(part).map_or(0, |m| m.len());
-            if progress(Progress { done, total: remote.size, retrying: Some(&e) }).is_break() {
+            if progress(Progress { done, total: remote.size, retrying: Some(&e), preparing: None })
+              .is_break()
+            {
               return Err(Error::Cancelled);
             }
             std::thread::sleep(Duration::from_secs(1 << retry));
@@ -105,25 +109,26 @@ impl Hub {
   fn lock(&self, repo: &str, name: &str) -> Result<File> {
     let dir = self.root.join(".locks").join(self.folder(repo).file_name().unwrap());
     fs::create_dir_all(&dir)?;
-    hold(&dir.join(format!("{name}.lock")))
+    crate::hold(&dir.join(format!("{name}.lock")))
   }
 
   /// Links the file into its snapshot, `fetch`ing the blob into `<etag>.incomplete` first when it
-  /// is missing, then points `refs/main` at the snapshot.
+  /// is missing, then points `refs/main` at the snapshot. Returns the repository lock, held since
+  /// before the download.
   fn install(
     &self,
     repo: &str,
     file: &str,
     remote: &Remote,
     fetch: impl FnOnce(&Path) -> Result<()>,
-  ) -> Result<PathBuf> {
+  ) -> Result<(PathBuf, File)> {
     if !hex(&remote.commit, &[40]) || !hex(&remote.etag, &[40, 64]) {
       let (commit, etag) = (&remote.commit, &remote.etag);
       return Err(Error::Hub(format!(
         "unexpected commit {commit:?} or etag {etag:?} from the Hub"
       )));
     }
-    let _repo = self.lock(repo, "wavo")?;
+    let lock = self.lock(repo, "wavo")?;
     let dir = self.folder(repo);
     let pointer = dir.join("snapshots").join(&remote.commit).join(file);
     if !pointer.exists() {
@@ -150,7 +155,7 @@ impl Hub {
       fs::write(&tmp, &remote.commit)?;
       fs::rename(&tmp, &refs)?;
     }
-    Ok(pointer)
+    Ok((pointer, lock))
   }
 
   /// Deletes the file from every snapshot along with its blobs, then the snapshots and refs left
@@ -168,6 +173,15 @@ impl Hub {
     if pointers.is_empty() {
       return Ok(None);
     }
+
+    // What `Model::prepare` made for each revision's file, named by the file: hashed before it
+    // goes, under the lock a pull holds while it prepares.
+    let mut prepared = Vec::new();
+    for p in pointers.iter().filter(|p| p.is_file()) {
+      prepared.extend(crate::ane::key(p)?);
+    }
+
+    prepared.dedup();
     let blobs: Vec<PathBuf> = (pointers.iter().filter_map(|p| fs::read_link(p).ok()))
       .filter_map(|target| target.file_name().map(|etag| dir.join("blobs").join(etag)))
       .collect();
@@ -209,6 +223,10 @@ impl Hub {
     for store in &shared {
       freed += self.sweep(store)?;
     }
+    for key in &prepared {
+      freed += crate::ane::remove(key)?;
+    }
+
     Ok(Some(freed))
   }
 
@@ -229,7 +247,7 @@ impl Hub {
   /// permission) counts as one, so the file stays.
   fn sweep(&self, store: &Path) -> Result<u64> {
     let name = store.file_name().unwrap().to_string_lossy();
-    let _lock = hold(&store.with_file_name(format!("{name}.lock")))?;
+    let _lock = crate::hold(&store.with_file_name(format!("{name}.lock")))?;
     let refs = store.with_file_name(format!("{name}.refs"));
     let Ok(listed) = fs::read_to_string(&refs) else { return Ok(0) };
     let target = fs::canonicalize(store)?;
@@ -271,13 +289,6 @@ impl Hub {
     fs::remove_file(&refs)?;
     Ok(size)
   }
-}
-
-/// Holds a lock on the file at `path`, created when missing, until the file is dropped.
-fn hold(path: &Path) -> Result<File> {
-  let lock = OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
-  lock.lock()?;
-  Ok(lock)
 }
 
 /// Whether `s` is lowercase hex of one of the lengths.
@@ -375,7 +386,7 @@ fn copy(
   let mut buf = vec![0; 1 << 16];
   let broke = |message| Error::Http { url: url.into(), status: None, message };
   loop {
-    if progress(Progress { done, total: size, retrying: None }).is_break() {
+    if progress(Progress { done, total: size, retrying: None, preparing: None }).is_break() {
       return Err(Error::Cancelled);
     }
     let n = match body.read(&mut buf) {
@@ -453,7 +464,7 @@ mod tests {
       vars.push((var, value));
       assert_eq!(root(&vars), (PathBuf::from(expected), from), "{var}");
     }
-    let hub = Hub { root: PathBuf::from("/c"), from: Some("HF_HUB_CACHE") };
+    let hub = Hub { root: PathBuf::from("/c"), from: Some("HF_HUB_CACHE"), prepare: true };
     assert_eq!(hub.to_string(), "/c (set by HF_HUB_CACHE)");
     assert_eq!(Hub::at("/c").to_string(), "/c");
   }
@@ -498,7 +509,7 @@ mod tests {
     let hub = temp("install");
     let dir = hub.root.join("models--org--m-gguf");
     let a = remote('a', '1', 5);
-    let path = hub.install("org/m-gguf", "m.gguf", &a, write("hello")).unwrap();
+    let path = hub.install("org/m-gguf", "m.gguf", &a, write("hello")).unwrap().0;
     assert_eq!(path, dir.join("snapshots").join(&a.commit).join("m.gguf"));
     assert_eq!(fs::read_link(&path).unwrap(), Path::new("../../blobs").join(&a.etag));
     assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
@@ -509,9 +520,9 @@ mod tests {
 
     // A cached revision and a new revision of the same content download nothing.
     let fail = |_: &Path| -> Result<()> { panic!("downloaded again") };
-    assert_eq!(hub.install("org/m-gguf", "m.gguf", &a, fail).unwrap(), path);
+    assert_eq!(hub.install("org/m-gguf", "m.gguf", &a, fail).unwrap().0, path);
     let b = remote('b', '1', 5);
-    let path = hub.install("org/m-gguf", "m.gguf", &b, fail).unwrap();
+    let path = hub.install("org/m-gguf", "m.gguf", &b, fail).unwrap().0;
     assert_eq!(fs::read_to_string(dir.join("refs/main")).unwrap(), b.commit);
     assert_eq!(hub.find_file("org/m-gguf", "m.gguf"), Some(path));
 
@@ -653,7 +664,7 @@ mod tests {
       let folder = hub.folder(repo).file_name().unwrap().to_str().unwrap().to_owned();
       writeln!(refs, "{folder}/blobs/{}", r.etag).unwrap();
     }
-    let path = hub.install(repo, file, &r, write("")).unwrap();
+    let path = hub.install(repo, file, &r, write("")).unwrap().0;
     assert_eq!(fs::read_to_string(path).unwrap(), text);
     store
   }

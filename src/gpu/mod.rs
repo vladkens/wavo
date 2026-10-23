@@ -21,10 +21,11 @@ pub type Groups = Vec<(Pipeline, Vec<Buffer>, BindGroup)>;
 const MARKS: u64 = 256;
 
 /// The GPU a [`Model`](crate::Model) runs on, and the graphics API it reaches it through, as the
-/// driver reports them when the model loads. See [`Model::device`](crate::Model::device).
+/// driver reports them when the model loads; or the Neural Engine. See
+/// [`Model::device`](crate::Model::device).
 ///
 /// `Display` gives a line for logs and settings screens, such as
-/// `NVIDIA GeForce RTX 4060 Laptop GPU (Vulkan, discrete)`.
+/// `NVIDIA GeForce RTX 4060 Laptop GPU (Vulkan, discrete)` or `Apple M2 Neural Engine (Core ML)`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Device {
@@ -39,10 +40,10 @@ pub struct Device {
   /// or `32.0.15.9144` on DX12. No format is promised; empty when the driver reports neither, as
   /// on Metal.
   pub driver: String,
-  /// The kernels wavo runs on the adapter: from [`devices`], those its features allow; from
-  /// [`Model::device`](crate::Model::device), the GEMM's after its probe at load, which falls
-  /// back to [`Kernels::Portable`] when the driver computes it wrong (other fast kernels fall
-  /// back one by one).
+  /// The kernels wavo runs on the adapter: from [`devices`](crate::devices), those its features
+  /// allow; from [`Model::device`](crate::Model::device), the GEMM's after its probe at load,
+  /// which falls back to [`Kernels::Portable`] when the driver computes it wrong (other fast
+  /// kernels fall back one by one).
   pub kernels: Kernels,
 }
 
@@ -59,6 +60,8 @@ pub enum Api {
   Vulkan,
   /// Direct3D 12, on Windows without a Vulkan driver.
   Dx12,
+  /// Apple's Core ML, which runs a model on the Neural Engine.
+  CoreMl,
 }
 
 /// The kind of adapter a [`Device`] is, as the driver reports it.
@@ -74,6 +77,9 @@ pub enum DeviceKind {
   SoftwareGpu,
   /// A virtual GPU (in a virtual machine) or one the driver doesn't classify.
   OtherGpu,
+  /// The Neural Engine of an Apple Silicon Mac, reached through Core ML: see
+  /// [`Backend::NeuralEngine`](crate::Backend::NeuralEngine).
+  NeuralEngine,
 }
 
 /// The kernels wavo runs on a [`Device`], chosen at load from the adapter's features: a fast tier
@@ -89,28 +95,12 @@ pub enum Kernels {
   Matrix16,
   /// [`Matrix8`](Self::Matrix8) with the GEMM on the Metal 4 tensor API: Apple M5 / A19 and newer.
   Tensor,
+  /// No wavo kernels: on the [`NeuralEngine`](DeviceKind::NeuralEngine), the encoder is a Core ML
+  /// program (F16 with 8-bit weights) that the system compiles.
+  CoreMl,
 }
 
-/// Every GPU adapter wavo can run a model on, through Vulkan, Metal or DX12, starting with the
-/// one [`Model::load`](crate::Model::load) picks (see [`Model::device`](crate::Model::device)
-/// for how). Their [`kernels`](Device::kernels) are those the adapter's features allow.
-///
-/// Only the adapters' info and features are read: no device is created and no kernel compiles, so
-/// it takes milliseconds and works without a model, for example to warn about a
-/// [`SoftwareGpu`](DeviceKind::SoftwareGpu) before downloading one.
-///
-/// # Errors
-///
-/// [`Error::Adapter`]: no adapter, so `Model::load` would fail too.
-///
-/// # Examples
-///
-/// ```no_run
-/// for device in wavo::devices()? {
-///   println!("{device}: {:?}", device.kernels); // Apple M2 (Metal, integrated): Matrix8
-/// }
-/// # Ok::<(), wavo::Error>(())
-/// ```
+/// The GPU adapters for [`crate::devices`], the one `adapter()` picks first.
 pub fn devices() -> Result<Vec<Device>> {
   let first = adapter()?;
   let info = first.get_info();
@@ -163,12 +153,14 @@ impl std::fmt::Display for Device {
       Api::Metal => "Metal",
       Api::Vulkan => "Vulkan",
       Api::Dx12 => "DX12",
+      Api::CoreMl => "Core ML",
     };
     let kind = match self.kind {
       DeviceKind::DiscreteGpu => "discrete",
       DeviceKind::IntegratedGpu => "integrated",
       DeviceKind::SoftwareGpu => "software",
       DeviceKind::OtherGpu => "other",
+      DeviceKind::NeuralEngine => return write!(f, "{} ({api})", self.name),
     };
     write!(f, "{} ({api}, {kind})", self.name)
   }
@@ -1016,7 +1008,7 @@ pub fn pos_rows(t: usize) -> usize {
 }
 
 /// Output length of a stride-2 conv with kernel 3 and padding 1 (or kernel 5 and padding 2).
-pub fn half(n: usize) -> usize {
+pub const fn half(n: usize) -> usize {
   (n - 1) / 2 + 1
 }
 

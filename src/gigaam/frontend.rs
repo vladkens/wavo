@@ -9,7 +9,7 @@ use crate::fft::Fft;
 use crate::gguf::Gguf;
 
 pub const N_FFT: usize = 320;
-const HOP: usize = 160;
+pub const HOP: usize = 160;
 const BINS: usize = N_FFT / 2 + 1;
 
 pub struct Frontend {
@@ -42,6 +42,11 @@ impl Frontend {
       spans,
       fft: Fft::new(N_FFT),
     })
+  }
+
+  /// Mel bands per frame.
+  pub fn mels(&self) -> usize {
+    self.mels
   }
 
   /// Features of 16 kHz PCM, time-major `[frames][mels]`.

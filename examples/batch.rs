@@ -1,10 +1,11 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Many recordings through one model load, and two such runs compared (`make compare`).
 //!
-//! `batch MODEL.gguf LIST` transcribes each 16 kHz mono WAV listed in LIST (one path per line) and
-//! prints JSON lines shaped like `transcribe-cli -m MODEL.gguf --batch LIST --batch-jsonl`: a
-//! header with `load_ms`, then per file `file`, `text`, `audio_ms` and `ms`, the wall time of
-//! `Model::transcribe`.
+//! `batch MODEL.gguf LIST [gpu|ane]` transcribes each 16 kHz mono WAV listed in LIST (one path per
+//! line) and prints JSON lines shaped like `transcribe-cli -m MODEL.gguf --batch LIST
+//! --batch-jsonl`: a header with `load_ms`, then per file `file`, `text`, `audio_ms` and `ms`, the
+//! wall time of `Model::transcribe`. The model loads on `Backend::Auto`, or on the GPU or the
+//! Neural Engine (prepared first, outside `load_ms`) as the third argument says.
 //!
 //! `batch compare A.jsonl B.jsonl` joins two such files by `file` and prints speed, then exact-text
 //! agreement and the word error rate of A against B (lowercase, punctuation dropped) by duration,
@@ -22,8 +23,13 @@ fn main() -> Result<()> {
   let args: Vec<String> = std::env::args().skip(1).collect();
   match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
     ["compare", a, b] => compare(a, b),
-    [model, list] => run(model, list),
-    _ => Err("usage: batch MODEL.gguf LIST | batch compare A.jsonl B.jsonl".into()),
+    [model, list] => run(model, list, wavo::Backend::Auto),
+    [model, list, "gpu"] => run(model, list, wavo::Backend::Gpu),
+    [model, list, "ane"] => {
+      wavo::Model::prepare(model, |_| std::ops::ControlFlow::Continue(()))?;
+      run(model, list, wavo::Backend::NeuralEngine)
+    }
+    _ => Err("usage: batch MODEL.gguf LIST [gpu|ane] | batch compare A.jsonl B.jsonl".into()),
   }
 }
 
@@ -31,9 +37,9 @@ fn ms(t: Instant) -> f64 {
   t.elapsed().as_secs_f64() * 1e3
 }
 
-fn run(model: &str, list: &str) -> Result<()> {
+fn run(model: &str, list: &str, backend: wavo::Backend) -> Result<()> {
   let t = Instant::now();
-  let model = wavo::Model::load(model)?;
+  let model = wavo::Model::load_with(model, backend)?;
   println!("{{\"type\":\"batch_header\",\"load_ms\":{:.1}}}", ms(t));
   let mut failed = 0;
   for file in std::fs::read_to_string(list)?.lines().map(str::trim).filter(|l| !l.is_empty()) {

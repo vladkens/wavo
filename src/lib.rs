@@ -10,14 +10,16 @@
   not(feature = "hub"),
   doc = "[hub-mod]: https://docs.rs/wavo/latest/wavo/hub/\n[hub-models]: https://docs.rs/wavo/latest/wavo/hub/static.MODELS.html\n[hub-hub]: https://docs.rs/wavo/latest/wavo/hub/struct.Hub.html\n[hub-pull]: https://docs.rs/wavo/latest/wavo/hub/struct.Hub.html#method.pull"
 )]
-//! Speech-to-text on the GPU, in pure Rust.
+//! Speech-to-text on the GPU or a Mac's Neural Engine, in pure Rust.
 //!
 //! wavo runs the open ASR models that [transcribe.cpp] publishes as GGUF files on Hugging Face:
 //! NVIDIA's Parakeet, Sber's GigaAM, OpenAI's Whisper and Useful Sensors' Moonshine, with the same
 //! text and timestamps as transcribe.cpp. The encoder runs on the GPU through wgpu (Metal on Apple
 //! Silicon, Vulkan on Linux and Windows, DX12 on Windows without a Vulkan driver) with wavo's own
-//! kernels; the audio frontend runs on the CPU, and so does the decoder except Whisper's and
-//! Moonshine's. It builds with a plain `cargo build`: no C++ toolchain, Python or ONNX Runtime.
+//! kernels, or for Parakeet and GigaAM on the Neural Engine of an Apple Silicon Mac through Core ML
+//! ([below](#neural-engine)); the audio frontend runs on the CPU, and so does the decoder except
+//! Whisper's and Moonshine's. It builds with a plain `cargo build`: no C++ toolchain, Python or
+//! ONNX Runtime.
 //!
 //! [transcribe.cpp]: https://github.com/handy-computer/transcribe.cpp
 //!
@@ -99,7 +101,8 @@
 //! Models are trained on pieces of up to [`Model::max_audio_ms`]: 25 s for GigaAM, 30 s for
 //! Whisper and Moonshine. Past that, `transcribe` loses accuracy, and GigaAM and Moonshine return
 //! [`Error::AudioTooLong`] past 1.5 times it; Whisper runs its own 30 s windows and Parakeet takes
-//! any length in one pass. [`Model::transcribe_long`] takes audio of any length: it cuts it at its
+//! any length in one pass; on the Neural Engine, `transcribe` splits audio past its fixed 15 s
+//! window at pauses itself. [`Model::transcribe_long`] takes audio of any length: it cuts it at its
 //! quietest moments with [`split`] into pieces of up to the model's window (60 s for Parakeet, or
 //! [`Options::window_ms`]), transcribes each, and joins the transcripts with token times from the
 //! start of the audio.
@@ -176,6 +179,43 @@
 //! # fn main() {}
 //! ```
 //!
+//! # Neural Engine
+//!
+//! On an Apple Silicon Mac with macOS 15 or later, Parakeet's and GigaAM's encoders also run on
+//! the Neural Engine: on an M1 a call over 11 s of audio takes 52–70 ms there against 170–250 ms
+//! on the GPU. The model needs preparing once, which writes its encoder as a Core ML program and
+//! has the system compile it (15–30 s, and as much disk as the GGUF):
+//! [`Hub::pull`][hub-pull] does it after the download, and [`Model::prepare`] does it for a file
+//! you manage. The system keeps its Neural Engine compile per program, so each program prepares
+//! for itself: in a program that prepared before, `prepare` returns at once; in another one, such
+//! as yours after `wavo pull`, it reuses the compiled model and loads it once for 10–30 s. A new
+//! build of the program or of macOS counts as a new program, and when the system drops its cache
+//! on its own, for example to free disk space, the next load takes that long once.
+//! [`Model::load`] then runs the model on the Neural Engine, and on the GPU in a program that
+//! hasn't prepared it; [`Model::load_with`] picks a [`Backend`], and [`Model::device`] tells which
+//! one runs.
+//!
+//! ```no_run
+//! # fn main() -> wavo::Result<()> {
+//! use std::ops::ControlFlow;
+//!
+//! let path = "parakeet-tdt-0.6b-v3-Q8_0.gguf";
+//! wavo::Model::prepare(path, |step| {
+//!   eprintln!("preparing for the Neural Engine: {step:?}");
+//!   ControlFlow::Continue(())
+//! })?; // `false` without a Neural Engine: the model runs on the GPU
+//! let model = wavo::Model::load(path)?;
+//! println!("on {}, pieces of up to {:?} ms", model.device(), model.max_audio_ms());
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The Neural Engine runs a fixed 15 s window in F16 with 8-bit weights: shorter audio is padded,
+//! longer audio split at pauses. Its text is close to the GPU's, not equal: on an hour of English
+//! read speech in pieces of up to 15 s, 0.05–0.07% of the words differ (case and punctuation
+//! aside), 3–4% of the pieces differ at all, mostly in a comma or a capital letter, and a few
+//! tokens start one or two encoder frames apart. The GPU stays the exact path.
+//!
 //! # Left to the caller
 //!
 //! - **Decoding and resampling.** `transcribe` takes 16 kHz mono `f32` only. Decode other formats,
@@ -185,6 +225,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
 
+mod ane;
 mod conformer;
 mod cpu;
 mod error;
@@ -202,12 +243,48 @@ mod split;
 mod transformer;
 mod whisper;
 
+use std::ops::ControlFlow;
 use std::path::Path;
 
 use error::bail;
 pub use error::{Error, Result};
-pub use gpu::{Api, Device, DeviceKind, Kernels, devices};
+pub use gpu::{Api, Device, DeviceKind, Kernels};
 pub use split::split;
+
+/// Every GPU adapter wavo can run a model on, through Vulkan, Metal or DX12, starting with the
+/// one [`Model::load`] picks on the GPU (see [`Model::device`] for how), and last the Mac's
+/// Neural Engine when it has one that Core ML can use (Apple Silicon, macOS 15 or later, not in a
+/// virtual machine): Parakeet and GigaAM run there once [prepared](Model::prepare). The adapters'
+/// [`kernels`](Device::kernels) are those their features allow.
+///
+/// Only the adapters' info and features are read: no device is created and no kernel compiles, so
+/// it takes milliseconds and works without a model, for example to warn about a
+/// [`SoftwareGpu`](DeviceKind::SoftwareGpu) before downloading one.
+///
+/// # Errors
+///
+/// [`Error::Adapter`]: no adapter, so `Model::load` would fail too.
+///
+/// # Examples
+///
+/// ```no_run
+/// for device in wavo::devices()? {
+///   println!("{device}: {:?}", device.kernels); // Apple M2 (Metal, integrated): Matrix8
+/// }
+/// # Ok::<(), wavo::Error>(())
+/// ```
+pub fn devices() -> Result<Vec<Device>> {
+  let ane = ane::available().then(|| ane::device().clone());
+  Ok(gpu::devices()?.into_iter().chain(ane).collect())
+}
+
+/// Holds a lock on the file at `path`, created when missing, until the file is dropped: the hub's
+/// locks and the Neural Engine cache's.
+fn hold(path: &Path) -> Result<std::fs::File> {
+  let lock = std::fs::File::options().create(true).truncate(false).write(true).open(path)?;
+  lock.lock()?;
+  Ok(lock)
+}
 
 /// The code path of the CPU matrix products (`NEON`, `AVX2+FMA` or `portable`), for `wavo debug`;
 /// not part of the API.
@@ -216,11 +293,10 @@ pub fn cpu_path() -> &'static str {
   cpu::path()
 }
 
-/// A speech-to-text model loaded on the GPU.
+/// A speech-to-text model loaded on the GPU or the Neural Engine.
 ///
 /// Load it once with [`Model::load`], then call [`Model::transcribe`] for each recording. It is
-/// `Send` and `Sync`: share it between threads, and concurrent calls take turns on its GPU
-/// buffers.
+/// `Send` and `Sync`: share it between threads, and concurrent calls take turns.
 pub struct Model {
   family: Family,
   /// The GGUF's `general.languages`.
@@ -289,11 +365,58 @@ pub struct Token {
 /// ms: Parakeet, whose time per second of audio grows past a minute (its attention is quadratic).
 const WINDOW_MS: u32 = 60_000;
 
+/// Where a model's encoder runs, chosen when it loads ([`Model::load_with`]). The audio frontend
+/// and the decoder run on the CPU either way (Whisper's and Moonshine's decoders on the GPU).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Backend {
+  /// The faster one for the model's family on this machine: the Neural Engine for Parakeet and
+  /// GigaAM once [prepared](Model::prepare) in this program (see
+  /// [Neural Engine](crate#neural-engine)), else the GPU. [`Model::load`] uses it.
+  #[default]
+  Auto,
+  /// The GPU through wgpu, on every platform: the same text, tokens and timestamps as
+  /// transcribe.cpp.
+  Gpu,
+  /// Apple's Neural Engine through Core ML, on Apple Silicon with macOS 15 or later, for Parakeet
+  /// and GigaAM once [prepared](Model::prepare). It runs in F16 with 8-bit weights in a fixed
+  /// 15 s window: now and then a word, a comma or a capital letter differs from the GPU's, and some
+  /// tokens start one or two encoder frames apart (see [Neural Engine](crate#neural-engine)).
+  NeuralEngine,
+}
+
+/// The families with a Neural Engine program, and the function that writes it. [`Backend::Auto`]
+/// takes the Neural Engine for them: on an M1 and M2 it runs their encoders 2–5× faster than the
+/// GPU (Whisper's and Moonshine's slower).
+const NEURAL_ENGINE: &[(&str, ane::Build)] =
+  &[("parakeet", parakeet::ane::build), ("gigaam", gigaam::ane::build)];
+
+/// The Neural Engine program of a `general.architecture`, if it has one.
+fn program(arch: &str) -> Option<ane::Build> {
+  NEURAL_ENGINE.iter().find(|(a, _)| *a == arch).map(|&(_, build)| build)
+}
+
+/// What [`Model::prepare`] is doing, passed to its callback when each step starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PrepareStep {
+  /// Writing the encoder as a Core ML program from the GGUF file: seconds, and as much free disk
+  /// as the model file, freed at the end.
+  Build,
+  /// Core ML compiling the program: seconds.
+  Compile,
+  /// Loading it once, which makes the system compile it for the Neural Engine: the longest step
+  /// (see [Neural Engine](crate#neural-engine)).
+  Load,
+}
+
 impl Model {
-  /// Loads a model from its GGUF file and uploads its weights to the GPU.
+  /// Loads a model from its GGUF file on the faster backend for its family ([`Backend::Auto`]).
   ///
   /// The file is one of the Q8_0 GGUFs transcribe.cpp publishes (see the
-  /// [model table](crate#models)); the family comes from its `general.architecture`.
+  /// [model table](crate#models)); the family comes from its `general.architecture`. Parakeet and
+  /// GigaAM load on the Neural Engine (in about 0.1 s) when this program has
+  /// [prepared](Model::prepare) the file on a Mac that has one, and on the GPU otherwise.
   ///
   /// # Errors
   ///
@@ -309,12 +432,48 @@ impl Model {
   /// # Ok::<(), wavo::Error>(())
   /// ```
   pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-    let g = gguf::Gguf::open(path.as_ref())?;
+    Self::load_with(path, Backend::Auto)
+  }
+
+  /// Loads a model on the given backend; see [`Model::load`].
+  ///
+  /// # Errors
+  ///
+  /// Those of [`Model::load`], and [`Error::NeuralEngine`] for [`Backend::NeuralEngine`] when this
+  /// machine has no Neural Engine, the family has no Neural Engine program, the file isn't
+  /// [prepared](Model::prepare), or Core ML fails to load it.
+  ///
+  /// # Examples
+  ///
+  /// The GPU, whatever is prepared:
+  ///
+  /// ```no_run
+  /// use wavo::{Backend, DeviceKind, Model};
+  ///
+  /// let model = Model::load_with("parakeet-tdt-0.6b-v3-Q8_0.gguf", Backend::Gpu)?;
+  /// assert_ne!(model.device().kind, DeviceKind::NeuralEngine);
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn load_with(path: impl AsRef<Path>, backend: Backend) -> Result<Self> {
+    let path = path.as_ref();
+    let g = gguf::Gguf::open(path)?;
     let languages = g.optional_array::<&str>("general.languages")?;
     let languages = languages.into_iter().map(str::to_string).collect();
-    let family = match g.get::<&str>("general.architecture")? {
-      "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g)?)),
-      "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g)?)),
+    let arch = g.get::<&str>("general.architecture")?;
+    let ane = match backend {
+      Backend::Gpu => None,
+      Backend::NeuralEngine => Some(neural_engine(path, arch)?),
+      // A file that isn't prepared in this program, or that Core ML fails to load, runs on the
+      // GPU: a first load in this program would compile for the Neural Engine for 10–30 s.
+      Backend::Auto => (program(arch).is_some() && ane::available())
+        .then(|| ane::prepared(path))
+        .flatten()
+        .and_then(|compiled| ane::load_compiled(&compiled).ok()),
+    };
+
+    let family = match arch {
+      "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g, ane)?)),
+      "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g, ane)?)),
       "whisper" => Family::Whisper(Box::new(whisper::Whisper::load(&g)?)),
       "moonshine" => Family::Moonshine(Box::new(moonshine::Moonshine::load(&g)?)),
       arch => bail!(
@@ -328,15 +487,17 @@ impl Model {
   ///
   /// For audio longer than [`max_audio_ms`](Self::max_audio_ms), use
   /// [`transcribe_long`](Self::transcribe_long) (see [Long audio](crate#long-audio)): GigaAM and
-  /// Moonshine run it in one pass, which loses text past the window and fails past 1.5 times it.
-  /// Whisper and Parakeet take any length. Audio too short for one encoder frame gives an empty
-  /// transcript.
+  /// Moonshine on the GPU run it in one pass, which loses text past the window and fails past 1.5
+  /// times it. Whisper and Parakeet take any length, and on the Neural Engine audio past its 15 s
+  /// window is split at pauses here, as `transcribe_long` would. Audio too short for one encoder
+  /// frame gives an empty transcript.
   ///
   /// # Errors
   ///
-  /// - [`Error::AudioTooLong`]: GigaAM or Moonshine, and the audio is longer than 1.5 times
-  ///   [`max_audio_ms`](Self::max_audio_ms) (37.5 s for GigaAM, 45 s for Moonshine).
-  /// - The GPU failed: [`Error::Gpu`], [`Error::Poll`], [`Error::Readback`] or [`Error::Map`].
+  /// - [`Error::AudioTooLong`]: GigaAM or Moonshine on the GPU, and the audio is longer than 1.5
+  ///   times [`max_audio_ms`](Self::max_audio_ms) (37.5 s for GigaAM, 45 s for Moonshine).
+  /// - The GPU failed: [`Error::Gpu`], [`Error::Poll`], [`Error::Readback`] or [`Error::Map`]; or
+  ///   Core ML did: [`Error::NeuralEngine`].
   ///
   /// # Examples
   ///
@@ -375,6 +536,10 @@ impl Model {
       None => None,
     };
 
+    if self.on_ane() && pcm.len() > ane::WINDOW {
+      return self.pieces(pcm, (ane::WINDOW / 16) as u32, options);
+    }
+
     // One pass over the whole audio: a little past the window still matches the reference (the
     // 34-35 s fixtures), from ~45 s the tail is dropped or made up, and much longer audio
     // overruns the GPU's 65 535 workgroups per dispatch.
@@ -394,12 +559,18 @@ impl Model {
     }
   }
 
-  /// The longest audio, in milliseconds, the model was trained on: 25 000 for GigaAM, 30 000 for
+  /// The longest audio, in milliseconds, the model takes in one piece: 15 000 on the Neural
+  /// Engine, its fixed window; else the length it was trained on, 25 000 for GigaAM and 30 000 for
   /// Whisper and Moonshine. [`transcribe_long`](Self::transcribe_long) splits long audio into
-  /// pieces of up to this length: Whisper runs longer audio in windows of it, GigaAM and Moonshine
-  /// lose text past it and [`transcribe`](Self::transcribe) rejects 1.5 times it. `None` for
-  /// Parakeet, which has no such window.
+  /// pieces of up to this length: Whisper runs longer audio in windows of it, the Neural Engine
+  /// splits it at pauses, GigaAM and Moonshine on the GPU lose text past it and
+  /// [`transcribe`](Self::transcribe) rejects 1.5 times it. `None` for Parakeet on the GPU, which
+  /// has no such window.
   pub fn max_audio_ms(&self) -> Option<u32> {
+    if self.on_ane() {
+      return Some((ane::WINDOW / 16) as u32);
+    }
+
     match &self.family {
       // No GGUF key holds GigaAM's window; transcribe.cpp hardcodes the same 25 s.
       Family::Gigaam(_) => Some(25_000),
@@ -445,23 +616,34 @@ impl Model {
   /// ```
   pub fn transcribe_long(&self, pcm: &[f32], options: &Options) -> Result<Transcript> {
     let window = options.window_ms.or(self.max_audio_ms()).unwrap_or(WINDOW_MS);
-    let pieces = split(pcm, window).into_iter();
+    self.pieces(pcm, window, options)
+  }
+
+  /// `pcm` cut by [`split`] into pieces of up to `window_ms`, each through `transcribe_with`, and
+  /// the transcripts joined.
+  fn pieces(&self, pcm: &[f32], window_ms: u32, options: &Options) -> Result<Transcript> {
+    let pieces = split(pcm, window_ms).into_iter();
     let parts = pieces.map(|r| Ok((r.start, self.transcribe_with(&pcm[r], options)?)));
     Ok(split::join(parts.collect::<Result<Vec<_>>>()?))
   }
 
-  /// The GPU the model runs on, and the API it reaches it through, as chosen at load.
+  fn on_ane(&self) -> bool {
+    self.device().kind == DeviceKind::NeuralEngine
+  }
+
+  /// Where the model's encoder runs, as chosen at load: a GPU and the API it reaches it through,
+  /// or the Neural Engine ([`DeviceKind::NeuralEngine`], through [`Api::CoreMl`]).
   ///
-  /// [`Model::load`] looks for an adapter through Vulkan and Metal first (Metal on macOS, Vulkan
-  /// on Linux and Windows), and through DX12 only when neither has one (Windows without a Vulkan
-  /// driver). It prefers the high-performance adapter, usually the discrete one on a laptop with
-  /// two GPUs, though the driver decides. wgpu's `WGPU_BACKEND` environment variable (`vulkan`,
-  /// `metal` or `dx12`) overrides the API. The adapter may be a
+  /// On the GPU, [`Model::load`] looks for an adapter through Vulkan and Metal first (Metal on
+  /// macOS, Vulkan on Linux and Windows), and through DX12 only when neither has one (Windows
+  /// without a Vulkan driver). It prefers the high-performance adapter, usually the discrete one
+  /// on a laptop with two GPUs, though the driver decides. wgpu's `WGPU_BACKEND` environment
+  /// variable (`vulkan`, `metal` or `dx12`) overrides the API. The adapter may be a
   /// [`SoftwareGpu`](DeviceKind::SoftwareGpu), such as WARP or llvmpipe, when no hardware driver
   /// is installed.
   ///
   /// One model runs on one device for its lifetime. To use several GPUs, load several models;
-  /// choosing the device is not supported yet.
+  /// choosing the GPU is not supported yet.
   ///
   /// # Examples
   ///
@@ -475,12 +657,98 @@ impl Model {
   /// ```
   pub fn device(&self) -> &Device {
     match &self.family {
-      Family::Gigaam(m) => m.gpu.info(),
-      Family::Parakeet(m) => m.gpu.info(),
+      Family::Gigaam(m) => m.device(),
+      Family::Parakeet(m) => m.device(),
       Family::Whisper(m) => m.gpu.info(),
       Family::Moonshine(m) => m.gpu.info(),
     }
   }
+
+  /// Prepares a model file for the Neural Engine, so that [`Model::load`] runs it there: writes
+  /// its encoder as a Core ML program, has Core ML compile it, and loads it once. Returns `true`
+  /// when the file is prepared, `false` when there is nothing to do: a family that runs on the
+  /// GPU only (Whisper, Moonshine), or a machine without a Neural Engine (not macOS, macOS before
+  /// 15, an Intel Mac, a virtual machine).
+  ///
+  /// It blocks for 15–40 s the first time, mostly while the system compiles the program for the
+  /// Neural Engine: run it on a thread of your own, as `Hub::pull` (the `hub` feature), which calls
+  /// it after each download, does. Prepare in the program that loads the model (see
+  /// [Neural Engine](crate#neural-engine)): once it has prepared there, `prepare` returns at once.
+  ///
+  /// The compiled model takes about as much disk as the GGUF, in `~/Library/Caches/wavo/`, named
+  /// by the file's name and a hash of its content and modification time. One is kept per file
+  /// name: `prepare` deletes the compiled models of other files under the same name (an older
+  /// revision of the model, or a different file of that name, which then replace each other's),
+  /// and those no load has used for 30 days (of files deleted elsewhere). [`Model::unprepare`]
+  /// deletes the file's own. `progress` is called as each step starts; return
+  /// [`ControlFlow::Break`] to cancel before the next.
+  ///
+  /// # Errors
+  ///
+  /// - [`Error::Io`]: the file can't be read, or the cache folder can't be written.
+  /// - [`Error::Model`]: not a GGUF wavo supports.
+  /// - [`Error::NeuralEngine`]: Core ML failed to compile or load the program.
+  /// - [`Error::Cancelled`]: `progress` returned [`ControlFlow::Break`].
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// use std::ops::ControlFlow;
+  ///
+  /// let path = "parakeet-tdt-0.6b-v3-Q8_0.gguf";
+  /// if wavo::Model::prepare(path, |step| {
+  ///   eprintln!("{step:?}");
+  ///   ControlFlow::Continue(())
+  /// })? {
+  ///   let model = wavo::Model::load(path)?;
+  ///   assert_eq!(model.device().kind, wavo::DeviceKind::NeuralEngine);
+  /// }
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn prepare(
+    path: impl AsRef<Path>,
+    progress: impl FnMut(PrepareStep) -> ControlFlow<()>,
+  ) -> Result<bool> {
+    let path = path.as_ref();
+    let g = gguf::Gguf::open(path)?;
+    let Some(build) = program(g.get::<&str>("general.architecture")?) else {
+      return Ok(false);
+    };
+    ane::prepare(path, &g, build, progress)
+  }
+
+  /// Whether a model file is [prepared](Model::prepare) for the Neural Engine in this program:
+  /// `Some(true)` when [`Model::load`] runs it there, `Some(false)` when `prepare` would make it
+  /// so, `None` when the family or this machine has no Neural Engine path (or the file can't be
+  /// read). Another program's prepare doesn't count (see [Neural Engine](crate#neural-engine)).
+  pub fn prepared(path: impl AsRef<Path>) -> Option<bool> {
+    let path = path.as_ref();
+    if !ane::available() {
+      return None;
+    }
+
+    let g = gguf::Gguf::open(path).ok()?;
+    program(g.get::<&str>("general.architecture").ok()?)?;
+    Some(ane::prepared(path).is_some())
+  }
+
+  /// Deletes what [`Model::prepare`] made for a model file, and returns the bytes freed (0 when
+  /// it wasn't prepared). The file itself stays.
+  ///
+  /// # Errors
+  ///
+  /// [`Error::Io`]: the file can't be read, or deleting failed.
+  pub fn unprepare(path: impl AsRef<Path>) -> Result<u64> {
+    ane::unprepare(path.as_ref())
+  }
+}
+
+fn neural_engine(path: &Path, arch: &str) -> Result<ane::Model> {
+  if program(arch).is_none() {
+    return Err(Error::NeuralEngine(format!("{arch} models have no Neural Engine program")));
+  }
+
+  ane::load(path)
 }
 
 /// The index in `languages` of `code`, the language to force on a model with a token per

@@ -35,7 +35,7 @@ use std::fmt;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
-use crate::{Error, Result};
+use crate::{Error, PrepareStep, Result};
 
 /// How many more times [`Hub::pull`] resumes a download that failed on the network, after 1, 2
 /// and 4 s.
@@ -223,9 +223,14 @@ pub struct Progress<'a> {
   pub done: u64,
   /// Size of the file in bytes.
   pub total: u64,
-  /// The error a try failed with, on the one call before [`Hub::pull`] waits and retries;
-  /// `None` on every other call.
+  /// The error a try failed with, on the one call before [`Hub::pull`] waits and retries. With
+  /// [`preparing`](Self::preparing), the error preparing failed with, on one last call: the file
+  /// stays and runs on the GPU, and the next pull prepares again. `None` on every other call.
   pub retrying: Option<&'a Error>,
+  /// The step of [preparing](crate::Model::prepare) the downloaded model for the Neural Engine,
+  /// once per step after the download (`done` equals `total` then), and the failed one again when
+  /// preparing fails; `None` while downloading.
+  pub preparing: Option<PrepareStep>,
 }
 
 /// A Hugging Face cache folder that holds models.
@@ -241,6 +246,8 @@ pub struct Hub {
   root: PathBuf,
   /// The environment variable that set `root`, if any.
   from: Option<&'static str>,
+  /// Whether `pull` prepares models for the Neural Engine.
+  prepare: bool,
 }
 
 impl Default for Hub {
@@ -261,7 +268,28 @@ impl Hub {
   /// A cache in a folder of your own, such as your app's data folder. It is created on the first
   /// pull.
   pub fn at(root: impl Into<PathBuf>) -> Self {
-    Self { root: root.into(), from: None }
+    Self { root: root.into(), from: None, prepare: true }
+  }
+
+  /// Whether [`pull`](Self::pull) also [prepares](crate::Model::prepare) Parakeet and GigaAM for
+  /// the Neural Engine after the download (the default) or only downloads. Preparing compiles in
+  /// the calling process, with a peak of about the model's size and Core ML state that stays,
+  /// and warms the Neural Engine for this program only: an app that loads models in another
+  /// process (a helper, the same executable started again) downloads with `prepare(false)` and
+  /// calls `Model::prepare` there.
+  ///
+  /// ```no_run
+  /// use std::ops::ControlFlow;
+  ///
+  /// let hub = wavo::hub::Hub::new().prepare(false);
+  /// let path = hub.pull("parakeet-v3", |_| ControlFlow::Continue(()))?;
+  /// // Later, in the process that transcribes:
+  /// wavo::Model::prepare(&path, |_| ControlFlow::Continue(()))?;
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn prepare(mut self, prepare: bool) -> Self {
+    self.prepare = prepare;
+    self
   }
 
   /// The cache folder.
@@ -281,15 +309,23 @@ impl Hub {
   /// and returns the path of its file.
   ///
   /// It blocks until the file is complete: run it on a thread of your own. One HEAD request asks
-  /// the Hub for the latest revision; when the cache has it, nothing else is downloaded and
-  /// `progress` is never called. Otherwise the file downloads into
-  /// `blobs/<etag>.incomplete`, resuming a part an earlier pull left there, and moves into place
-  /// once complete. A download that breaks off, or receives nothing for 30 s, is resumed up to
-  /// [`RETRIES`] more times. There is no limit on the time a whole download takes.
+  /// the Hub for the latest revision; when the cache has it, nothing else is downloaded.
+  /// Otherwise the file downloads into `blobs/<etag>.incomplete`, resuming a part an earlier pull
+  /// left there, and moves into place once complete. A download that breaks off, or receives
+  /// nothing for 30 s, is resumed up to [`RETRIES`] more times. There is no limit on the time a
+  /// whole download takes.
+  ///
+  /// Then, for Parakeet and GigaAM on a Mac with a Neural Engine, it
+  /// [prepares](crate::Model::prepare) the file for it, which takes the longest the first time.
+  /// Elsewhere, for the other families and with [`prepare(false)`](Self::prepare), this step is
+  /// skipped. When preparing fails, `pull` still returns the path: the file runs on the GPU,
+  /// `progress` gets the error ([`Progress::retrying`]), and the next pull prepares again.
   ///
   /// `progress` is called when the download starts, after every chunk it receives (often: throttle
-  /// your own UI updates), and before every retry. Return [`ControlFlow::Break`] to cancel: the
-  /// partial file stays for the next pull to resume.
+  /// your own UI updates), before every retry, and as each step of preparing starts
+  /// ([`Progress::preparing`]). Return [`ControlFlow::Break`] to cancel: a partial file stays for
+  /// the next pull to resume. While preparing, `Break` cancels before the next step starts; a
+  /// step that has started (the system's compile in `Load` takes the longest) runs to its end.
   ///
   /// # Errors
   ///
@@ -320,13 +356,34 @@ impl Hub {
   pub fn pull(
     &self,
     name: &str,
-    progress: impl FnMut(Progress<'_>) -> ControlFlow<()>,
+    mut progress: impl FnMut(Progress<'_>) -> ControlFlow<()>,
   ) -> Result<PathBuf> {
     let m = lookup(name)?;
-    self.pull_file(&m.repo(), &m.file(), progress)
+    // The repository lock, held from the download through preparing, as `remove` takes it: the
+    // file stays while it is read.
+    let (path, _repo) = self.pull_file(&m.repo(), &m.file(), &mut progress)?;
+    if !self.prepare {
+      return Ok(path);
+    }
+
+    let (size, mut last) = (std::fs::metadata(&path)?.len(), PrepareStep::Build);
+    let prepared = crate::Model::prepare(&path, |step| {
+      last = step;
+      progress(Progress { done: size, total: size, retrying: None, preparing: Some(step) })
+    });
+    match prepared {
+      Err(Error::Cancelled) => Err(Error::Cancelled),
+      Err(e) => {
+        let _ =
+          progress(Progress { done: size, total: size, retrying: Some(&e), preparing: Some(last) });
+        Ok(path)
+      }
+      Ok(_) => Ok(path),
+    }
   }
 
-  /// Deletes a model by short or full name from the cache, and returns the bytes freed; `None`
+  /// Deletes a model by short or full name from the cache, along with what
+  /// [`Model::prepare`](crate::Model::prepare) made for it, and returns the bytes freed; `None`
   /// when it wasn't downloaded. Other files in the model's repository folder stay.
   ///
   /// Newer `hf` versions keep a file's bytes in a store shared across repositories,

@@ -29,8 +29,9 @@ the `Makefile` and `.github/workflows/main.yml`.
   `serve` listens on a socket and never downloads, except its startup models as `run` does; a
   request never does. `pull` blocks: the library starts no download threads.
 - The library leaves resampling to the caller; the CLI does it. `Model::transcribe` runs the audio
-  as it is, in one pass, and `Model::transcribe_long` splits long audio at pauses as an option. VAD
-  and streaming are in neither.
+  as it is, in one pass (on the Neural Engine, whose window is a fixed 15 s, it splits longer audio
+  at pauses), and `Model::transcribe_long` splits long audio at pauses as an option. VAD and
+  streaming are in neither.
 
 ## Code
 
@@ -97,6 +98,11 @@ the `Makefile` and `.github/workflows/main.yml`.
   must reproduce text, tokens and start times exactly, and must fail (not skip) when a model,
   sample or block is missing; `make test` does the same for the smoke models (the Makefile's
   `MODELS`).
+- The Neural Engine is close to the GPU, not exact, so its `*_ane` tests (macOS, `make test-all`)
+  hold each clip within `check_ane`'s tolerances (tests/models.rs). When ANE code or a model
+  changes, also check the corpus: on an hour of speech cut at pauses, `make compare BACKEND=ane`
+  and `BACKEND=gpu`, then `batch compare` of their two `wavo.jsonl`, must give a WER ≤ 0.2% and
+  the same text on ≥ 95% of the 2–15 s pieces. The GPU's fixtures stay exact.
 - Treat any fixture change as a bug. Changing arithmetic (e.g. F16 operands) is fine while the
   fixtures stay exact. If a speed or memory gain changes a fixture, show the person the fixture
   diff and the gain before committing. A PR may add blocks but must not change an existing one

@@ -88,9 +88,9 @@ reference:
 fixtures:
 	scripts/fixtures.sh "$(MODEL)" "$(TIMESTAMPS)" $(SAMPLES)
 
-# make compare MODEL=gigaam-v3-e2e-rnnt LIST=wavs.txt OUT=dir (see the script)
+# make compare MODEL=gigaam-v3-e2e-rnnt LIST=wavs.txt OUT=dir [BACKEND=gpu|ane] (see the script)
 compare:
-	scripts/compare.sh "$(MODEL)" "$(LIST)" "$(OUT)"
+	scripts/compare.sh "$(MODEL)" "$(LIST)" "$(OUT)" $(BACKEND)
 
 # Coarse speed check against main's dev build, for CI (see the script).
 bench-compare:
