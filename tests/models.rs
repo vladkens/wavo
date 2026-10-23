@@ -191,6 +191,13 @@ fn parakeet_tdt_v3() {
   check("parakeet-tdt-0.6b-v3", &["jfk", "ru-short", "uk-short"]);
 }
 
+// uk-long (29 s) is within the 30 s that transcribe.cpp takes in one pass; past them its VAD head
+// splits the audio, which wavo doesn't.
+#[test]
+fn parakeet_ultra() {
+  check("parakeet-ultra", &["jfk", "ru-short", "uk-long", "jobs-silence"]);
+}
+
 #[test]
 fn parakeet_tdt_v3_he() {
   check("parakeet-tdt-0.6b-v3-he", &["he-short", "he-long"]);

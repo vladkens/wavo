@@ -17,6 +17,8 @@ pub struct Decoder {
   blank: usize,
   durations: Vec<usize>,
   max_symbols: usize,
+  /// Parakeet Ultra's `max_symbols` decisions per frame for the whole clip, not per frame.
+  global: bool,
   /// `[classes][hidden]`
   embed: Matrix,
   lstm: Vec<Lstm>,
@@ -47,6 +49,11 @@ impl Decoder {
     if u("joint.num_extra_outputs")? != durations.len() || durations.iter().any(|&d| d < 0) {
       bail!("TDT durations {durations:?} don't match the joint's extra outputs");
     }
+    let global = match g.optional::<&str>("stt.parakeet.tdt.symbol_budget")? {
+      None | Some("per_frame") => false,
+      Some("global") => true,
+      Some(other) => bail!("stt.parakeet.tdt.symbol_budget is {other:?}"),
+    };
     if max_symbols == 0 {
       bail!("stt.parakeet.tdt.max_symbols is 0");
     }
@@ -69,6 +76,7 @@ impl Decoder {
       blank,
       durations: durations.into_iter().map(|d| d as usize).collect(),
       max_symbols,
+      global,
       embed: q("pred.embed.weight", &[hidden, classes])?,
       lstm,
       pred_w: q("joint.pred.weight", &[hidden, joint])?,
@@ -84,7 +92,8 @@ impl Decoder {
     let j = self.joint;
     let mut state = vec![0.0; 2 * self.lstm.len() * self.hidden];
     let (mut next, mut pred) = self.predict(None, &state);
-    greedy(enc.len() / width, self.blank, &self.durations, self.max_symbols, |t, emitted| {
+    let budget = (self.max_symbols, self.global);
+    greedy(enc.len() / width, self.blank, &self.durations, budget, |t, emitted| {
       if let Some(token) = emitted {
         state = std::mem::take(&mut next);
         (next, pred) = self.predict(Some(token), &state);
@@ -143,22 +152,32 @@ fn argmax(v: &[f32]) -> usize {
 /// `src/arch/parakeet/decoder.cpp`. `joint(t, emitted)` scores frame t and returns the token and
 /// duration index; `emitted` is the token of the previous decision if it emitted one, for the
 /// predictor to step on. A token is emitted at the current frame; then the frame advances by the
-/// duration. Decisions on one frame are capped at `max_symbols`, and a blank of duration 0 moves
-/// on one frame.
+/// duration, and a blank of duration 0 moves on one frame. `budget` is `(max_symbols, global)`:
+/// decisions on one frame are capped at `max_symbols`, or with `global` all decisions at
+/// `max_symbols` times the frames.
 fn greedy(
   frames: usize,
   blank: usize,
   durations: &[usize],
-  max_symbols: usize,
+  budget: (usize, bool),
   mut joint: impl FnMut(usize, Option<usize>) -> (usize, usize),
 ) -> Vec<(u32, u32)> {
+  let (max_symbols, global) = budget;
   let (mut out, mut t, mut symbols, mut emitted) = (Vec::new(), 0, 0, None);
-  while t < frames {
+  let mut left = if global { max_symbols * frames } else { usize::MAX };
+  while t < frames && left > 0 {
     let (token, d) = joint(t, emitted.take());
     if token != blank {
       out.push((token as u32, t as u32));
       emitted = Some(token);
     }
+
+    if global {
+      left -= 1;
+      t += if token == blank { durations[d].max(1) } else { durations[d] };
+      continue;
+    }
+
     t += durations[d];
     symbols += 1;
     if durations[d] != 0 {
@@ -184,9 +203,18 @@ mod tests {
     durations: &[usize],
     script: &[(usize, usize)],
   ) -> (Vec<(u32, u32)>, Calls) {
+    run_budget(frames, durations, (10, false), script)
+  }
+
+  fn run_budget(
+    frames: usize,
+    durations: &[usize],
+    budget: (usize, bool),
+    script: &[(usize, usize)],
+  ) -> (Vec<(u32, u32)>, Calls) {
     let mut calls = Vec::new();
     let mut script = script.iter();
-    let out = super::greedy(frames, BLANK, durations, 10, |t, emitted| {
+    let out = super::greedy(frames, BLANK, durations, budget, |t, emitted| {
       calls.push((t, emitted));
       *script.next().expect("script too short")
     });
@@ -213,5 +241,18 @@ mod tests {
     let frames: Vec<u32> = out.iter().map(|&(_, t)| t).collect();
     assert_eq!(frames, [vec![0; 10], vec![1; 9], vec![2]].concat());
     assert_eq!(calls.iter().filter(|c| c.0 == 1).count(), 10);
+  }
+
+  #[test]
+  fn global_budget() {
+    // Twelve tokens on frame 0, past the per-frame cap of 10, and a blank; then the budget of
+    // 10 · 2 decisions ends the search on frame 1, without a blank.
+    let mut script = vec![(5, 0); 12];
+    script.push((BLANK, 0));
+    script.extend([(6, 0); 7]);
+    let (out, calls) = run_budget(2, &[0, 1], (10, true), &script);
+    let frames: Vec<u32> = out.iter().map(|&(_, t)| t).collect();
+    assert_eq!(frames, [vec![0; 12], vec![1; 7]].concat());
+    assert_eq!(calls.len(), 20);
   }
 }

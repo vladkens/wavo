@@ -49,8 +49,9 @@ fn depthwise(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_ind
 
 // The first conv + ReLU over a one-channel image x [t][f], then the depthwise conv + bias over its
 // output, which is computed per tap and never stored, into row wg.y of a chunk buffer y (output
-// row 2·t0 − 1 + wg.y; −1 comes out as the bias). The 7×7 input pixels it reads go to shared
-// memory first, zero outside the image (zero taps add exact zeros).
+// row 2·t0 − 1 + wg.y; −1 comes out as the bias, rows from ⌈t/4⌉ on as zero, as if masked). The
+// 7×7 input pixels it reads go to shared memory first, zero outside the image (zero taps add exact
+// zeros).
 var<workgroup> x7: array<f32, 49>;
 
 @compute @workgroup_size(256)
@@ -101,7 +102,7 @@ fn first_depthwise(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocati
         }
       }
     }
-    y[(wg.y * half(f1) + wg.x) * p.ch + c] = acc;
+    y[(wg.y * half(f1) + wg.x) * p.ch + c] = select(acc, 0.0, r > half(t1));
   }
 }
 

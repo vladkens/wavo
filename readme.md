@@ -48,6 +48,7 @@ how I build now.
 |---|---|---|---|
 | `parakeet-v3` (default) | 0.74 GB | 25 European languages | cased, punctuated |
 | `parakeet-v2` | 0.73 GB | English | cased, punctuated |
+| `parakeet-ultra` | 0.74 GB | 25 European languages | cased, punctuated |
 | `parakeet-he` | 0.74 GB | Hebrew | cased, punctuated |
 | `gigaam-v3` | 0.27 GB | Russian | cased, punctuated |
 | `gigaam-v3-e2e-ctc` | 0.27 GB | Russian | cased, punctuated |
@@ -71,6 +72,8 @@ how I build now.
 | `moonshine-base` | 0.08 GB | English | cased, punctuated |
 
 Parakeet is NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
+[Parakeet Ultra](https://huggingface.co/moondream/parakeet-ultra) is Moondream's retraining of v3
+with fewer errors in each of its 25 languages,
 GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM), Whisper is OpenAI's
 [Whisper](https://huggingface.co/openai/whisper-large-v3-turbo), Breeze-ASR-25 is MediaTek
 Research's [Whisper large-v2 fine-tune](https://huggingface.co/MediaTek-Research/Breeze-ASR-25)
@@ -299,6 +302,7 @@ wavo's kernels and algorithms are built from the ideas and code of these project
 
 - Parakeet TDT ([v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2),
   [v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)) © NVIDIA, CC-BY-4.0
+- [Parakeet Ultra](https://huggingface.co/moondream/parakeet-ultra) © Moondream, CC-BY-4.0
 - [GigaAM v3](https://huggingface.co/ai-sage/GigaAM-v3) © Sber, MIT
 - Whisper © OpenAI, MIT for [large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo)
   and Apache-2.0 for the other sizes (such as

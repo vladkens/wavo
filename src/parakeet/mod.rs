@@ -1,7 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Parakeet TDT: log-mel frontend on the CPU, FastConformer encoder (8× conv subsampling, relative
 //! positions) on the GPU, TDT greedy decoding on the CPU, where the joint also predicts how many
-//! frames to advance.
+//! frames to advance. Parakeet Ultra adds kestrel's length masking and symbol budget; its voice
+//! activity head, which transcribe.cpp runs to split audio past 30 s, is not used.
 
 mod decoder;
 mod encoder;
@@ -29,6 +30,8 @@ pub struct Parakeet {
   tok: Tokenizer,
   /// Tokens left out of the result: unknown and control ones.
   special: Vec<bool>,
+  /// kestrel length masking: the mel frames past `pcm.len() / HOP` are padding.
+  kestrel: bool,
 }
 
 impl Parakeet {
@@ -59,6 +62,11 @@ impl Parakeet {
     }
     g.check("stt.parakeet.encoder.use_bias", &[false])?;
     g.check("stt.parakeet.encoder.xscaling", &[false])?;
+    let kestrel = match g.optional::<&str>("stt.parakeet.encoder.length_masking")? {
+      None | Some("none") => false,
+      Some("kestrel") => true,
+      Some(other) => bail!("stt.parakeet.encoder.length_masking is {other:?}"),
+    };
     let cfg = conformer::Config::load(g, "parakeet", Attention::Relative, false)?;
     let pad = (cfg.kernel / 2) as i32;
     for (key, want) in [
@@ -92,7 +100,7 @@ impl Parakeet {
       Ok::<_, Error>((gpu, encoder, decoder.join().unwrap()?))
     })?;
     let tok = Tokenizer::new(&vocab);
-    Ok(Self { gpu, frontend: Frontend::new(), encoder, decoder, tok, special })
+    Ok(Self { gpu, frontend: Frontend::new(), encoder, decoder, tok, special, kestrel })
   }
 
   pub fn transcribe(&self, pcm: &[f32]) -> Result<Transcript> {
@@ -100,7 +108,9 @@ impl Parakeet {
     if mel.is_empty() {
       return Ok(Transcript::default());
     }
-    let (enc, width) = self.encoder.run(&self.gpu, &mel)?;
+    // kestrel's valid length, pcm.len() / HOP, is all mel frames but the last.
+    let valid = mel.len() / MELS - self.kestrel as usize;
+    let (enc, width) = self.encoder.run(&self.gpu, &mel, valid)?;
     let (ids, frames): (Vec<usize>, Vec<u32>) = (self.decoder.decode(&enc, width).into_iter())
       .filter(|&(id, _)| !self.special[id as usize])
       .map(|(id, frame)| (id as usize, frame))
