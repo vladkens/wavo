@@ -44,7 +44,7 @@ the `Makefile` and `.github/workflows/main.yml`.
   Rust and WGSL, tests excluded. The CLI (`src/cli/`) stays roughly ≤ 900 lines: hand-rolled
   argument parsing, JSON and SRT, no clap or serde. `wavo debug` (`src/cli/debug.rs`) is counted
   separately and stays roughly ≤ 450 lines, and so is `wavo serve` (`src/cli/serve.rs` and
-  `http.rs`), roughly ≤ 600 lines: HTTP hand-rolled on `std::net` with `httparse`, no HTTP
+  `http.rs`), roughly ≤ 650 lines: HTTP hand-rolled on `std::net` with `httparse`, no HTTP
   framework or async runtime. `src/hub/` stays roughly ≤ 600 lines with its docs.
   Simplify before growing past any budget.
 - Every public item has a doc comment with its units and failure cases; examples are doctests.
