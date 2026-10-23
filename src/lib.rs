@@ -278,6 +278,14 @@ pub fn devices() -> Result<Vec<Device>> {
   Ok(gpu::devices()?.into_iter().chain(ane).collect())
 }
 
+/// Holds a lock on the file at `path`, created when missing, until the file is dropped: the hub's
+/// locks and the Neural Engine cache's.
+fn hold(path: &Path) -> Result<std::fs::File> {
+  let lock = std::fs::File::options().create(true).truncate(false).write(true).open(path)?;
+  lock.lock()?;
+  Ok(lock)
+}
+
 /// The code path of the CPU matrix products (`NEON`, `AVX2+FMA` or `portable`), for `wavo debug`;
 /// not part of the API.
 #[doc(hidden)]
@@ -457,8 +465,9 @@ impl Model {
       Backend::NeuralEngine => Some(neural_engine(path, arch)?),
       // A file that isn't prepared in this program, or that Core ML fails to load, runs on the
       // GPU: a first load in this program would compile for the Neural Engine for 10–30 s.
-      Backend::Auto => program(arch)
-        .and_then(|_| ane::prepared(path))
+      Backend::Auto => (program(arch).is_some() && ane::available())
+        .then(|| ane::prepared(path))
+        .flatten()
         .and_then(|compiled| ane::load_compiled(&compiled).ok()),
     };
 
@@ -667,12 +676,12 @@ impl Model {
   /// [Neural Engine](crate#neural-engine)): once it has prepared there, `prepare` returns at once.
   ///
   /// The compiled model takes about as much disk as the GGUF, in `~/Library/Caches/wavo/`, named
-  /// by the file's name and a hash of its content, so copies of a file share it. One is kept per
-  /// file name: `prepare` deletes the compiled models of
-  /// other content under the same name (an older revision of the model), and those no load has
-  /// used for 30 days (of files deleted elsewhere). [`Model::unprepare`] deletes the file's own.
-  /// `progress` is called as each step starts; return [`ControlFlow::Break`] to cancel before the
-  /// next.
+  /// by the file's name and a hash of its content and modification time. One is kept per file
+  /// name: `prepare` deletes the compiled models of other files under the same name (an older
+  /// revision of the model, or a different file of that name, which then replace each other's),
+  /// and those no load has used for 30 days (of files deleted elsewhere). [`Model::unprepare`]
+  /// deletes the file's own. `progress` is called as each step starts; return
+  /// [`ControlFlow::Break`] to cancel before the next.
   ///
   /// # Errors
   ///
@@ -738,6 +747,7 @@ fn neural_engine(path: &Path, arch: &str) -> Result<ane::Model> {
   if program(arch).is_none() {
     return Err(Error::NeuralEngine(format!("{arch} models have no Neural Engine program")));
   }
+
   ane::load(path)
 }
 

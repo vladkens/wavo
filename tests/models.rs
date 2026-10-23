@@ -238,6 +238,7 @@ fn check_ane(name: &str, frame_ms: u32, samples: &[&str]) {
     for (got, want) in &restyled {
       println!("{at}: {got:?} instead of {want:?}");
     }
+
     assert!(restyled.len() <= 1, "{at}: {} words differ in punctuation or case", restyled.len());
     let close = offsets.iter().filter(|&&d| d <= 2 * frame_ms).count();
     let worst = offsets.iter().max().copied().unwrap_or(0);
@@ -270,6 +271,7 @@ fn align<T: PartialEq>(a: &[T], b: &[T]) -> Vec<(usize, usize)> {
       j += 1;
     }
   }
+
   out
 }
 
@@ -291,12 +293,15 @@ fn word_edits(a: &[String], b: &[String]) -> usize {
       if j >= 2 && a[i - 1] == format!("{}{}", b[j - 2], b[j - 1]) {
         best = best.min(d[i - 1][j - 2]);
       }
+
       if i >= 2 && b[j - 1] == format!("{}{}", a[i - 2], a[i - 1]) {
         best = best.min(d[i - 2][j - 1]);
       }
+
       d[i][j] = best;
     }
   }
+
   d[a.len()][b.len()]
 }
 

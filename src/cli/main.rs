@@ -328,6 +328,12 @@ fn pull_one(hub: &Hub, m: &hub::ModelInfo, bars: &MultiProgress) -> Result<PathB
   let (mut bar, mut retries): (Option<(ProgressBar, u64)>, u32) = (None, 0);
   let mut prepare: Option<ProgressBar> = None;
   let path = hub.pull(m.name, |p| {
+    if let (Some(_), Some(e)) = (p.preparing, p.retrying) {
+      prepare = None; // dropping a spinner clears it
+      bars.suspend(|| eprintln!("warning: {} runs on the GPU, preparing it failed: {e}", m.name));
+      return ControlFlow::Continue(());
+    }
+
     if let Some(step) = p.preparing {
       let step = match step {
         PrepareStep::Build => "building",
@@ -340,8 +346,10 @@ fn pull_one(hub: &Hub, m: &hub::ModelInfo, bars: &MultiProgress) -> Result<PathB
       } else {
         prepare.get_or_insert_with(|| bars.add(self::spinner())).set_message(msg);
       }
+
       return ControlFlow::Continue(());
     }
+
     if let Some(e) = p.retrying {
       retries += 1;
       bar = None; // dropping a bar clears it
@@ -389,6 +397,7 @@ fn list() -> Result<()> {
   } else {
     out!("{:<18} {:>7}  {}PATH", "NAME", "SIZE", if column { "ANE  " } else { "" })?;
   }
+
   for ((m, path), ane) in found.iter().zip(&ane) {
     let ane = match ane {
       _ if !column => "",

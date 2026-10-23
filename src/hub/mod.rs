@@ -223,11 +223,13 @@ pub struct Progress<'a> {
   pub done: u64,
   /// Size of the file in bytes.
   pub total: u64,
-  /// The error a try failed with, on the one call before [`Hub::pull`] waits and retries;
-  /// `None` on every other call.
+  /// The error a try failed with, on the one call before [`Hub::pull`] waits and retries. With
+  /// [`preparing`](Self::preparing), the error preparing failed with, on one last call: the file
+  /// stays and runs on the GPU, and the next pull prepares again. `None` on every other call.
   pub retrying: Option<&'a Error>,
   /// The step of [preparing](crate::Model::prepare) the downloaded model for the Neural Engine,
-  /// once per step after the download (`done` equals `total` then); `None` while downloading.
+  /// once per step after the download (`done` equals `total` then), and the failed one again when
+  /// preparing fails; `None` while downloading.
   pub preparing: Option<PrepareStep>,
 }
 
@@ -315,8 +317,9 @@ impl Hub {
   ///
   /// Then, for Parakeet and GigaAM on a Mac with a Neural Engine, it
   /// [prepares](crate::Model::prepare) the file for it, which takes the longest the first time.
-  /// Elsewhere, for the other families and with [`prepare(false)`](Self::prepare),
-  /// this step is skipped.
+  /// Elsewhere, for the other families and with [`prepare(false)`](Self::prepare), this step is
+  /// skipped. When preparing fails, `pull` still returns the path: the file runs on the GPU,
+  /// `progress` gets the error ([`Progress::retrying`]), and the next pull prepares again.
   ///
   /// `progress` is called when the download starts, after every chunk it receives (often: throttle
   /// your own UI updates), before every retry, and as each step of preparing starts
@@ -333,8 +336,6 @@ impl Hub {
   ///   wrong size.
   /// - [`Error::Cancelled`]: `progress` returned [`ControlFlow::Break`].
   /// - [`Error::Io`]: writing to the cache failed, for example on a full disk.
-  /// - [`Error::NeuralEngine`]: Core ML failed to prepare the downloaded file, which stays in the
-  ///   cache and runs on the GPU; the next pull tries again.
   ///
   /// # Examples
   ///
@@ -364,11 +365,21 @@ impl Hub {
     if !self.prepare {
       return Ok(path);
     }
-    let size = std::fs::metadata(&path)?.len();
-    crate::Model::prepare(&path, |step| {
+
+    let (size, mut last) = (std::fs::metadata(&path)?.len(), PrepareStep::Build);
+    let prepared = crate::Model::prepare(&path, |step| {
+      last = step;
       progress(Progress { done: size, total: size, retrying: None, preparing: Some(step) })
-    })?;
-    Ok(path)
+    });
+    match prepared {
+      Err(Error::Cancelled) => Err(Error::Cancelled),
+      Err(e) => {
+        let _ =
+          progress(Progress { done: size, total: size, retrying: Some(&e), preparing: Some(last) });
+        Ok(path)
+      }
+      Ok(_) => Ok(path),
+    }
   }
 
   /// Deletes a model by short or full name from the cache, along with what

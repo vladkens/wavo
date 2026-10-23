@@ -42,7 +42,7 @@ use crate::{Api, Device, DeviceKind, Error, Kernels, PrepareStep, Result};
 /// audio is split at pauses into pieces of up to this.
 pub const WINDOW: usize = 15 * 16000;
 /// Bumped whenever a program changes, so models compiled by an older wavo are rebuilt.
-const GRAPH: u32 = 1;
+const GRAPH: u32 = 2;
 
 /// Writes a family's encoder into the program and returns its outputs.
 pub type Build = fn(&Gguf, &mut Program) -> Result<Vec<Var>>;
@@ -104,22 +104,24 @@ fn cache() -> Result<PathBuf> {
 /// Holds the cache's one lock until the file is dropped, creating the folder.
 fn lock(dir: &Path) -> Result<File> {
   fs::create_dir_all(dir)?;
-  let lock = File::options().create(true).truncate(false).write(true).open(dir.join("lock"))?;
-  lock.lock()?;
-  Ok(lock)
+  crate::hold(&dir.join("lock"))
 }
 
-/// `<stem>.<id>`, what names the GGUF's compiled models: `<id>` is FNV-1a over the file's size and
-/// its first and last MiB (the header names every tensor with its offset, the tail holds weights),
-/// so copies of a file share them.
+/// `<stem>.<id>`, what names the GGUF's compiled models: `<id>` is FNV-1a over the file's size,
+/// modification time and first and last MiB (the header names every tensor with its offset, the
+/// tail holds weights). Links to one file share it; a copy or a new download gets a new one, and
+/// its prepare replaces the old one of the same stem.
 fn name(path: &Path) -> Result<String> {
   const PART: u64 = 1 << 20;
   let stem = path.file_stem().unwrap_or_default().to_string_lossy();
   let stem: String = stem.chars().map(|c| if c == '.' { '_' } else { safe(c) }).collect();
   let mut f = File::open(path)?;
-  let len = f.metadata()?.len();
+  let meta = f.metadata()?;
+  let len = meta.len();
+  let time = meta.modified()?.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
   let mut h = FNV;
   fnv(&mut h, &len.to_le_bytes());
+  fnv(&mut h, &time.to_le_bytes());
   let mut buf = vec![0; PART.min(len) as usize];
   f.read_exact(&mut buf)?;
   fnv(&mut h, &buf);
@@ -187,6 +189,7 @@ pub fn load(path: &Path) -> Result<Model> {
       "the model is not prepared for the Neural Engine: run `wavo pull` or wavo::Model::prepare",
     ));
   }
+
   load_compiled(&compiled)
 }
 
@@ -197,6 +200,7 @@ pub fn load_compiled(compiled: &Path) -> Result<Model> {
       "no Neural Engine: it needs an Apple Silicon Mac with macOS 15 or later",
     ));
   }
+
   let model = Model::load(compiled)?;
   let _ = mark(compiled); // a load without its marker still works
   Ok(model)
@@ -219,6 +223,7 @@ pub fn prepare(
   if !available() {
     return Ok(false);
   }
+
   let target = compiled(path)?;
   if loaded(&target) {
     return Ok(true);
@@ -241,12 +246,15 @@ pub fn prepare(
       p.finish(&outputs.iter().collect::<Vec<_>>(), &package)?;
       step(PrepareStep::Compile)?;
       let out = coreml::compile(&package)?;
-      fs::remove_dir_all(&package)?;
-      move_dir(&out, &target)
+      let moved = fs::remove_dir_all(&package).map_err(Error::from);
+      let moved = moved.and_then(|()| move_dir(&out, &target));
+      let _ = fs::remove_dir_all(&out); // Core ML's temporary folder, unless it moved
+      moved
     })();
     let _ = fs::remove_dir_all(&tmp);
     built?;
   }
+
   step(PrepareStep::Load)?;
   Model::load(&target)?;
   mark(&target)?;
@@ -265,6 +273,7 @@ pub fn remove(key: &str) -> Result<u64> {
   if !dir.is_dir() {
     return Ok(0);
   }
+
   let _lock = lock(&dir)?;
   Ok(delete(&dir, key))
 }
@@ -291,7 +300,8 @@ fn delete(dir: &Path, prefix: &str) -> u64 {
 
 /// Deletes, under the cache lock, the compiled models that `target`, the one being prepared,
 /// replaces: the other ids and graph versions of its stem (an older revision of the model, a
-/// changed file). Also those no program has loaded for 30 days (by their newest marker): of GGUFs
+/// changed file, or another GGUF of the same name: one compiled model per name is the trade-off).
+/// Also those no program has loaded for 30 days (by their newest marker): of GGUFs
 /// deleted behind wavo's back (`hf cache rm`, another cache folder).
 fn prune(dir: &Path, target: &Path) {
   const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
@@ -323,10 +333,11 @@ fn move_dir(from: &Path, to: &Path) -> Result<()> {
   if fs::rename(from, to).is_ok() {
     return Ok(());
   }
+
   let tmp = to.with_extension("copy");
-  copy_dir(from, &tmp)?;
-  fs::rename(&tmp, to)?;
-  Ok(fs::remove_dir_all(from)?)
+  let copied = copy_dir(from, &tmp).and_then(|()| Ok(fs::rename(&tmp, to)?));
+  let _ = fs::remove_dir_all(&tmp);
+  copied
 }
 
 fn copy_dir(from: &Path, to: &Path) -> Result<()> {
@@ -339,6 +350,7 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
       fs::copy(e.path(), to.join(e.file_name()))?;
     }
   }
+
   Ok(())
 }
 
@@ -364,18 +376,24 @@ mod tests {
   }
 
   #[test]
-  fn names_follow_the_content() {
+  fn names_follow_the_file() {
     let dir = scratch("names");
-    let (a, b, c) =
-      (dir.join("m-0.6b.gguf"), dir.join("copy").join("m-0.6b.gguf"), dir.join("n.gguf"));
+    let (a, b) = (dir.join("m-0.6b.gguf"), dir.join("copy").join("m-0.6b.gguf"));
     fs::create_dir_all(b.parent().unwrap()).unwrap();
     fs::write(&a, [1; 100]).unwrap();
-    fs::write(&b, [1; 100]).unwrap();
-    fs::write(&c, [2; 100]).unwrap();
+    fs::copy(&a, &b).unwrap();
+    let day = Duration::from_secs(24 * 3600);
+    File::options().write(true).open(&b).unwrap().set_modified(UNIX_EPOCH + day).unwrap();
     let na = name(&a).unwrap();
     assert!(na.starts_with("m-0_6b.") && na.len() == 23, "{na}");
-    assert_eq!(na, name(&b).unwrap(), "a copy shares the name");
-    assert_ne!(na[7..], name(&c).unwrap()[2..], "other content, another id");
+    assert_ne!(na, name(&b).unwrap(), "a copy of another time, another id");
+    #[cfg(unix)]
+    {
+      let link = dir.join("link.gguf");
+      std::os::unix::fs::symlink(&a, &link).unwrap();
+      assert_eq!(name(&link).unwrap()[5..], na[7..], "a link shares the id");
+    }
+
     fs::remove_dir_all(dir).unwrap();
   }
 
@@ -388,6 +406,7 @@ mod tests {
       fs::create_dir_all(dir.join(format!("{d}.mlmodelc"))).unwrap();
       fs::write(dir.join(format!("{d}.wavo.loaded")), "stamp").unwrap();
     }
+
     File::create(dir.join("lock")).unwrap();
     prune(&dir, &target);
     let mut left: Vec<String> =

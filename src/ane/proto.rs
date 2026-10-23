@@ -13,6 +13,7 @@ impl Msg {
       self.0.push(v as u8 | 0x80);
       v >>= 7;
     }
+
     self.0.push(v as u8);
   }
 

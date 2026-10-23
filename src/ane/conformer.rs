@@ -99,6 +99,7 @@ impl Graph<'_> {
     for i in 0..spatial {
       shape.push((x.shape[2 + i] + 2 * pad - w.shape[2 + i]) / stride + 1);
     }
+
     let mut inputs = vec![
       ("x", x),
       ("weight", w),
@@ -179,6 +180,7 @@ pub fn blocks(
     // The block output is norm_out(x), not the residual stream.
     x = gr.layer_norm(&x, &format!("{b}norm_out"))?;
   }
+
   Ok(x)
 }
 

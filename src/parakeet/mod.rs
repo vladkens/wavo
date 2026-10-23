@@ -61,6 +61,7 @@ fn config(g: &Gguf) -> Result<(conformer::Config, usize, usize)> {
   for (key, want) in [("pre_emphasis", PRE_EMPHASIS), ("f_min", 0.0), ("f_max", F_MAX)] {
     g.check(&format!("stt.frontend.{key}"), &[want])?;
   }
+
   g.check("stt.parakeet.encoder.use_bias", &[false])?;
   g.check("stt.parakeet.encoder.xscaling", &[false])?;
   let cfg = conformer::Config::load(g, "parakeet", Attention::Relative, false)?;
@@ -122,8 +123,7 @@ impl Parakeet {
     let valid = mel.len() / MELS - self.kestrel as usize;
     let (enc, width) = match &self.backend {
       Backend::Gpu(gpu) => gpu.1.run(&gpu.0, &mel, valid)?,
-      // The program masks the frames past the mel it is given, as kestrel does past `valid`.
-      Backend::Ane(model) => ane::run(model, &mel[..valid * MELS])?,
+      Backend::Ane(model) => ane::run(model, &mel, valid)?,
     };
     let (ids, frames): (Vec<usize>, Vec<u32>) = (self.decoder.decode(&enc, width).into_iter())
       .filter(|&(id, _)| !self.special[id as usize])

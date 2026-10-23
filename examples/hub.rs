@@ -29,12 +29,17 @@ fn main() -> Result<()> {
   let pull = std::thread::spawn(move || {
     let mut last = None;
     wavo::hub::Hub::new().pull(&name, |p| {
+      if let Some(step) = p.preparing {
+        match p.retrying {
+          Some(e) => eprintln!("\npreparing failed, it runs on the GPU: {e}"),
+          None => eprintln!("\npreparing for the Neural Engine: {step:?}"),
+        }
+
+        return ControlFlow::Continue(());
+      }
+
       if let Some(e) = p.retrying {
         eprintln!("\nretrying after: {e}");
-      }
-      if let Some(step) = p.preparing {
-        eprintln!("\npreparing for the Neural Engine: {step:?}");
-        return ControlFlow::Continue(());
       }
       let pct = p.done * 100 / p.total;
       if last != Some(pct) {

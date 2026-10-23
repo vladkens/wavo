@@ -119,6 +119,7 @@ impl Program {
     if self.error.is_none() {
       self.error = self.weights.write_all(b).err();
     }
+
     self.weights_len += b.len() as u64;
   }
 
@@ -149,6 +150,7 @@ impl Program {
       for (key, vars) in inputs {
         op.entry(2, key, |arg| vars.iter().for_each(|v| _ = arg.msg(1, |b| _ = b.str(1, &v.name))));
       }
+
       op.msg(3, |o| named(o, &out));
       name_attribute(op, &out.name);
     });
@@ -204,6 +206,7 @@ impl Program {
         immediate(m, |t| _ = t.msg(7, |r| _ = r.bytes(1, &bytes)))
       });
     }
+
     let blob = self.blob(Dtype::F16, shape, &bytes);
     self.constant(Dtype::F16, shape, |m| blob_file(m, &blob))
   }
@@ -226,6 +229,7 @@ impl Program {
       for (key, blob) in [("data", &data), ("scale", &scale)] {
         op.entry(2, key, |arg| _ = arg.msg(1, |b| _ = b.msg(2, |v| blob_value(v, blob))));
       }
+
       op.msg(3, |o| named(o, &out));
       name_attribute(op, &out.name);
     });
@@ -238,6 +242,7 @@ impl Program {
     if let Some(e) = self.error.take() {
       return Err(e);
     }
+
     let mut file = self.weights.into_inner().map_err(|e| e.into_error())?;
     file.seek(SeekFrom::Start(0))?;
     file.write_all(&self.blobs.to_le_bytes())?;
@@ -388,6 +393,7 @@ mod tests {
       assert_eq!((u32_at(record + 4), u64_at(record + 8)), (dtype, size));
       assert_eq!(u64_at(record + 16), record as u64 + 64);
     }
+
     assert_eq!(&b[128..130], &f16::ONE.to_le_bytes());
     assert_eq!(b[256] as i8, 127);
     assert_eq!(b.len(), 448);

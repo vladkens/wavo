@@ -34,6 +34,7 @@ pub fn available() -> bool {
     if NSProcessInfo::processInfo().operatingSystemVersion().majorVersion < 15 {
       return false;
     }
+
     let class = MLNeuralEngineComputeDevice::class();
     // A class method, so a binary built for older macOS still starts there (no link-time symbol).
     let devices = unsafe { MLModel::availableComputeDevices() };
@@ -118,6 +119,7 @@ impl Model {
         let value = unsafe { MLFeatureValue::featureValueWithMultiArray(&array) };
         values.push(Retained::into_super(Retained::into_super(value)));
       }
+
       let keys: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
       let dict = NSDictionary::from_retained_objects(&keys, &values);
       let features = unsafe {
@@ -178,5 +180,6 @@ fn read(array: &MLMultiArray) -> Vec<f32> {
     let data = unsafe { std::slice::from_raw_parts(ptr.cast::<f16>().as_ptr(), len) };
     (0..rows).for_each(|r| out.extend(data[r * row_stride..][..cols].iter().map(|x| x.to_f32())));
   }
+
   out
 }

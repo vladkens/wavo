@@ -109,7 +109,7 @@ impl Hub {
   fn lock(&self, repo: &str, name: &str) -> Result<File> {
     let dir = self.root.join(".locks").join(self.folder(repo).file_name().unwrap());
     fs::create_dir_all(&dir)?;
-    hold(&dir.join(format!("{name}.lock")))
+    crate::hold(&dir.join(format!("{name}.lock")))
   }
 
   /// Links the file into its snapshot, `fetch`ing the blob into `<etag>.incomplete` first when it
@@ -180,6 +180,7 @@ impl Hub {
     for p in pointers.iter().filter(|p| p.is_file()) {
       prepared.extend(crate::ane::key(p)?);
     }
+
     prepared.dedup();
     let blobs: Vec<PathBuf> = (pointers.iter().filter_map(|p| fs::read_link(p).ok()))
       .filter_map(|target| target.file_name().map(|etag| dir.join("blobs").join(etag)))
@@ -225,6 +226,7 @@ impl Hub {
     for key in &prepared {
       freed += crate::ane::remove(key)?;
     }
+
     Ok(Some(freed))
   }
 
@@ -245,7 +247,7 @@ impl Hub {
   /// permission) counts as one, so the file stays.
   fn sweep(&self, store: &Path) -> Result<u64> {
     let name = store.file_name().unwrap().to_string_lossy();
-    let _lock = hold(&store.with_file_name(format!("{name}.lock")))?;
+    let _lock = crate::hold(&store.with_file_name(format!("{name}.lock")))?;
     let refs = store.with_file_name(format!("{name}.refs"));
     let Ok(listed) = fs::read_to_string(&refs) else { return Ok(0) };
     let target = fs::canonicalize(store)?;
@@ -287,13 +289,6 @@ impl Hub {
     fs::remove_file(&refs)?;
     Ok(size)
   }
-}
-
-/// Holds a lock on the file at `path`, created when missing, until the file is dropped.
-fn hold(path: &Path) -> Result<File> {
-  let lock = OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
-  lock.lock()?;
-  Ok(lock)
 }
 
 /// Whether `s` is lowercase hex of one of the lengths.

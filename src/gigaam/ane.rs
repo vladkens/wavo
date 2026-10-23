@@ -49,6 +49,7 @@ pub fn run(model: &ane::Model, mel: &[f32], mels: usize) -> Result<Vec<f32>> {
   for (f, row) in mel.chunks_exact(mels).enumerate() {
     row.iter().enumerate().for_each(|(c, &v)| transposed[c * MEL_FRAMES + f] = v);
   }
+
   let (m1, m) = (ane::mask(T1, half(n)), ane::mask(T, n2));
   let keys = ane::key_mask(T, n2);
   let out = model.predict(

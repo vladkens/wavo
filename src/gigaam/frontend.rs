@@ -44,11 +44,12 @@ impl Frontend {
     })
   }
 
-  /// Features of 16 kHz PCM, time-major `[frames][mels]`.
+  /// Mel bands per frame.
   pub fn mels(&self) -> usize {
     self.mels
   }
 
+  /// Features of 16 kHz PCM, time-major `[frames][mels]`.
   pub fn compute(&self, pcm: &[f32]) -> Vec<f32> {
     let mut out = Vec::with_capacity(pcm.len() / HOP * self.mels);
     let (mut frame, mut buf) = ([0f32; N_FFT], [0f32; 4 * N_FFT]);
