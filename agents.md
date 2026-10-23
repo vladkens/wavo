@@ -98,6 +98,14 @@ the `Makefile` and `.github/workflows/main.yml`.
   must reproduce text, tokens and start times exactly, and must fail (not skip) when a model,
   sample or block is missing; `make test` does the same for the smoke models (the Makefile's
   `MODELS`).
+- The Neural Engine is close to the GPU, not exact, so its `*_ane` tests (macOS, `make test-all`)
+  hold each clip to the fixture up to 15 s, else to the GPU at the same pieces: within max(1, 2%)
+  word edits, case and punctuation aside (a word split in two or two merged is no edit, as the
+  text is the same without the space), at most one word differing only in punctuation or case,
+  and ≥ 95% of aligned token starts within two encoder frames. When ANE code or a model changes,
+  also check the corpus: on an hour of speech cut at pauses, `make compare BACKEND=ane` and
+  `BACKEND=gpu`, then `batch compare` of their two `wavo.jsonl`, must give a WER ≤ 0.2% and the
+  same text on ≥ 95% of the 2–15 s pieces. The GPU's fixtures stay exact.
 - Treat any fixture change as a bug. Changing arithmetic (e.g. F16 operands) is fine while the
   fixtures stay exact. If a speed or memory gain changes a fixture, show the person the fixture
   diff and the gain before committing. A PR may add blocks but must not change an existing one

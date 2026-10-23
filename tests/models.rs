@@ -157,14 +157,17 @@ fn too_long(name: &str, sample: &str) {
 }
 
 /// Neural Engine agreement. F16 activations, 8-bit weights and arithmetic that differs between
-/// chip generations move a few tokens by a frame or two and now and then drop a comma, so per
-/// clip: the words equal the expected ones ignoring punctuation and case, with at most one word
-/// differing in punctuation or case (each printed); and of the tokens that aren't punctuation
-/// alone, the same pieces ignoring case, at least 95% starting within two encoder frames of the
-/// expected start. A clip that fits the 15 s window is held to the fixture. A longer one is split
-/// at pauses into pieces of the window, which changes punctuation at the cuts, so each piece is
-/// held to the GPU's transcript of the same piece. Prepares the model first (15–40 s the first
-/// time), and fails on a Mac without a Neural Engine.
+/// chip generations change a word now and then, drop a comma or move a token by a frame or two,
+/// so per clip, against the fixture when it fits the 15 s window, else against the GPU's
+/// transcript of the same pieces (the cuts change punctuation at them):
+/// - the words, case and punctuation aside, are within max(1, 2%) word edits of the expected ones;
+///   a word split in two or two merged into one (equal once the space is removed) is no edit;
+/// - at most one aligned word differs in punctuation or case alone (each printed);
+/// - of the word tokens that align with the expected ones, at least 95% start within two encoder
+///   frames of them.
+///
+/// Prepares the model first (15–40 s the first time), and fails on a Mac without a Neural
+/// Engine. The corpus check that goes with it is `make compare BACKEND=ane` (agents.md).
 #[cfg(target_os = "macos")]
 fn check_ane(name: &str, frame_ms: u32, samples: &[&str]) {
   use std::ops::ControlFlow;
@@ -184,7 +187,16 @@ fn check_ane(name: &str, frame_ms: u32, samples: &[&str]) {
     t.tokens.iter().map(|t| (t.piece.replace('▁', " "), t.start_ms)).collect()
   };
   let bare = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+  // Words with letters or digits: (bare, as written).
+  let words = |t: &str| -> Vec<(String, String)> {
+    t.split_whitespace().map(|w| (bare(w), w.to_string())).filter(|w| !w.0.is_empty()).collect()
+  };
+  // Tokens with letters or digits, lowercased.
+  let word_tokens = |v: &Tokens| -> Tokens {
+    v.iter().filter(|t| !bare(&t.0).is_empty()).map(|t| (t.0.to_lowercase(), t.1)).collect()
+  };
   for sample in samples {
+    let at = format!("{name} {sample}");
     let pcm = read_sample(sample);
     let pieces: Vec<(String, Tokens, wavo::Transcript)> = if pcm.len() / 16 <= window as usize {
       let (text, want, _) = read_fixture(name, sample);
@@ -198,35 +210,94 @@ fn check_ane(name: &str, frame_ms: u32, samples: &[&str]) {
         })
         .collect()
     };
-    let mut changed = 0;
-    for (i, (text, want, got)) in pieces.iter().enumerate() {
-      let at = format!("{name} {sample} piece {i}");
-      let words = |t: &str| -> Vec<(String, String)> {
-        t.split_whitespace().map(|w| (bare(w), w.to_string())).filter(|w| !w.0.is_empty()).collect()
-      };
-      let (expected, actual) = (words(text), words(&got.text));
-      let bare_words = |v: &[(String, String)]| v.iter().map(|w| w.0.clone()).collect::<Vec<_>>();
-      assert_eq!(bare_words(&actual), bare_words(&expected), "{at}: words\n{}\n{text}", got.text);
-      for (a, e) in actual.iter().zip(&expected).filter(|(a, e)| a.1 != e.1) {
-        println!("{at}: {:?} instead of {:?}", a.1, e.1);
-        changed += 1;
-      }
-      // Tokens with letters or digits, compared by position.
-      let words_only = |v: &Tokens| -> Tokens {
-        v.iter().filter(|t| !bare(&t.0).is_empty()).map(|t| (t.0.to_lowercase(), t.1)).collect()
-      };
-      let (got, want) = (words_only(&tokens(got)), words_only(want));
+
+    let (mut expected, mut actual, mut offsets) = (Vec::new(), Vec::new(), Vec::new());
+    for (text, want, got) in &pieces {
+      expected.extend(words(text));
+      actual.extend(words(&got.text));
+      let (got, want) = (word_tokens(&tokens(got)), word_tokens(want));
       let pieces = |v: &Tokens| v.iter().map(|t| t.0.clone()).collect::<Vec<_>>();
-      assert_eq!(pieces(&got), pieces(&want), "{at}: pieces");
-      let offsets: Vec<u32> = got.iter().zip(&want).map(|(g, w)| g.1.abs_diff(w.1)).collect();
-      let close = offsets.iter().filter(|&&d| d <= 2 * frame_ms).count();
-      let worst = offsets.iter().max().copied().unwrap_or(0);
-      let moved = offsets.iter().filter(|&&d| d > 0).count();
-      println!("{at}: {moved}/{} tokens moved, at most {worst} ms", offsets.len());
-      assert!(close * 100 >= offsets.len() * 95, "{at}: offsets {offsets:?}");
+      let pairs = align(&pieces(&got), &pieces(&want));
+      offsets.extend(pairs.into_iter().map(|(g, w)| got[g].1.abs_diff(want[w].1)));
     }
-    assert!(changed <= 1, "{name} {sample}: {changed} words differ in punctuation or case");
+
+    let bare_words = |v: &[(String, String)]| v.iter().map(|w| w.0.clone()).collect::<Vec<_>>();
+    let (e, a) = (bare_words(&expected), bare_words(&actual));
+    let edits = word_edits(&e, &a);
+    let allowed = (e.len() * 2 / 100).max(1);
+    let (want, got): (Vec<_>, Vec<_>) =
+      pieces.iter().map(|(text, _, got)| (text.as_str(), got.text.as_str())).unzip();
+    let (want, got) = (want.join(" / "), got.join(" / "));
+    println!("{at}: {edits} word edits of {} words", e.len());
+    assert!(edits <= allowed, "{at}: {edits} word edits\n{got}\n{want}");
+
+    let restyled: Vec<_> = (align(&a, &e).into_iter())
+      .filter(|&(i, j)| actual[i].1 != expected[j].1)
+      .map(|(i, j)| (&actual[i].1, &expected[j].1))
+      .collect();
+    for (got, want) in &restyled {
+      println!("{at}: {got:?} instead of {want:?}");
+    }
+    assert!(restyled.len() <= 1, "{at}: {} words differ in punctuation or case", restyled.len());
+    let close = offsets.iter().filter(|&&d| d <= 2 * frame_ms).count();
+    let worst = offsets.iter().max().copied().unwrap_or(0);
+    let moved = offsets.iter().filter(|&&d| d > 0).count();
+    println!("{at}: {moved}/{} aligned tokens moved, at most {worst} ms", offsets.len());
+    assert!(close * 100 >= offsets.len() * 95, "{at}: offsets {offsets:?}");
   }
+}
+
+/// Index pairs of a longest common subsequence of `a` and `b`, in order.
+#[cfg(target_os = "macos")]
+fn align<T: PartialEq>(a: &[T], b: &[T]) -> Vec<(usize, usize)> {
+  let (n, m) = (a.len(), b.len());
+  // `l[i][j]`: the longest common subsequence of `a[i..]` and `b[j..]`.
+  let mut l = vec![vec![0usize; m + 1]; n + 1];
+  for i in (0..n).rev() {
+    for j in (0..m).rev() {
+      l[i][j] = if a[i] == b[j] { l[i + 1][j + 1] + 1 } else { l[i + 1][j].max(l[i][j + 1]) };
+    }
+  }
+
+  let (mut i, mut j, mut out) = (0, 0, Vec::new());
+  while i < n && j < m {
+    if a[i] == b[j] {
+      out.push((i, j));
+      (i, j) = (i + 1, j + 1);
+    } else if l[i + 1][j] >= l[i][j + 1] {
+      i += 1;
+    } else {
+      j += 1;
+    }
+  }
+  out
+}
+
+/// Word edits (substitutions, insertions, deletions) from `a` to `b`, where a word of one split
+/// into two of the other, or two merged into one, costs nothing.
+#[cfg(target_os = "macos")]
+fn word_edits(a: &[String], b: &[String]) -> usize {
+  let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+  for i in 0..=a.len() {
+    for j in 0..=b.len() {
+      if i == 0 || j == 0 {
+        d[i][j] = i + j;
+        continue;
+      }
+
+      let mut best = (d[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1]))
+        .min(d[i - 1][j] + 1)
+        .min(d[i][j - 1] + 1);
+      if j >= 2 && a[i - 1] == format!("{}{}", b[j - 2], b[j - 1]) {
+        best = best.min(d[i - 1][j - 2]);
+      }
+      if i >= 2 && b[j - 1] == format!("{}{}", a[i - 2], a[i - 1]) {
+        best = best.min(d[i - 2][j - 1]);
+      }
+      d[i][j] = best;
+    }
+  }
+  d[a.len()][b.len()]
 }
 
 // ru-long (34 s) is past GigaAM's 25 s window but within the 37.5 s it takes.
