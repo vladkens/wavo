@@ -126,6 +126,32 @@ pub fn linear(gpu: &Gpu, g: &Gguf, names: &[String], dims: &[usize], bias: bool)
   gpu.linear(&w.collect::<Result<Vec<_>>>()?, &b)
 }
 
+/// BatchNorm `{prefix}.weight`, `.bias`, `.running_mean` and `.running_var` over `d` channels
+/// (eps 1e-5) as a per-channel `x·scale + shift`, as `fuse_batch_norm` in transcribe.cpp's
+/// `src/arch/parakeet/model.cpp`.
+pub fn batch_norm(g: &Gguf, prefix: &str, d: usize) -> Result<(Vec<f32>, Vec<f32>)> {
+  let bn = |name: &str| g.tensor(&format!("{prefix}.{name}"), &[d])?.to_f32();
+  let (w, b) = (bn("weight")?, bn("bias")?);
+  let (mean, var) = (bn("running_mean")?, bn("running_var")?);
+  let scale: Vec<f32> = w.iter().zip(&var).map(|(w, v)| w / (v + 1e-5).sqrt()).collect();
+  let shift = b.iter().zip(&mean).zip(&scale).map(|((b, m), s)| b - m * s).collect();
+  Ok((scale, shift))
+}
+
+/// The sinusoidal table of relative positions `first`, `first − 1`, … for `rows` rows of `d`,
+/// in f32 as transcribe.cpp's `src/arch/parakeet/model.cpp` computes it: [2k] = sin(pos·d_k),
+/// [2k + 1] = cos(pos·d_k).
+pub fn rel_positions(d: usize, first: i64, rows: usize) -> Vec<f32> {
+  let div: Vec<f32> =
+    (0..d / 2).map(|k| ((2 * k) as f32 * (-10000f32.ln() / d as f32)).exp()).collect();
+  (0..rows)
+    .flat_map(|r| {
+      let pos = (first - r as i64) as f32;
+      div.iter().flat_map(move |dk| [(pos * dk).sin(), (pos * dk).cos()])
+    })
+    .collect()
+}
+
 struct Block {
   norm_ff1: Channels,
   ff1: [Linear; 2],
@@ -178,14 +204,9 @@ impl Block {
     };
     let conv_norm = match c.conv_norm {
       ConvNorm::LayerNorm => norm("conv.ln")?,
-      // As `fuse_batch_norm` in transcribe.cpp's `src/arch/parakeet/model.cpp`.
       ConvNorm::Affine => {
-        let bn = |name: &str| f32s(&format!("conv.bn.{name}"), &[d]);
-        let (w, b) = (bn("weight")?, bn("bias")?);
-        let (mean, var) = (bn("running_mean")?, bn("running_var")?);
-        let s: Vec<f32> = w.iter().zip(&var).map(|(w, v)| w / (v + 1e-5).sqrt()).collect();
-        let b: Vec<f32> = b.iter().zip(&mean).zip(&s).map(|((b, m), s)| b - m * s).collect();
-        gpu.channels(&s, &b)?
+        let (scale, shift) = batch_norm(g, &p("conv.bn"), d)?;
+        gpu.channels(&scale, &shift)?
       }
     };
     let dw_b = if c.bias { f32s("conv.depthwise.bias", &[d])? } else { vec![0.0; d] };

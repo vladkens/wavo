@@ -112,6 +112,21 @@ impl Graph<'_> {
     self.op("conv", &inputs, shape)
   }
 
+  /// The conv layer `{name}.weight` (ggml `dims`, laid out as `shape`, `[out][in / groups][k..]`)
+  /// and `{name}.bias` over `x`, with `(stride, pad, groups)` as [`conv`](Self::conv) takes them.
+  pub fn conv_layer(
+    &mut self,
+    x: &Var,
+    name: &str,
+    dims: &[usize],
+    shape: &[usize],
+    (stride, pad, groups): (usize, usize, usize),
+  ) -> Result<Var> {
+    let w = self.constant(&format!("{name}.weight"), dims, shape)?;
+    let b = self.constant(&format!("{name}.bias"), &[shape[0]], &[shape[0]])?;
+    Ok(self.conv(x, &w, Some(&b), stride, pad, groups))
+  }
+
   /// The linear layer `{name}.weight` (ggml `dims`, `[.., in, out]`) over the last axis of `x`,
   /// with `{name}.bias` when `bias`. Q8_0 weights become int8 per output row, others F16.
   pub fn linear(&mut self, x: &Var, name: &str, dims: &[usize], bias: bool) -> Result<Var> {
@@ -271,18 +286,9 @@ fn attention(
 }
 
 /// `linear_pos` of the sinusoidal table for positions t − 1 down to 1 − t, as `[h][hd][2t − 1]`.
-/// The table is f32 as transcribe.cpp's `src/arch/parakeet/model.cpp` computes it: [2k] =
-/// sin(pos·d_k), [2k + 1] = cos(pos·d_k).
 fn positions(gr: &mut Graph, name: &str, t: usize, d: usize, h: usize) -> Result<Var> {
   let n = 2 * t - 1;
-  let div: Vec<f32> =
-    (0..d / 2).map(|k| ((2 * k) as f32 * (-10000f32.ln() / d as f32)).exp()).collect();
-  let table: Vec<f32> = (0..n)
-    .flat_map(|r| {
-      let pos = (t as i64 - 1 - r as i64) as f32;
-      div.iter().flat_map(move |dk| [(pos * dk).sin(), (pos * dk).cos()])
-    })
-    .collect();
+  let table = crate::conformer::rel_positions(d, t as i64 - 1, n);
   let w = cpu::rows4(gr.f32s(name, &[d, d])?, d);
   let p = cpu::matmul(&w, &table, d); // [n][d], d a multiple of 4
   let hd = d / h;
@@ -301,18 +307,15 @@ fn conv(gr: &mut Graph, c: &Config, b: &str, x: &Var, m: &Var) -> Result<Var> {
   let y = gr.transpose(&y, &[1, 0]);
   let y = gr.reshape(&y, &[1, d, t]);
   let w = gr.f32s(&format!("{b}conv.depthwise.weight"), &[k, 1, d])?; // [d][k]
-  let dw = |name: &str| gr.f32s(&format!("{b}conv.{name}"), &[d]);
   let (w, bias) = match c.conv_norm {
-    // BatchNorm folded into the depthwise conv, as `fuse_batch_norm` in transcribe.cpp's
-    // `src/arch/parakeet/model.cpp`.
+    // BatchNorm folded into the depthwise conv.
     ConvNorm::Affine => {
-      let (g, beta, mean, var) =
-        (dw("bn.weight")?, dw("bn.bias")?, dw("bn.running_mean")?, dw("bn.running_var")?);
-      let s: Vec<f32> = g.iter().zip(&var).map(|(g, v)| g / (v + 1e-5).sqrt()).collect();
-      let w: Vec<f32> = w.iter().enumerate().map(|(i, w)| w * s[i / k]).collect();
-      (w, (0..d).map(|i| beta[i] - mean[i] * s[i]).collect())
+      let (scale, shift) = crate::conformer::batch_norm(gr.g, &format!("{b}conv.bn"), d)?;
+      (w.iter().enumerate().map(|(i, w)| w * scale[i / k]).collect(), shift)
     }
-    ConvNorm::LayerNorm => (w, if c.bias { dw("depthwise.bias")? } else { vec![0.0; d] }),
+    ConvNorm::LayerNorm => {
+      (w, if c.bias { gr.f32s(&format!("{b}conv.depthwise.bias"), &[d])? } else { vec![0.0; d] })
+    }
   };
   let (w, bias) = (gr.p.tensor(&[d, 1, k], &w), gr.p.tensor(&[d], &bias));
   let y = gr.conv(&y, &w, Some(&bias), 1, k / 2, d);

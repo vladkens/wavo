@@ -125,16 +125,7 @@ impl Encoder {
   fn arena(&self, gpu: &Gpu, frames: usize) -> Result<Arena> {
     let c = &self.conformer.cfg;
     let (d, n) = (c.d, pos_rows(frames));
-    // In f32 as transcribe.cpp's `src/arch/parakeet/model.cpp` computes it: [2k] = sin(pos·d_k),
-    // [2k + 1] = cos(pos·d_k).
-    let div: Vec<f32> =
-      (0..d / 2).map(|k| ((2 * k) as f32 * (-10000f32.ln() / d as f32)).exp()).collect();
-    let table: Vec<f32> = (0..n)
-      .flat_map(|r| {
-        let pos = (frames as i64 + 15 - r as i64) as f32;
-        div.iter().flat_map(move |dk| [(pos * dk).sin(), (pos * dk).cos()])
-      })
-      .collect();
+    let table = conformer::rel_positions(d, frames as i64 + 15, n);
     // A subsampling chunk of the first two outputs: 2·frames / CHUNKS + 1 rows of
     // [MELS / 4][ch]; the third output [frames][MELS / 8][ch].
     let chunk = (2 * frames / CHUNKS + 1) * half(half(MELS)) * self.ch;

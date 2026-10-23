@@ -1032,7 +1032,7 @@ pub fn pos_rows(t: usize) -> usize {
 }
 
 /// Output length of a stride-2 conv with kernel 3 and padding 1 (or kernel 5 and padding 2).
-pub fn half(n: usize) -> usize {
+pub const fn half(n: usize) -> usize {
   (n - 1) / 2 + 1
 }
 
