@@ -46,9 +46,9 @@ how I build now.
 
 | Name | Size | Languages | Output |
 |---|---|---|---|
-| `parakeet-v3` (default) | 0.74 GB | 25 European languages | cased, punctuated |
+| `parakeet-v3` | 0.74 GB | 25 European languages | cased, punctuated |
 | `parakeet-v2` | 0.73 GB | English | cased, punctuated |
-| `parakeet-ultra` | 0.74 GB | 25 European languages | cased, punctuated |
+| `parakeet-ultra` (default) | 0.74 GB | 25 European languages | cased, punctuated |
 | `parakeet-he` | 0.74 GB | Hebrew | cased, punctuated |
 | `gigaam-v3` | 0.27 GB | Russian | cased, punctuated |
 | `gigaam-v3-e2e-ctc` | 0.27 GB | Russian | cased, punctuated |
@@ -87,6 +87,19 @@ is `parakeet-tdt-0.6b-v2`, `parakeet-he` is `parakeet-tdt-0.6b-v3-he`, `gigaam-v
 `gigaam-v3-e2e-rnnt`, `whisper-turbo` is `whisper-large-v3-turbo`, `whisper-turbo-he` is
 `ivrit-whisper-large-v3-turbo` and `breeze-asr-25` is `Breeze-ASR-25`; full names and a path to a
 `.gguf` work too.
+
+`parakeet-ultra` is the default: it makes fewer errors than `parakeet-v3` on every benchmark
+group of [Moondream's model card](https://huggingface.co/moondream/parakeet-ultra#benchmarks),
+which also lists each language. Word error rate, %, lower is better, measured by Moondream on an
+NVIDIA GPU, not with wavo:
+
+| Benchmark | `parakeet-v3` | `parakeet-ultra` |
+|---|---:|---:|
+| English, 7 sets of the Open ASR Leaderboard | 6.26 | 5.80 |
+| FLEURS, 25 languages | 11.62 | 9.55 |
+| Business speech (AMI, VoxPopuli, Earnings-22) | 6.15 | 5.79 |
+| Background noise, 9 MUSAN conditions | 6.72 | 5.82 |
+| Long talks, TED-LIUM 3 | 2.71 | 1.94 |
 
 ## 📥 Installation
 
@@ -147,16 +160,16 @@ cargo install --git https://github.com/vladkens/wavo
 ## 🚀 Usage
 
 ```sh
-wavo talk.m4a                         # transcribe with parakeet-v3, the same as wavo run talk.m4a
+wavo talk.m4a                         # transcribe with parakeet-ultra, the same as wavo run talk.m4a
 wavo run gigaam-v3 talk.mp3           # or with another model
 wavo run whisper-turbo talk.mp3 -y    # download a missing model without asking
-wavo pull parakeet-v3                 # download a model
+wavo pull parakeet-ultra              # download a model
 wavo pull gigaam-v3 whisper-turbo     # or several at once
 wavo run talk.wav --json              # text and every token with its start time
 wavo run talk.wav --srt > talk.srt    # subtitles
 wavo run whisper-turbo talk.mp3 --language he  # Whisper: set the language, not detect it
 wavo list                             # downloaded models
-wavo rm parakeet-v3                   # delete one
+wavo rm parakeet-ultra                # delete one
 wavo bench gigaam-v3 talk.wav         # load time and speed on your machine
 wavo debug                            # your system, GPUs and models, to paste into an issue
 ```
@@ -180,7 +193,7 @@ found by `wavo` and the other way round.
 locally instead:
 
 ```sh
-wavo serve                                       # parakeet-v3 on http://127.0.0.1:8000
+wavo serve                                       # parakeet-ultra on http://127.0.0.1:8000
 wavo serve whisper-turbo gigaam-v3 --port 9000   # these models, loaded up front
 wavo serve --host 0.0.0.0 --api-key KEY          # on the network, with a key (or WAVO_API_KEY)
 
@@ -211,12 +224,14 @@ of audio, and answers more with 503.
 Time to transcribe one minute of audio and the real-time factor (RTF: processing time ÷ audio
 length); lower is better. Measured with `wavo run` on an hour-long
 [LibriVox reading](https://archive.org/details/memoirsofsherlockholmesv3_1502_librivox), model
-load and mp3 decoding included, on an **Apple M2** (10-core GPU), 2026-10-21.
+load and mp3 decoding included, on an **Apple M2** (10-core GPU), 2026-10-21 (`parakeet-ultra`
+2026-10-23).
 
 | Model | 1 min of audio | RTF |
 |---|---:|---:|
 | `gigaam-v3` | 0.51 s | 0.0085 |
 | `parakeet-v3` | 0.88 s | 0.0146 |
+| `parakeet-ultra` | 0.87 s | 0.0144 |
 | `parakeet-v2` | 0.82 s | 0.0136 |
 | `whisper-turbo` | 3.32 s | 0.0553 |
 | `whisper-tiny` | 0.36 s | 0.0061 |
@@ -234,9 +249,9 @@ use std::ops::ControlFlow;
 use wavo::hub::Hub;
 
 let hub = Hub::new(); // the Hugging Face cache, shared with `hf` and `wavo pull`
-let path = match hub.find("parakeet-v3") {
+let path = match hub.find("parakeet-ultra") {
   Some(path) => path,
-  None => hub.pull("parakeet-v3", |p| {
+  None => hub.pull("parakeet-ultra", |p| {
     eprint!("\r{} / {} MB", p.done / 1_000_000, p.total / 1_000_000);
     ControlFlow::Continue(()) // Break cancels; the next pull resumes
   })?,

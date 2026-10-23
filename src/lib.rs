@@ -157,7 +157,7 @@
 //! let cancel = Arc::new(AtomicBool::new(false));
 //! let stop = Arc::clone(&cancel);
 //! let download = std::thread::spawn(move || {
-//!   wavo::hub::Hub::new().pull("parakeet-v3", |p| {
+//!   wavo::hub::Hub::new().pull("parakeet-ultra", |p| {
 //!     if let Some(e) = p.retrying {
 //!       eprintln!("\nretrying after: {e}");
 //!     }
