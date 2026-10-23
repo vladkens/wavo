@@ -78,6 +78,11 @@ fn decode(
   let track = format.default_track(TrackType::Audio).context("no audio track")?;
   let params = track.codec_params.as_ref().and_then(|p| p.audio()).context("not audio")?.clone();
   let (id, rate) = (track.id, params.sample_rate.context("unknown sample rate")? as usize);
+  // The resampler's buffers grow with the rate: a header claiming GHz would take gigabytes.
+  if !(1000..=384_000).contains(&rate) {
+    bail!("a sample rate of {rate} Hz: wavo takes 1 to 384 kHz");
+  }
+
   let codecs = symphonia::default::get_codecs();
   let mut decoder = codecs.make_audio_decoder(&params, &AudioDecoderOptions::default())?;
   let (mut pcm, mut frame) = (Vec::new(), Vec::new());
@@ -162,6 +167,13 @@ mod tests {
     w.finalize().unwrap();
     let e = decode_bytes(wav.into_inner(), None, 1).unwrap_err().to_string();
     assert_eq!(e, "the audio is longer than 0.0 hours: send it in parts", "1 s and a sample");
+    let mut wav = Cursor::new(Vec::new());
+    let mut w =
+      hound::WavWriter::new(&mut wav, spec(1, 2_000_000, hound::SampleFormat::Int)).unwrap();
+    w.write_sample(0i16).unwrap();
+    w.finalize().unwrap();
+    let e = decode_bytes(wav.into_inner(), None, 1).unwrap_err().to_string();
+    assert_eq!(e, "a sample rate of 2000000 Hz: wavo takes 1 to 384 kHz");
   }
 
   #[test]
