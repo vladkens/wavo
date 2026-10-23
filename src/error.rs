@@ -96,6 +96,45 @@ pub enum Error {
   Hub(String),
 }
 
+impl Error {
+  /// Whether the GPU or Core ML failed rather than the request: [`Error::Gpu`], [`Error::Poll`],
+  /// [`Error::Readback`], [`Error::Map`], [`Error::Device`] or [`Error::NeuralEngine`]. After a
+  /// call on a [`Model`](crate::Model) fails so, the model may stay unusable (a lost device, out
+  /// of memory, work the driver dropped): drop it and load it again, which may land on another
+  /// backend, as [`Backend::Auto`](crate::Backend::Auto) takes the GPU when Core ML fails to load.
+  /// False for the rest, after which the model takes the next call as before: the audio or the
+  /// options don't fit ([`Error::AudioTooLong`], [`Error::Language`]) or a callback cancelled
+  /// ([`Error::Cancelled`]). The errors of loading a file and of the `hub` feature are false too,
+  /// except [`Error::Device`] and [`Error::NeuralEngine`], which a load also returns.
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// # let pcm = vec![0.0f32; 16_000];
+  /// let path = "gigaam-v3-e2e-rnnt-Q8_0.gguf";
+  /// let mut model = wavo::Model::load(path)?;
+  /// let transcript = match model.transcribe(&pcm) {
+  ///   Err(e) if e.is_fatal() => {
+  ///     model = wavo::Model::load(path)?;
+  ///     model.transcribe(&pcm)?
+  ///   }
+  ///   result => result?,
+  /// };
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn is_fatal(&self) -> bool {
+    matches!(
+      self,
+      Self::Gpu(_)
+        | Self::Poll(_)
+        | Self::Readback(_)
+        | Self::Map(_)
+        | Self::Device(_)
+        | Self::NeuralEngine(_)
+    )
+  }
+}
+
 /// `Result` with wavo's [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
