@@ -6,16 +6,20 @@
 //! Compiled models live in `~/Library/Caches/wavo/`, outside the Hugging Face cache:
 //!
 //! ```text
-//! lock                                         held by prepare, prune and remove
+//! lock                                         held by prepare, prune, sweep and remove
 //! <stem>.<id>.v<GRAPH>.mlmodelc                the compiled model
 //! <stem>.<id>.v<GRAPH>.<program>.loaded        a program loaded it; holds its stamp
+//! <stem>.<id>.v<GRAPH>.source                  the GGUF's path it was built from
 //! <stem>.<id>.v<GRAPH>.tmp                     a build in progress
+//! <stem>.<id>.v<GRAPH>.trash                   a compiled model being deleted
 //! ```
 //!
 //! `<stem>` is the GGUF's file name without `.gguf` (dots as `_`) and `<id>` a hash of its content.
 //! A prepare drops the other ids and versions of its stem, the older revisions of the model, so
-//! the cache holds one compiled model per model name, plus those of files deleted elsewhere until
-//! 30 days without a load.
+//! the cache holds one compiled model per model name. The first load, prepare or `prepared` of a
+//! process also starts a sweep in the background that deletes the compiled models whose GGUF was
+//! deleted or replaced elsewhere (`hf cache rm`, Finder), and leftovers of a build or delete cut
+//! short. Those without a `.source` (from before it) go after 30 days without a load.
 
 pub mod conformer;
 #[cfg_attr(not(target_os = "macos"), path = "unsupported.rs")]
@@ -27,7 +31,7 @@ use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Once, OnceLock};
 use std::time::{Duration, UNIX_EPOCH};
 
 pub use conformer::Graph;
@@ -178,11 +182,13 @@ fn loaded(compiled: &Path) -> bool {
 /// The GGUF's compiled model when it exists and this program has loaded it before. It doesn't
 /// probe Core ML.
 pub fn prepared(path: &Path) -> Option<PathBuf> {
+  sweep();
   compiled(path).ok().filter(|c| loaded(c))
 }
 
 /// Loads the GGUF's compiled model.
 pub fn load(path: &Path) -> Result<Model> {
+  sweep();
   let compiled = compiled(path)?;
   if !compiled.is_dir() && available() {
     return Err(unsupported(
@@ -224,8 +230,12 @@ pub fn prepare(
     return Ok(false);
   }
 
+  sweep();
   let target = compiled(path)?;
-  if loaded(&target) {
+  let (source, gguf) = (target.with_extension("source"), std::path::absolute(path)?);
+  let gguf = gguf.to_string_lossy();
+  let recorded = || fs::read_to_string(&source).is_ok_and(|s| s == gguf);
+  if loaded(&target) && recorded() {
     return Ok(true);
   }
 
@@ -253,6 +263,17 @@ pub fn prepare(
     })();
     let _ = fs::remove_dir_all(&tmp);
     built?;
+  }
+
+  // The GGUF's path, for the sweep, written under the lock it reads under: the last path prepared
+  // of those sharing the model (links to one file, as a new revision's of the same content), so
+  // deleting an older one elsewhere keeps it.
+  if !recorded() {
+    fs::write(&source, gguf.as_bytes())?;
+  }
+
+  if loaded(&target) {
+    return Ok(true);
   }
 
   step(PrepareStep::Load)?;
@@ -292,17 +313,69 @@ fn delete(dir: &Path, prefix: &str) -> u64 {
   mine
     .map(|p| {
       let n = size(&p);
-      let gone = if p.is_dir() { fs::remove_dir_all(&p) } else { fs::remove_file(&p) };
+      let gone = if p.is_dir() { trash(&p) } else { fs::remove_file(&p) };
       if gone.is_ok() { n } else { 0 }
     })
     .sum()
 }
 
+/// Deletes a folder after renaming it to `.trash`, so one half deleted when the process exits is
+/// never taken for a compiled model; the next sweep deletes the rest.
+fn trash(dir: &Path) -> std::io::Result<()> {
+  let trash = dir.with_extension("trash");
+  if trash != dir {
+    let _ = fs::remove_dir_all(&trash);
+    fs::rename(dir, &trash)?;
+  }
+
+  fs::remove_dir_all(trash)
+}
+
+/// Starts the sweep of the cache folder on a thread of its own, once per process; off macOS,
+/// where there is no cache, it does nothing.
+fn sweep() {
+  static SWEEP: Once = Once::new();
+  if cfg!(target_os = "macos") {
+    SWEEP.call_once(|| {
+      let sweep = || cache().map(|dir| sweep_dir(&dir));
+      let _ = std::thread::Builder::new().name("wavo-ane-sweep".into()).spawn(sweep);
+    });
+  }
+}
+
+/// Deletes, unless another prepare, sweep or remove holds the cache lock, the compiled models whose
+/// `.source` GGUF no longer exists or now has another id, and leftover `.tmp` and `.trash` folders.
+fn sweep_dir(dir: &Path) {
+  let lock = File::options().create(true).truncate(false).write(true).open(dir.join("lock"));
+  let Ok(lock) = lock else { return };
+  if lock.try_lock().is_err() {
+    return;
+  }
+
+  for p in fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()) {
+    let file = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    if file.ends_with(".tmp") || file.ends_with(".trash") {
+      let _ = fs::remove_dir_all(&p);
+    }
+
+    let Some(stem) = file.strip_suffix(".source") else { continue };
+    let Ok(source) = fs::read_to_string(&p) else { continue };
+    let (source, id) = (Path::new(&source), stem.rsplit_once('.').map_or(stem, |(id, _)| id));
+    // A GGUF on an unmounted drive isn't gone.
+    let volume = source.strip_prefix("/Volumes").ok().and_then(|p| p.iter().next());
+    let mounted = volume.is_none_or(|v| Path::new("/Volumes").join(v).exists());
+    let gone = mounted && matches!(source.try_exists(), Ok(false));
+    if gone || name(source).is_ok_and(|n| n != id) {
+      delete(dir, stem);
+    }
+  }
+}
+
 /// Deletes, under the cache lock, the compiled models that `target`, the one being prepared,
 /// replaces: the other ids and graph versions of its stem (an older revision of the model, a
 /// changed file, or another GGUF of the same name: one compiled model per name is the trade-off).
-/// Also those no program has loaded for 30 days (by their newest marker): of GGUFs
-/// deleted behind wavo's back (`hf cache rm`, another cache folder).
+/// Also those without a `.source` no program has loaded for 30 days (by their newest marker): of
+/// GGUFs deleted behind wavo's back before the sweep could tell.
 fn prune(dir: &Path, target: &Path) {
   const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
   let paths: Vec<PathBuf> =
@@ -315,7 +388,8 @@ fn prune(dir: &Path, target: &Path) {
     let mine = paths.iter().filter(|p| name(p).starts_with(&format!("{stem}.")));
     let times = mine.filter_map(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
     let old = || times.max().is_some_and(|t| t.elapsed().is_ok_and(|age| age > MAX_AGE));
-    if replaced || old() {
+    let unknown = !compiled.with_extension("source").exists();
+    if replaced || (unknown && old()) {
       delete(dir, &stem);
     }
   }
@@ -420,6 +494,50 @@ mod tests {
     want.sort();
     assert_eq!(left, want);
     assert_eq!(delete(&dir, "n.cccc"), 5, "the marker's bytes");
+    fs::remove_dir_all(dir).unwrap();
+  }
+
+  #[test]
+  fn sweep_drops_models_of_deleted_and_replaced_files() {
+    let dir = scratch("sweep");
+    let file = |n: &str, bytes: &[u8]| {
+      let p = dir.join(n);
+      fs::write(&p, bytes).unwrap();
+      p
+    };
+    let entry = |gguf: &Path, source: Option<&Path>| {
+      let stem = format!("{}.v{GRAPH}", name(gguf).unwrap());
+      fs::create_dir_all(dir.join(format!("{stem}.mlmodelc/weights"))).unwrap();
+      fs::write(dir.join(format!("{stem}.wavo.loaded")), "stamp").unwrap();
+      if let Some(source) = source {
+        fs::write(dir.join(format!("{stem}.source")), source.to_str().unwrap()).unwrap();
+      }
+
+      dir.join(format!("{stem}.mlmodelc"))
+    };
+    let (live, gone, changed) =
+      (file("a.gguf", &[1; 64]), file("b.gguf", &[2; 64]), file("c.gguf", &[3; 64]));
+    let old = file("d.gguf", &[4; 64]);
+    let kept = [entry(&live, Some(&live)), entry(&old, None)];
+    let dropped =
+      [entry(&gone, Some(&gone)), entry(&changed, Some(&changed)), dir.join("x.v2.trash")];
+    fs::create_dir_all(&dropped[2]).unwrap();
+    fs::remove_file(gone).unwrap();
+    fs::remove_file(old).unwrap();
+    fs::write(&changed, [5; 64]).unwrap();
+
+    let busy = crate::hold(&dir.join("lock")).unwrap();
+    sweep_dir(&dir);
+    assert!(dropped.iter().all(|p| p.exists()), "a busy lock skips the sweep");
+    drop(busy);
+
+    sweep_dir(&dir);
+    assert!(kept.iter().all(|p| p.is_dir()), "a live file, and one without a source");
+    assert!(dropped.iter().all(|p| !p.exists()), "a deleted file, a replaced one, the trash");
+    let left = fs::read_dir(&dir)
+      .unwrap()
+      .filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "source"));
+    assert_eq!(left.count(), 1, "the live file's source");
     fs::remove_dir_all(dir).unwrap();
   }
 }
