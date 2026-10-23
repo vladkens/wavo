@@ -2,7 +2,8 @@
 //! `wavo serve`: OpenAI's transcription API over HTTP, on `std::net` with a thread per
 //! connection. The models given on the command line stay loaded, the first one answering model
 //! names wavo doesn't know (OpenAI's `whisper-1`); another downloaded model loads on first use,
-//! one at a time. Requests share each model, and their calls take turns on the GPU.
+//! one at a time. Requests share each model, and their calls take turns on the GPU. `POST /asr`
+//! and `GET /status` answer as whisper-asr-webservice does, for Bazarr's subtitles.
 
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -39,6 +40,10 @@ const MAX_FIELD: usize = 256;
 /// for a request answered with 503.
 const LINGER: Duration = Duration::from_secs(1);
 const FORMATS: &[&str] = &["json", "text", "srt", "vtt", "verbose_json"];
+/// whisper-asr-webservice's `output` formats, and the `FORMATS` that render them: its JSON, the
+/// result of Whisper's `transcribe`, has the text, segments and language as `verbose_json` does.
+const ASR_FORMATS: &[(&str, &str)] =
+  &[("txt", "text"), ("srt", "srt"), ("vtt", "vtt"), ("json", "verbose_json")];
 const JSON: &str = "application/json";
 const TEXT: &str = "text/plain; charset=utf-8";
 
@@ -221,8 +226,10 @@ impl Server {
 
     match (head.method.as_str(), head.path.as_str()) {
       ("GET", "/health") => Ok(self.health()),
+      ("GET", "/status") => Ok(status()),
       ("GET", "/v1/models") => Ok(self.list()),
       ("POST", "/v1/audio/transcriptions") => self.transcribe(head, r, w),
+      ("POST", "/asr") => self.asr(head, r, w),
       (method, path) => Err(fail(404, format!("no such endpoint: {method} {path}"))),
     }
   }
@@ -257,7 +264,7 @@ impl Server {
   /// `POST /v1/audio/transcriptions` with OpenAI's form: `file`, `model`, `language` and
   /// `response_format`; `prompt`, `temperature` and the rest are ignored.
   fn transcribe(&self, head: &Head, r: &mut impl BufRead, w: &mut impl Write) -> Res<Reply> {
-    let mut body = http::body(r, w, head, MAX_BODY)?;
+    let body = http::body(r, w, head, MAX_BODY)?;
     let parts = http::multipart(head.header("content-type").unwrap_or_default(), &body)?;
     let field = |name| field(&body, &parts, name);
     if field("stream")?.is_some_and(|s| s == "true") {
@@ -273,43 +280,38 @@ impl Server {
     let mut options = wavo::Options::default();
     options.language = field("language")?.filter(|l| !l.is_empty());
     let model = self.pick(&field("model")?.unwrap_or_default())?;
-    let file = parts.iter().find(|p| p.name == "file");
-    let file = file.ok_or_else(|| fail(400, "send the audio in the form field file"))?;
-    let name = file.filename.as_deref().map(Path::new);
-    let ext = name.and_then(Path::extension).and_then(|e| e.to_str()).map(str::to_string);
-    // The file's bytes alone, without a copy.
-    let data = file.data.clone();
-    body.truncate(data.end);
-    body.drain(..data.start);
-    let pcm =
-      audio::decode_bytes(body, ext.as_deref(), MAX_AUDIO).map_err(|e| match e
-        .is::<audio::Unsupported>()
-      {
-        true => fail(415, "the audio is not wav, mp3, m4a, flac or ogg (Vorbis): convert it first"),
-        false => fail(400, format!("decoding the audio: {e:#}")),
-      })?;
-    let transcript = split::transcribe(&model.model, &pcm, None, &options, |_, _| ());
-    let (t, starts) = transcript.map_err(|e| match e {
-      wavo::Error::Language(_) => fail(400, e.to_string()),
-      e => fail(500, format!("transcribing: {e}")),
-    })?;
+    let pcm = decode(body, &parts, "file", false)?;
+    reply(&model, &pcm, &options, &format, false)
+  }
 
-    let ms = (pcm.len() / 16) as u32;
-    let cues = || output::cues(&t.tokens, &starts, ms, model.timed);
-    let (content_type, body) = match format.as_str() {
-      "json" => (JSON, format!("{{\"text\": {}}}\n", quote(&t.text))),
-      "text" => (TEXT, format!("{}\n", t.text)),
-      "srt" => (TEXT, output::srt(&cues())),
-      "vtt" => ("text/vtt; charset=utf-8", output::vtt(&cues())),
-      _ => {
-        // The language asked for, else the model's only one.
-        let langs = model.info.langs;
-        let language = options.language.as_deref().or((langs.len() == 1).then(|| langs[0]));
-        (JSON, output::verbose_json(&t, &cues(), language.unwrap_or_default(), ms) + "\n")
-      }
+  /// `POST /asr` of whisper-asr-webservice, as Bazarr calls it: the form field `audio_file`, and
+  /// in the query `language`, `output` (txt, srt, vtt or json) and `encode` (`false` for raw
+  /// 16 kHz mono 16-bit PCM). The first model answers; `task=translate` fails, the rest is ignored.
+  fn asr(&self, head: &Head, r: &mut impl BufRead, w: &mut impl Write) -> Res<Reply> {
+    let query = |key| http::query(&head.query, key).filter(|v| !v.is_empty());
+    if query("task").is_some_and(|t| t != "transcribe") {
+      return Err(fail(400, "only task=transcribe is supported: wavo doesn't translate"));
+    }
+
+    let output = query("output").unwrap_or("txt");
+    let Some(&(_, format)) = ASR_FORMATS.iter().find(|f| f.0 == output) else {
+      return Err(fail(400, format!("output {output:?} is not one of txt, srt, vtt, json")));
     };
-    let note = format!("{}, {:.1} s of audio", model.info.name, ms as f64 / 1000.0);
-    Ok(Reply { content_type, body, note })
+    let model = &self.models[0];
+    if let Some(code) = query("language").filter(|c| !model.info.langs.contains(c)) {
+      let name = model.info.name;
+      return Err(fail(
+        400,
+        format!("{name} doesn't transcribe {code:?}: serve a model that does"),
+      ));
+    }
+
+    let mut options = wavo::Options::default();
+    options.language = query("language").map(str::to_string);
+    let body = http::body(r, w, head, MAX_BODY)?;
+    let parts = http::multipart(head.header("content-type").unwrap_or_default(), &body)?;
+    let pcm = decode(body, &parts, "audio_file", query("encode") == Some("false"))?;
+    reply(model, &pcm, &options, format, true)
   }
 
   /// The model a request's `model` names: one given on the command line, else another loaded
@@ -360,6 +362,70 @@ impl<T> Extra<T> {
 /// default: an empty or unknown name, such as OpenAI's `whisper-1`.
 fn wanted(name: &str) -> Option<&'static ModelInfo> {
   hub::MODELS.iter().find(|m| m.name == name || m.full_name == name)
+}
+
+/// The audio of the form field `name`: a file, or with `raw` 16 kHz mono 16-bit PCM. Takes the
+/// body to decode it without a copy.
+fn decode(mut body: Vec<u8>, parts: &[Part], name: &str, raw: bool) -> Res<Vec<f32>> {
+  let file = parts.iter().find(|p| p.name == name);
+  let file = file.ok_or_else(|| fail(400, format!("send the audio in the form field {name}")))?;
+  if raw {
+    let (pcm, _) = body[file.data.clone()].as_chunks::<2>();
+    if pcm.len() > MAX_AUDIO * 16_000 {
+      return Err(fail(400, format!("the audio is over {} hours", MAX_AUDIO / 3600)));
+    }
+
+    return Ok(pcm.iter().map(|&s| i16::from_le_bytes(s) as f32 / 32768.0).collect());
+  }
+
+  let name = file.filename.as_deref().map(Path::new);
+  let ext = name.and_then(Path::extension).and_then(|e| e.to_str()).map(str::to_string);
+  body.truncate(file.data.end);
+  body.drain(..file.data.start);
+  audio::decode_bytes(body, ext.as_deref(), MAX_AUDIO).map_err(|e| {
+    match e.is::<audio::Unsupported>() {
+      true => fail(415, "the audio is not wav, mp3, m4a, flac or ogg (Vorbis): convert it first"),
+      false => fail(400, format!("decoding the audio: {e:#}")),
+    }
+  })
+}
+
+/// Transcribes `pcm` with `m` into `format`, one of `FORMATS`. With `lenient`, a language the
+/// model lists but can't be told (Parakeet v3 detects its own) is left to it: Bazarr names every
+/// audio track's language.
+fn reply(m: &Loaded, pcm: &[f32], o: &wavo::Options, format: &str, lenient: bool) -> Res<Reply> {
+  let run = |o: &wavo::Options| split::transcribe(&m.model, pcm, None, o, |_, _| ());
+  let transcript = match run(o) {
+    Err(wavo::Error::Language(_)) if lenient => run(&wavo::Options::default()),
+    transcript => transcript,
+  };
+  let (t, starts) = transcript.map_err(|e| match e {
+    wavo::Error::Language(_) => fail(400, e.to_string()),
+    e => fail(500, format!("transcribing: {e}")),
+  })?;
+
+  let ms = (pcm.len() / 16) as u32;
+  let cues = || output::cues(&t.tokens, &starts, ms, m.timed);
+  let (content_type, body) = match format {
+    "json" => (JSON, format!("{{\"text\": {}}}\n", quote(&t.text))),
+    "text" => (TEXT, format!("{}\n", t.text)),
+    "srt" => (TEXT, output::srt(&cues())),
+    "vtt" => ("text/vtt; charset=utf-8", output::vtt(&cues())),
+    _ => {
+      // The language asked for, else the model's only one.
+      let langs = m.info.langs;
+      let language = o.language.as_deref().or((langs.len() == 1).then(|| langs[0]));
+      (JSON, output::verbose_json(&t, &cues(), language.unwrap_or_default(), ms) + "\n")
+    }
+  };
+  let note = format!("{}, {:.1} s of audio", m.info.name, ms as f64 / 1000.0);
+  Ok(Reply { content_type, body, note })
+}
+
+/// wavo's version, for Bazarr's Test Connection (whisper-asr-webservice's `GET /status`).
+fn status() -> Reply {
+  let body = format!("{{\"version\": \"wavo {}\"}}\n", env!("CARGO_PKG_VERSION"));
+  Reply { content_type: JSON, body, note: String::new() }
 }
 
 /// The text of the form field `name`, trimmed; 400 when it is over `MAX_FIELD` bytes.
@@ -419,6 +485,18 @@ mod tests {
     assert!(field(body.as_bytes(), &parts(256), "model").is_ok());
     let e = fail(400, "the form field model is over 256 bytes");
     assert_eq!(field(body.as_bytes(), &parts(257), "model"), Err(e));
+  }
+
+  /// Bazarr's `encode=false` audio: 16 kHz mono 16-bit little-endian PCM, without a header.
+  #[test]
+  fn raw_pcm() {
+    let body = b"xx\x00\x80\xff\x7f\x01\x00\x07--".to_vec();
+    let parts = [Part { name: "audio_file".into(), filename: None, data: 2..9 }];
+    let pcm = vec![-1.0, 32767.0 / 32768.0, 1.0 / 32768.0];
+    assert_eq!(decode(body.clone(), &parts, "audio_file", true), Ok(pcm), "an odd byte dropped");
+    let e = fail(400, "send the audio in the form field file");
+    assert_eq!(decode(body, &parts, "file", true), Err(e));
+    assert!(ASR_FORMATS.iter().all(|f| FORMATS.contains(&f.1)));
   }
 
   /// A, B and A again while the first A is still in use share that A.
