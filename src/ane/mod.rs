@@ -232,8 +232,10 @@ pub fn prepare(
 
   sweep();
   let target = compiled(path)?;
-  if loaded(&target) {
-    let _ = record(&target, path); // a model the sweep can't place still loads
+  let (source, gguf) = (target.with_extension("source"), std::path::absolute(path)?);
+  let gguf = gguf.to_string_lossy();
+  let recorded = || fs::read_to_string(&source).is_ok_and(|s| s == gguf);
+  if loaded(&target) && recorded() {
     return Ok(true);
   }
 
@@ -263,24 +265,21 @@ pub fn prepare(
     built?;
   }
 
-  record(&target, path)?;
+  // The GGUF's path, for the sweep, written under the lock it reads under: the last path prepared
+  // of those sharing the model (links to one file, as a new revision's of the same content), so
+  // deleting an older one elsewhere keeps it.
+  if !recorded() {
+    fs::write(&source, gguf.as_bytes())?;
+  }
+
+  if loaded(&target) {
+    return Ok(true);
+  }
+
   step(PrepareStep::Load)?;
   Model::load(&target)?;
   mark(&target)?;
   Ok(true)
-}
-
-/// Writes the GGUF's path next to its compiled model, for the sweep, unless it is there: the last
-/// path prepared of those sharing the model (links to one file, as a new revision's of the same
-/// content), so deleting an older one elsewhere keeps it.
-fn record(target: &Path, path: &Path) -> Result<()> {
-  let (source, path) = (target.with_extension("source"), std::path::absolute(path)?);
-  let path = path.to_string_lossy();
-  if fs::read_to_string(&source).is_ok_and(|s| s == path) {
-    return Ok(());
-  }
-
-  Ok(fs::write(source, path.as_bytes())?)
 }
 
 /// What names the GGUF's compiled models, for `remove`; `None` off macOS, where there are none.
