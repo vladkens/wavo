@@ -192,11 +192,12 @@ found by `wavo` and the other way round.
 On an Apple Silicon Mac with macOS 15 or later, `wavo pull` also prepares Parakeet and GigaAM for
 the Neural Engine: it compiles the model's encoder for Core ML once, which takes 15–30 s and as much
 disk as the model, in `~/Library/Caches/wavo`. From then on `wavo run` uses the Neural Engine for
-them (`wavo list` shows which are ready) and splits audio into pieces of up to 15 s; the words
-are the same as on the GPU on the test clips, while now and then a comma or a capital letter
-differs and some tokens start a frame or two apart. `--backend gpu` runs on the
-GPU anyway, `--backend ane` fails rather than fall back. Whisper and Moonshine always run on the
-GPU, where they are faster.
+them (`wavo list` shows which are ready) and splits audio into pieces of up to 15 s. Its
+arithmetic is close to the GPU's, not equal: on an hour of English read speech in pieces of up to
+15 s, 0.05–0.07% of the words differ from the GPU's (case and punctuation aside) and 3–4% of the
+pieces differ at all, mostly in a comma or a capital letter. `--backend gpu` runs on the GPU
+anyway, `--backend ane` fails rather than fall back. Whisper and Moonshine always run on the GPU,
+where they are faster.
 
 ### Server
 
