@@ -24,11 +24,6 @@ use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ureq::unversioned::resolver::DefaultResolver;
-use ureq::unversioned::transport::{
-  Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport,
-};
-
 use super::{Hub, Progress, RETRIES};
 use crate::{Error, Result};
 
@@ -36,8 +31,6 @@ use crate::{Error, Result};
 const CONNECT: Duration = Duration::from_secs(15);
 /// How long a response may go without a byte, headers or body, before it counts as broken off.
 const IDLE: Duration = Duration::from_secs(30);
-
-type Ureq<T> = std::result::Result<T, ureq::Error>;
 
 /// What a HEAD of `resolve/main/<file>` says about the latest revision.
 struct Remote {
@@ -308,61 +301,16 @@ fn http(url: &str, e: ureq::Error) -> Error {
 }
 
 /// An agent whose requests fail instead of hanging: on a connection that takes over [`CONNECT`],
-/// and on a response that sends nothing for `idle`. A download as a whole has no time limit.
+/// and on a response that sends nothing for `idle`. `timeout_per_read` restarts on every read,
+/// unlike `timeout_recv_body`, a budget for the whole body that a large file outlasts on a slow
+/// line, so a download as a whole has no time limit.
 fn agent(idle: Duration) -> ureq::Agent {
-  let config = ureq::Agent::config_builder()
+  ureq::Agent::config_builder()
     .timeout_connect(Some(CONNECT))
     .timeout_recv_response(Some(idle))
-    .build();
-  let connector = DefaultConnector::default().chain(Idle(idle));
-  ureq::Agent::with_parts(config, connector, DefaultResolver::default())
-}
-
-/// Caps every wait for input at its duration. ureq's own `timeout_recv_body` is a budget for the
-/// whole body, which a large file outlasts on a slow line; this one restarts on every read. ureq
-/// may change its `unversioned` transport API in a minor release: recheck this on upgrade.
-#[derive(Debug)]
-struct Idle(Duration);
-
-impl Connector<Box<dyn Transport>> for Idle {
-  type Out = IdleTransport;
-
-  fn connect(
-    &self,
-    _: &ConnectionDetails,
-    chained: Option<Box<dyn Transport>>,
-  ) -> Ureq<Option<IdleTransport>> {
-    Ok(chained.map(|inner| IdleTransport { inner, idle: self.0 }))
-  }
-}
-
-#[derive(Debug)]
-struct IdleTransport {
-  inner: Box<dyn Transport>,
-  idle: Duration,
-}
-
-impl Transport for IdleTransport {
-  fn buffers(&mut self) -> &mut dyn Buffers {
-    self.inner.buffers()
-  }
-
-  fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Ureq<()> {
-    self.inner.transmit_output(amount, timeout)
-  }
-
-  fn await_input(&mut self, timeout: NextTimeout) -> Ureq<bool> {
-    let idle = NextTimeout { after: self.idle.into(), reason: ureq::Timeout::RecvBody };
-    self.inner.await_input(if idle.after < timeout.after { idle } else { timeout })
-  }
-
-  fn is_open(&mut self) -> bool {
-    self.inner.is_open()
-  }
-
-  fn is_tls(&self) -> bool {
-    self.inner.is_tls()
-  }
+    .timeout_per_read(Some(idle))
+    .build()
+    .into()
 }
 
 fn head(agent: &ureq::Agent, repo: &str, file: &str) -> Result<Remote> {
