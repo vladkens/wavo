@@ -85,7 +85,7 @@ impl Hub {
   ) -> Result<(PathBuf, File)> {
     let agent = agent(IDLE);
     let remote = head(&agent, repo, file)?;
-    self.install_locked(repo, file, &remote, |part| {
+    self.install(repo, file, &remote, |part| {
       let mut retry = 0;
       loop {
         match download(&agent, &remote.url, part, remote.size, &mut progress) {
@@ -112,22 +112,10 @@ impl Hub {
     hold(&dir.join(format!("{name}.lock")))
   }
 
-  /// `install_locked`, releasing the lock at once.
-  #[cfg(test)]
-  fn install(
-    &self,
-    repo: &str,
-    file: &str,
-    remote: &Remote,
-    fetch: impl FnOnce(&Path) -> Result<()>,
-  ) -> Result<PathBuf> {
-    self.install_locked(repo, file, remote, fetch).map(|(path, _)| path)
-  }
-
   /// Links the file into its snapshot, `fetch`ing the blob into `<etag>.incomplete` first when it
   /// is missing, then points `refs/main` at the snapshot. Returns the repository lock, held since
   /// before the download.
-  fn install_locked(
+  fn install(
     &self,
     repo: &str,
     file: &str,
@@ -526,7 +514,7 @@ mod tests {
     let hub = temp("install");
     let dir = hub.root.join("models--org--m-gguf");
     let a = remote('a', '1', 5);
-    let path = hub.install("org/m-gguf", "m.gguf", &a, write("hello")).unwrap();
+    let path = hub.install("org/m-gguf", "m.gguf", &a, write("hello")).unwrap().0;
     assert_eq!(path, dir.join("snapshots").join(&a.commit).join("m.gguf"));
     assert_eq!(fs::read_link(&path).unwrap(), Path::new("../../blobs").join(&a.etag));
     assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
@@ -537,9 +525,9 @@ mod tests {
 
     // A cached revision and a new revision of the same content download nothing.
     let fail = |_: &Path| -> Result<()> { panic!("downloaded again") };
-    assert_eq!(hub.install("org/m-gguf", "m.gguf", &a, fail).unwrap(), path);
+    assert_eq!(hub.install("org/m-gguf", "m.gguf", &a, fail).unwrap().0, path);
     let b = remote('b', '1', 5);
-    let path = hub.install("org/m-gguf", "m.gguf", &b, fail).unwrap();
+    let path = hub.install("org/m-gguf", "m.gguf", &b, fail).unwrap().0;
     assert_eq!(fs::read_to_string(dir.join("refs/main")).unwrap(), b.commit);
     assert_eq!(hub.find_file("org/m-gguf", "m.gguf"), Some(path));
 
@@ -681,7 +669,7 @@ mod tests {
       let folder = hub.folder(repo).file_name().unwrap().to_str().unwrap().to_owned();
       writeln!(refs, "{folder}/blobs/{}", r.etag).unwrap();
     }
-    let path = hub.install(repo, file, &r, write("")).unwrap();
+    let path = hub.install(repo, file, &r, write("")).unwrap().0;
     assert_eq!(fs::read_to_string(path).unwrap(), text);
     store
   }

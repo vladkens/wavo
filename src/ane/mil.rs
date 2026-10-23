@@ -217,7 +217,7 @@ impl Program {
   /// such weights, but not on Q8_0's 32-wide blocks.
   pub fn int8(&mut self, rows: usize, cols: usize, w: &[f32]) -> Var {
     let (q, scales) = quantize(w, cols);
-    let data = self.blob(Dtype::I8, &[rows, cols], &q.iter().map(|&q| q as u8).collect::<Vec<_>>());
+    let data = self.blob(Dtype::I8, &[rows, cols], &q);
     let scales: Vec<u8> = scales.iter().flat_map(|s| s.to_le_bytes()).collect();
     let scale = self.blob(Dtype::F16, &[rows, 1], &scales);
     let out = Var { name: self.name("weight"), dtype: Dtype::F16, shape: vec![rows, cols] };
@@ -242,7 +242,6 @@ impl Program {
     file.seek(SeekFrom::Start(0))?;
     file.write_all(&self.blobs.to_le_bytes())?;
     file.write_all(&2u32.to_le_bytes())?;
-    file.sync_all()?;
 
     let feature = |m: &mut Msg, v: &Var| {
       m.str(1, &v.name);
@@ -295,14 +294,14 @@ const MANIFEST: &str = r#"{
 "#;
 
 /// Per row of `cols` weights: an F16 scale (the largest magnitude / 127) and the weights divided
-/// by it, rounded to int8.
-pub fn quantize(w: &[f32], cols: usize) -> (Vec<i8>, Vec<f16>) {
+/// by it, rounded to int8 and stored as bytes.
+pub fn quantize(w: &[f32], cols: usize) -> (Vec<u8>, Vec<f16>) {
   let mut q = Vec::with_capacity(w.len());
   let scales = (w.chunks_exact(cols))
     .map(|row| {
       let scale = f16::from_f32(row.iter().fold(0f32, |m, x| m.max(x.abs())) / 127.0);
       let inv = if scale.to_f32() > 0.0 { 1.0 / scale.to_f32() } else { 0.0 };
-      q.extend(row.iter().map(|x| (x * inv).round().clamp(-127.0, 127.0) as i8));
+      q.extend(row.iter().map(|x| (x * inv).round().clamp(-127.0, 127.0) as i8 as u8));
       scale
     })
     .collect();
@@ -356,10 +355,10 @@ mod tests {
     let (q, s) = quantize(&w, 3);
     assert_eq!(s[1], f16::ZERO, "an all-zero row");
     assert_eq!(&q[3..6], &[0, 0, 0]);
-    assert_eq!((q[1], q[6]), (-127, 127), "the largest magnitude maps to ±127");
+    assert_eq!((q[1] as i8, q[6] as i8), (-127, 127), "the largest magnitude maps to ±127");
     for (row, (q, s)) in w.chunks(3).zip(q.chunks(3).zip(&s)) {
       for (x, q) in row.iter().zip(q) {
-        assert!((*q as f32 * s.to_f32() - x).abs() <= s.to_f32() / 2.0 + 1e-6, "{x} {q} {s}");
+        assert!((*q as i8 as f32 * s.to_f32() - x).abs() <= s.to_f32() / 2.0 + 1e-6, "{x} {q} {s}");
       }
     }
   }
