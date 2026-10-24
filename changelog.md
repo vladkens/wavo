@@ -1,3 +1,39 @@
+## v0.4.0 – 2026-10-24
+
+### Breaking Changes
+
+- `wavo` now transcribes with `parakeet-ultra` by default instead of `parakeet-v3`: Moondream's retraining of Parakeet v3 with fewer errors in each of its 25 languages, at the same speed (#70)
+- `Model::transcribe` returns `Error::AudioTooLong` for GigaAM and Moonshine audio longer than 1.5 times their window instead of failing on the GPU or losing text; use `Model::transcribe_long` for long audio (#54, by @Dtatarchuk)
+
+### Features
+
+- Added `wavo serve`, a local server with OpenAI's transcription API (`/v1/audio/transcriptions`, `/v1/models`), an optional API key and limits on request size and audio length (#67)
+- Added `POST /asr` and `GET /status` to `wavo serve`, the API of whisper-asr-webservice, so Bazarr can generate subtitles through wavo (#72)
+- Added a Neural Engine backend on Apple Silicon for Parakeet and GigaAM: about 2× faster on 11 s clips, ~10× less memory and ~6× less energy per call than the GPU; `wavo pull` compiles the model once, `--backend auto|gpu|ane` picks the backend, and compiled models of deleted files are cleaned up in the background (#37, #73)
+- Added the `parakeet-ultra` model (#65)
+- Added Hebrew models: ivrit.ai's Whisper turbo fine-tune (`whisper-turbo-he`) and a Parakeet v3 fine-tune (`parakeet-he`) (#64)
+- Added `--language` and `Options::language` to set the speech language for Whisper models instead of detecting it (#61)
+- Added `Model::transcribe_long`, which splits long audio at pauses and reports each piece to a callback that can cancel, and `wavo::split` (#66, #74)
+- Added `Model::languages`, `Model::takes_language` and `Error::is_fatal` for apps (#74)
+- Added `Hub::resolve`, `Hub::downloaded` and the `langs`, `family`, `maker` and `card` fields of `ModelInfo` (#53, #75)
+- Added `wavo debug`, which prints the system, its GPUs, kernel tiers and models for bug reports (#58)
+
+### Fixes
+
+- Fixed garbage output from Parakeet GGUFs that store decoder tensors as F32 or F16, and Parakeet and GigaAM printing byte tokens such as `<0xD7>` literally instead of the characters they spell (#56)
+- Fixed `wavo pull` hanging forever on a stalled connection: it now times out and retries (#68)
+- Fixed building wavo with ureq 3.5 (#69)
+- Fixed resuming downloads on Windows when a server ignores range requests (#51)
+- Fixed loading Whisper fine-tunes whose GGUF has no suppress-token lists (#53)
+
+### Improvements
+
+- Improved CLI errors for mistyped file names, extra arguments and silent audio (#62)
+
+**Full Changelog**: https://github.com/vladkens/wavo/compare/v0.3.1...v0.4.0
+
+---
+
 ## v0.3.1 – 2026-10-14
 
 ### Features
