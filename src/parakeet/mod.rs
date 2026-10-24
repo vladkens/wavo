@@ -135,6 +135,6 @@ impl Parakeet {
     let text = tokens.iter().map(|t| t.piece.as_str()).collect::<String>().replace('▁', " ");
     // Runs of spaces collapse to one, and the ends are trimmed.
     let text = text.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
-    Ok(Transcript { text, tokens })
+    Ok(Transcript { text, tokens, language: None })
   }
 }

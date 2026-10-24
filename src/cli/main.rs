@@ -11,6 +11,7 @@ macro_rules! out {
 mod audio;
 mod debug;
 mod http;
+mod lid;
 mod models;
 mod output;
 mod serve;
@@ -66,8 +67,8 @@ Serve options:
   POST /v1/audio/transcriptions takes OpenAI's fields file, model, language and
   response_format (json, text, srt, vtt, verbose_json); GET /v1/models lists the downloaded
   models, GET /health the GPU and the loaded models. A downloaded model not listed loads on
-  first use, one at a time. POST /asr and GET /status answer as whisper-asr-webservice does,
-  for Bazarr's subtitles, with the first model.
+  first use, one at a time. POST /asr, POST /detect-language and GET /status answer as
+  whisper-asr-webservice does, for Bazarr's subtitles, with the first model.
 
 MODEL is a name below, its full name or a path to a .gguf file (for serve, a name). AUDIO is
 wav, mp3, m4a, flac or ogg (Vorbis), downmixed to mono and resampled to 16 kHz.

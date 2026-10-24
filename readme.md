@@ -167,7 +167,7 @@ wavo run gigaam-v3 talk.mp3           # or with another model
 wavo run whisper-turbo talk.mp3 -y    # download a missing model without asking
 wavo pull parakeet-ultra              # download a model
 wavo pull gigaam-v3 whisper-turbo     # or several at once
-wavo run talk.wav --json              # text and every token with its start time
+wavo run talk.wav --json              # text, its language and every token with its start time
 wavo run talk.wav --srt > talk.srt    # subtitles
 wavo run whisper-turbo talk.mp3 --language he  # Whisper: set the language, not detect it
 wavo list                             # downloaded models
@@ -235,7 +235,11 @@ For [Bazarr](https://www.bazarr.media)'s subtitles, `POST /asr` answers as
 Whisper provider and set its endpoint to `http://HOST:8000`, with `wavo serve` started without
 `--api-key`, as Bazarr sends none; its Test Connection shows wavo's version (`GET /status`). The
 first model transcribes, in the language of the audio track's tag, which it must know; wavo
-doesn't translate, nor detect the language of an untagged track (`/detect-language`).
+doesn't translate. For an untagged track, `POST /detect-language` names the language: a
+multilingual Whisper model hears up to five 30 s windows spread over the track, a model of one
+language answers its own; for Parakeet v3 and ultra, whisper-tiny or whisper-base answers when
+downloaded (`wavo pull whisper-tiny`, 46 MB), else the language of Parakeet's text on up to five
+pieces of the track.
 
 ## ⚡ Speed
 

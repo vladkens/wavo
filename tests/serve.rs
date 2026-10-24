@@ -1,7 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! `wavo serve` end to end: started on a free port with a smoke model (`make models`), it must
 //! answer curl's uploads with the text `wavo run` prints, for the model it was started with and
-//! for one it loads on demand, and Bazarr's `POST /asr` with its subtitles and `GET /status`.
+//! for one it loads on demand, and Bazarr's `POST /asr` with its subtitles, `POST /detect-language`
+//! and `GET /status`.
 #![cfg(feature = "cli")]
 
 use std::io::{BufRead, BufReader};
@@ -74,6 +75,9 @@ fn transcribes_like_run() {
   let run =
     output(Command::new(WAVO).args(["run", "whisper-tiny", "--srt", "--language", "en"]).arg(&jfk));
   assert_eq!(srt, run, "/asr");
+  let detected = send("/detect-language", &[&format!("audio_file=@{}", jfk.display())]);
+  let english = "{\"detected_language\": \"english\", \"language_code\": \"en\", \"confidence\": ";
+  assert!(detected.starts_with(english), "/detect-language: {detected}");
   let mut curl = Command::new("curl");
   let status =
     output(curl.args(["-sS", "-H", "Authorization: Bearer k", &format!("{url}/status")]));

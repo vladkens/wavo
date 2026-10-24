@@ -168,7 +168,7 @@ impl Moonshine {
     let pieces = self.tok.pieces(&ids);
     let text = sentencepiece::text(&pieces);
     let token = |(&id, piece): (&usize, String)| Token { id: id as u32, piece, start_ms: 0 };
-    Ok(Transcript { text, tokens: ids.iter().zip(pieces).map(token).collect() })
+    Ok(Transcript { text, tokens: ids.iter().zip(pieces).map(token).collect(), language: None })
   }
 
   /// Buffers for `n` samples, the rotary table for as many positions as they and the decoder need.
