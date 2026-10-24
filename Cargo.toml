@@ -37,7 +37,9 @@ required-features = ["hub"]
 
 [features]
 default = ["cli"]
-cli = ["hub", "dep:anyhow", "dep:httparse", "dep:indicatif", "dep:rubato", "dep:symphonia"]
+cli = [
+  "hub", "dep:anyhow", "dep:httparse", "dep:indicatif", "dep:rubato", "dep:symphonia", "dep:whatlang",
+]
 # Model downloads into the Hugging Face cache: `wavo::hub`.
 hub = ["dep:ureq"]
 
@@ -53,6 +55,7 @@ symphonia = { version = "0.6.1", default-features = false, features = ["wav", "p
 thiserror = "2.0.21"
 ureq = { version = "3.5", default-features = false, features = ["rustls"], optional = true }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "metal", "vulkan"] }
+whatlang = { version = "0.18.0", optional = true }
 
 [dev-dependencies]
 hound = "3.5.1"

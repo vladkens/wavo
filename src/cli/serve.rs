@@ -2,8 +2,9 @@
 //! `wavo serve`: OpenAI's transcription API over HTTP, on `std::net` with a thread per
 //! connection. The models given on the command line stay loaded, the first one answering model
 //! names wavo doesn't know (OpenAI's `whisper-1`); another downloaded model loads on first use,
-//! one at a time. Requests share each model, and their calls take turns on the GPU. `POST /asr`
-//! and `GET /status` answer as whisper-asr-webservice does, for Bazarr's subtitles.
+//! one at a time. Requests share each model, and their calls take turns on the GPU. `POST /asr`,
+//! `POST /detect-language` and `GET /status` answer as whisper-asr-webservice does, for Bazarr's
+//! subtitles.
 
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -20,7 +21,7 @@ use wavo::hub::{self, Hub, ModelInfo};
 
 use crate::http::{self, Head, Part, Res, fail};
 use crate::output::{self, quote};
-use crate::{Download, audio, debug, models, split};
+use crate::{Download, audio, debug, lid, models, split};
 
 const USAGE: &str = "usage: wavo serve [MODEL...] [--host ADDR] [--port PORT] [--api-key KEY] [-y]";
 /// Connections served at once; as many more get 503, and past that they are dropped.
@@ -235,6 +236,7 @@ impl Server {
       ("GET", "/v1/models") => Ok(self.list()),
       ("POST", "/v1/audio/transcriptions") => self.transcribe(head, r, w),
       ("POST", "/asr") => self.asr(head, r, w),
+      ("POST", "/detect-language") => self.detect(head, r, w),
       (method, path) => Err(fail(404, format!("no such endpoint: {method} {path}"))),
     }
   }
@@ -318,6 +320,55 @@ impl Server {
     let parts = http::multipart(head.header("content-type").unwrap_or_default(), &body)?;
     let pcm = decode(body, &parts, "audio_file", query("encode") == Some("false"))?;
     reply(model, &pcm, &options, format, true)
+  }
+
+  /// `POST /detect-language` of whisper-asr-webservice, as Bazarr calls it: the form field
+  /// `audio_file`, and `encode=false` in the query for raw 16 kHz mono 16-bit PCM. The first
+  /// model answers: multilingual Whisper from up to 5 windows spread over the audio, a model of
+  /// one language with it. For Parakeet v3 and ultra, which don't say their language, whisper-tiny
+  /// or whisper-base answers when downloaded, else the language of Parakeet's text on up to 5
+  /// pieces spread over the audio; `und` without speech.
+  fn detect(&self, head: &Head, r: &mut impl BufRead, w: &mut impl Write) -> Res<Reply> {
+    let raw = http::query(&head.query, "encode") == Some("false");
+    let body = http::body(r, w, head, MAX_BODY)?;
+    let parts = http::multipart(head.header("content-type").unwrap_or_default(), &body)?;
+    let pcm = decode(body, &parts, "audio_file", raw)?;
+    let failed = |e: wavo::Error| fail(500, format!("detecting the language: {e}"));
+    let detect = |m: &Loaded| m.model.detect_language(&pcm, &wavo::Options::default());
+    let mut by = self.models[0].clone();
+    let mut ranked = detect(&by).map_err(failed)?;
+    let whisper =
+      ["whisper-tiny", "whisper-base"].into_iter().find(|n| Hub::new().find(n).is_some());
+    if let (true, Some(name)) = (ranked.is_empty(), whisper) {
+      by = self.pick(name)?;
+      ranked = detect(&by).map_err(failed)?;
+    }
+
+    let (code, confidence) = match ranked.first() {
+      Some(top) => (top.code.clone(), top.probability as f64),
+      None => {
+        // The text of up to 5 pieces spread over the audio.
+        let ranges = wavo::split(&pcm, 30_000);
+        let n = ranges.len();
+        let mut text = String::new();
+        for i in 0..n.min(5) {
+          let r = ranges[if n <= 5 { i } else { i * (n - 1) / 4 }].clone();
+          text += &by.model.transcribe(&pcm[r]).map_err(failed)?.text;
+          text += " ";
+        }
+
+        let found = lid::language(&text, by.model.languages());
+        found.map_or(("und".into(), 0.0), |(code, c)| (code.to_string(), c))
+      }
+    };
+    let name = if code == "und" { String::new() } else { lid::name(&code) };
+    let body = format!(
+      "{{\"detected_language\": {}, \"language_code\": {}, \"confidence\": {confidence:.3}}}\n",
+      quote(&name),
+      quote(&code)
+    );
+    let note = format!("{}: {code} {confidence:.2}", by.info.name);
+    Ok(Reply { content_type: JSON, body, note })
   }
 
   /// The model a request's `model` names: one given on the command line, else another loaded
@@ -418,12 +469,8 @@ fn reply(m: &Loaded, pcm: &[f32], o: &wavo::Options, format: &str, lenient: bool
     "srt" => (TEXT, output::srt(&cues())),
     "vtt" => ("text/vtt; charset=utf-8", output::vtt(&cues())),
     _ => {
-      // The language asked for, else the one the model's GGUF lists alone.
-      let only = match m.model.languages() {
-        [only] => Some(only.as_str()),
-        _ => None,
-      };
-      let language = o.language.as_deref().or(only);
+      // The language the model wrote in, else the one asked for (Parakeet v3 doesn't say).
+      let language = t.language.as_deref().or(o.language.as_deref());
       (JSON, output::verbose_json(&t, &cues(), language.unwrap_or_default(), ms) + "\n")
     }
   };
