@@ -27,6 +27,14 @@ required-features = ["cli"]
 name = "hub"
 required-features = ["hub"]
 
+[[example]]
+name = "langid"
+required-features = ["hub"]
+
+[[example]]
+name = "langid-eval"
+required-features = ["hub"]
+
 [features]
 default = ["cli"]
 cli = ["hub", "dep:anyhow", "dep:httparse", "dep:indicatif", "dep:rubato", "dep:symphonia"]
@@ -48,6 +56,7 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"
 
 [dev-dependencies]
 hound = "3.5.1"
+whatlang = "0.18.0"
 
 [profile.release]
 debug = 1
