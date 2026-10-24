@@ -336,6 +336,23 @@ pub struct Transcript {
   pub text: String,
   /// The tokens in order: the model's vocabulary pieces the text is made of, with start times.
   pub tokens: Vec<Token>,
+  /// The language the model wrote the text in, as one of its [`languages`](Model::languages):
+  /// for multilingual Whisper the one it was told or detected on its first 30 s window, for a
+  /// model of one language that one. `None` for models that tell their languages apart without
+  /// saying which (Parakeet v3 and ultra). From [`Model::transcribe_long`], the language of most
+  /// of the audio among the pieces with text; each [`Piece`] has its own.
+  pub language: Option<String>,
+}
+
+/// A spoken language [`Model::detect_language`] hears, with its probability.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct Language {
+  /// One of the model's [`languages`](Model::languages): ISO 639-1 such as `en`, `ru` or `zh`,
+  /// and a few longer codes such as `haw` and `yue`.
+  pub code: String,
+  /// Probability in [0, 1]; over the languages returned they sum to 1.
+  pub probability: f32,
 }
 
 /// Options for [`Model::transcribe_with`] and [`Model::transcribe_long`]. Start from
@@ -363,6 +380,18 @@ pub struct Options {
   /// 15 s window. GigaAM and Moonshine fail on pieces past 1.5 times their window: see
   /// [`Error::AudioTooLong`]. `transcribe_with` ignores it.
   pub window_ms: Option<u32>,
+  /// The languages the speech may be in, as codes of [`Model::languages`]; empty, the default,
+  /// for any of them. A multilingual Whisper model without [`language`](Self::language) then
+  /// detects only among these, and [`Model::detect_language`] ranks only these. Other models
+  /// ignore it. A code the model doesn't list fails with [`Error::Language`].
+  pub languages: Vec<String>,
+  /// For [`Model::transcribe_long`] with a multilingual Whisper model and no
+  /// [`language`](Self::language): keep the language of the pieces so far unless a piece with
+  /// speech (a no-speech probability under 0.6) is at least 70% sure of another one, and 4 times
+  /// as sure of it as of the current one. `false`, the default, lets each piece take the
+  /// language it finds likeliest on its own, which on short pieces can flip between close
+  /// languages, such as Ukrainian and Russian. `transcribe_with` ignores it.
+  pub sticky_language: bool,
 }
 
 /// One token of a [`Transcript`].
@@ -384,6 +413,13 @@ pub struct Token {
 /// The longest piece [`Model::transcribe_long`] cuts by default for a model without a window, in
 /// ms: Parakeet, whose time per second of audio grows past a minute (its attention is quadratic).
 const WINDOW_MS: u32 = 60_000;
+
+/// [`Options::sticky_language`]: a piece switches to a language at least this likely and this
+/// many times as likely as the current one.
+const SWITCH_P: f32 = 0.7;
+const SWITCH_K: f32 = 4.0;
+/// The 30 s windows [`Model::detect_language`] hears at most, spread over the audio.
+const DETECT_WINDOWS: usize = 5;
 
 /// Where a model's encoder runs, chosen when it loads ([`Model::load_with`]). The audio frontend
 /// and the decoder run on the CPU either way (Whisper's and Moonshine's decoders on the GPU).
@@ -550,10 +586,21 @@ impl Model {
   /// # Ok::<(), wavo::Error>(())
   /// ```
   pub fn transcribe_with(&self, pcm: &[f32], options: &Options) -> Result<Transcript> {
+    self.run(pcm, options, None)
+  }
+
+  /// `transcribe_with`, with the language of the pieces so far for [`Options::sticky_language`].
+  fn run(
+    &self,
+    pcm: &[f32],
+    options: &Options,
+    mut sticky: Option<&mut Option<usize>>,
+  ) -> Result<Transcript> {
     let language = match &options.language {
       Some(code) => language(code, &self.languages, self.language_tokens())?,
       None => None,
     };
+    let allowed = self.allowed(&options.languages)?;
 
     if self.on_ane() && pcm.len() > ane::WINDOW {
       return self.pieces(pcm, (ane::WINDOW / 16) as u32, options, |_| ControlFlow::Continue(()));
@@ -570,12 +617,98 @@ impl Model {
       return Err(Error::AudioTooLong { ms, max_ms: window * 3 / 2 });
     }
 
-    match &self.family {
-      Family::Gigaam(m) => m.transcribe(pcm),
-      Family::Parakeet(m) => m.transcribe(pcm),
-      Family::Whisper(m) => m.transcribe(pcm, language),
-      Family::Moonshine(m) => m.transcribe(pcm),
+    let mut transcript = match &self.family {
+      Family::Gigaam(m) => m.transcribe(pcm)?,
+      Family::Parakeet(m) => m.transcribe(pcm)?,
+      Family::Whisper(m) => {
+        let (mut t, i) = m.transcribe(pcm, |logits, no_speech| match language {
+          Some(i) => i,
+          None => pick(logits, &allowed, no_speech < whisper::NO_SPEECH, sticky.as_deref_mut()),
+        })?;
+        t.language = i.map(|i| self.languages[i].clone());
+        t
+      }
+      Family::Moonshine(m) => m.transcribe(pcm)?,
+    };
+    if let (None, [only]) = (&transcript.language, &self.languages[..]) {
+      transcript.language = Some(only.clone());
     }
+
+    Ok(transcript)
+  }
+
+  /// The spoken language of 16 kHz mono PCM samples in [-1, 1], as a multilingual Whisper model
+  /// hears it: every language the model knows, or of [`Options::languages`] when set, with its
+  /// probability, most likely first. A model of one language returns that one at 1.0, and
+  /// Parakeet v3 and ultra, which tell their languages apart without saying which, nothing. The
+  /// other options don't apply.
+  ///
+  /// Up to 30 s of audio is one window, ranked as [`transcribe`](Self::transcribe) ranks its
+  /// first: on the same samples, it picks the first language here. Longer audio is heard in up
+  /// to 5 windows of 30 s spread over it, from the start to the end, and their probabilities
+  /// averaged over the windows with speech (a no-speech probability under 0.6; all of them when
+  /// none has). Each window costs about as much as transcribing a second of audio. Short clips,
+  /// of a few seconds, are the least reliable, small models more so: whisper-tiny takes 3 s of
+  /// Ukrainian for Russian now and then; [`Options::languages`] narrows the choice.
+  ///
+  /// # Errors
+  ///
+  /// - [`Error::Language`]: a code of [`Options::languages`] the model doesn't list.
+  /// - The GPU failed: [`Error::Gpu`], [`Error::Poll`], [`Error::Readback`] or [`Error::Map`].
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// # let pcm = vec![0.0f32; 16_000];
+  /// let model = wavo::Model::load("whisper-tiny-Q8_0.gguf")?;
+  /// let mut options = wavo::Options::default();
+  /// options.languages = vec!["en".into(), "ru".into(), "uk".into()];
+  /// if let Some(top) = model.detect_language(&pcm, &options)?.first() {
+  ///   println!("{} ({:.0}%)", top.code, top.probability * 100.0);
+  /// }
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn detect_language(&self, pcm: &[f32], options: &Options) -> Result<Vec<Language>> {
+    let allowed = self.allowed(&options.languages)?;
+    let m = match (&self.family, &self.languages[..]) {
+      (Family::Whisper(m), _) if m.multilingual() => m,
+      (_, [only]) => return Ok(vec![Language { code: only.clone(), probability: 1.0 }]),
+      _ => return Ok(Vec::new()),
+    };
+
+    let (w, len) = (whisper::SAMPLES, pcm.len());
+    let n = len.div_ceil(w).clamp(1, DETECT_WINDOWS);
+    let mut windows = Vec::with_capacity(n);
+    for i in 0..n {
+      let start = if n == 1 { 0 } else { i * (len - w) / (n - 1) };
+      let (logits, no_speech) = m.detect(&pcm[start..(start + w).min(len)])?;
+      windows.push((softmax(&logits, &allowed), no_speech < whisper::NO_SPEECH));
+    }
+
+    if windows.iter().any(|w| w.1) {
+      windows.retain(|w| w.1);
+    }
+
+    let mut ranked: Vec<Language> = (windows[0].0.iter().enumerate())
+      .map(|(k, &(i, _))| {
+        let sum: f32 = windows.iter().map(|w| w.0[k].1).sum();
+        Language { code: self.languages[i].clone(), probability: sum / windows.len() as f32 }
+      })
+      .collect();
+    ranked.sort_by(|a, b| b.probability.total_cmp(&a.probability));
+    Ok(ranked)
+  }
+
+  /// The indices in [`languages`](Self::languages) of [`Options::languages`].
+  fn allowed(&self, codes: &[String]) -> Result<Vec<usize>> {
+    let find = |code: &String| {
+      let i = self.languages.iter().position(|l| l == code);
+      i.ok_or_else(|| {
+        let list = self.languages.join(", ");
+        Error::Language(format!("language {code:?}: not one of the model's languages: {list}"))
+      })
+    };
+    codes.iter().map(find).collect()
   }
 
   /// The longest audio, in milliseconds, the model takes in one piece: 15 000 on the Neural
@@ -665,15 +798,36 @@ impl Model {
   ) -> Result<Transcript> {
     let ranges = split(pcm, window_ms);
     let (count, mut out) = (ranges.len(), Transcript::default());
+    let mut sticky = options.sticky_language.then_some(None);
+    // Samples per language among the pieces with text.
+    let mut heard: Vec<(String, usize)> = Vec::new();
     for (index, r) in ranges.into_iter().enumerate() {
       let start_ms = (r.start / 16) as u32; // a multiple of 160 samples: whole ms
-      let mut transcript = self.transcribe_with(&pcm[r], options)?;
+      let len = r.len();
+      let mut transcript = self.run(&pcm[r], options, sticky.as_mut())?;
       transcript.tokens.iter_mut().for_each(|t| t.start_ms += start_ms);
       if on_piece(Piece { index, count, start_ms, transcript: &transcript }).is_break() {
         return Err(Error::Cancelled);
       }
 
+      if index == 0 {
+        out.language.clone_from(&transcript.language);
+      }
+
+      if let (Some(code), false) = (&transcript.language, transcript.text.is_empty()) {
+        match heard.iter_mut().find(|h| &h.0 == code) {
+          Some(h) => h.1 += len,
+          None => heard.push((code.clone(), len)),
+        }
+      }
+
       split::append(&mut out, transcript);
+    }
+
+    // The first of the most heard.
+    let most = heard.into_iter().reduce(|best, h| if h.1 > best.1 { h } else { best });
+    if let Some((code, _)) = most {
+      out.language = Some(code);
     }
 
     Ok(out)
@@ -839,6 +993,52 @@ impl Model {
   }
 }
 
+/// Softmax over the language tokens' logits of `allowed` (every language when empty): pairs of an
+/// index in `general.languages` and its probability, in the model's order.
+fn softmax(logits: &[f32], allowed: &[usize]) -> Vec<(usize, f32)> {
+  let all: Vec<usize>;
+  let allowed = match allowed {
+    [] => {
+      all = (0..logits.len()).collect();
+      &all
+    }
+    some => some,
+  };
+  let max = allowed.iter().map(|&i| logits[i]).fold(f32::NEG_INFINITY, f32::max);
+  let exp: Vec<(usize, f64)> =
+    allowed.iter().map(|&i| (i, ((logits[i] - max) as f64).exp())).collect();
+  let sum: f64 = exp.iter().map(|e| e.1).sum();
+  exp.into_iter().map(|(i, e)| (i, (e / sum) as f32)).collect()
+}
+
+/// The language to decode a window in, from its language tokens' logits: among `allowed` (all
+/// when empty) the first of the highest, as transcribe.cpp picks. With `sticky`, the language of
+/// the pieces so far, set by the first piece with speech: that one, unless the window has speech
+/// and the highest beats it by `SWITCH_P` and `SWITCH_K`.
+fn pick(
+  logits: &[f32],
+  allowed: &[usize],
+  speech: bool,
+  sticky: Option<&mut Option<usize>>,
+) -> usize {
+  let p = softmax(logits, allowed);
+  // On the logits: two close ones can round to the same probability.
+  let best = p.iter().map(|x| x.0).reduce(|b, i| if logits[i] > logits[b] { i } else { b });
+  let best = best.unwrap_or_default();
+  let Some(current) = sticky else { return best };
+  let prob = |i: usize| p.iter().find(|x| x.0 == i).map_or(0.0, |x| x.1);
+  match *current {
+    Some(c) if !speech || prob(best) < SWITCH_P || prob(best) < SWITCH_K * prob(c) => c,
+    _ => {
+      if speech {
+        *current = Some(best);
+      }
+
+      best
+    }
+  }
+}
+
 fn neural_engine(path: &Path, arch: &str) -> Result<ane::Model> {
   if program(arch).is_none() {
     return Err(Error::NeuralEngine(format!("{arch} models have no Neural Engine program")));
@@ -888,6 +1088,42 @@ mod tests {
     let err = language("de", &list(&["en", "de", "uk"]), false).unwrap_err().to_string();
     assert!(err.contains("detects its 3 languages itself"), "{err}");
     assert!(matches!(language("de", &[], false), Err(Error::Language(_))));
+  }
+
+  #[test]
+  fn languages_are_ranked_and_picked() {
+    // en, ru, de, uk: ru and uk tie in the logits.
+    let logits = [1.0, 3.0, 1.0, 3.0];
+    let p = softmax(&logits, &[]);
+    let (hi, lo) = (1.0 / (2.0 + 2.0 * (-2f32).exp()), 1.0 / (2.0 + 2.0 * 2f32.exp()));
+    for (i, (got, want)) in p.iter().zip([lo, hi, lo, hi]).enumerate() {
+      assert_eq!(got.0, i);
+      assert!((got.1 - want).abs() < 1e-6, "{got:?}, want {want}");
+    }
+    let p = softmax(&logits, &[3, 0]);
+    assert_eq!(p.iter().map(|x| x.0).collect::<Vec<_>>(), [3, 0], "the allowlist's order");
+    assert!((p[0].1 + p[1].1 - 1.0).abs() < 1e-6);
+    // The first of the highest, within the allowlist.
+    assert_eq!(pick(&logits, &[], true, None), 1);
+    assert_eq!(pick(&logits, &[3, 0], true, None), 3);
+    assert_eq!(pick(&logits, &[0, 2], true, None), 0);
+  }
+
+  #[test]
+  fn sticky_languages_switch_on_clear_speech() {
+    let mut current = None;
+    let mut sticky = |logits: &[f32], speech: bool| pick(logits, &[], speech, Some(&mut current));
+    // No speech yet: the highest, and nothing is kept.
+    assert_eq!(sticky(&[0.0, 5.0, 0.0], false), 1);
+    // The first piece with speech sets the language.
+    assert_eq!(sticky(&[5.0, 0.0, 0.0], true), 0);
+    // Without speech, or not sure enough, it stays: 0.7 needs ~2.1 nats over two others here.
+    assert_eq!(sticky(&[0.0, 5.0, 0.0], false), 0);
+    assert_eq!(sticky(&[0.0, 1.0, -9.0], true), 0, "73% but only 2.7 times as likely");
+    assert_eq!(sticky(&[0.0, 1.5, 0.0], true), 0, "69%");
+    // Clearly another language: it switches, and that one stays.
+    assert_eq!(sticky(&[0.0, 3.0, 0.0], true), 1);
+    assert_eq!(sticky(&[0.5, 0.0, 0.0], true), 1);
   }
 
   #[test]

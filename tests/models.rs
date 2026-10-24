@@ -94,6 +94,41 @@ fn check_languages(name: &str, model: &wavo::Model) {
   options.language = model.languages().first().cloned();
   let takes = model.transcribe_with(&[], &options).is_ok();
   assert_eq!(model.takes_language(), takes, "{name}: takes_language");
+  // `detect_language`: a ranking for multilingual Whisper, the sole language of a model of one,
+  // nothing for Parakeet v3; the transcript names the same language.
+  let ranked = model.detect_language(&[], &wavo::Options::default()).unwrap();
+  let language = model.transcribe(&[]).unwrap().language;
+  match codes {
+    [only] => {
+      assert_eq!(ranked.len(), 1, "{name}: detect_language");
+      assert_eq!((ranked[0].code.as_str(), ranked[0].probability), (only.as_str(), 1.0));
+      assert_eq!(language.as_deref(), Some(only.as_str()), "{name}: language");
+    }
+    _ if model.takes_language() => {
+      let sum: f32 = ranked.iter().map(|l| l.probability).sum();
+      assert!(ranked.len() == codes.len() && (sum - 1.0).abs() < 1e-3, "{name}: sum {sum}");
+      assert!(language.is_some(), "{name}: language");
+    }
+    _ => assert!(ranked.is_empty() && language.is_none(), "{name}: {ranked:?}, {language:?}"),
+  }
+}
+
+/// The language `detect_language` ranks first on each sample (among `languages` when given) is
+/// the expected one, and the one the transcript is in.
+fn detect(name: &str, expected: &[(&str, &[&str], &str)]) {
+  let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
+  let model = wavo::Model::load_with(model_path(name), wavo::Backend::Gpu).unwrap();
+  for &(sample, languages, code) in expected {
+    let mut options = wavo::Options::default();
+    options.languages = languages.iter().map(|l| l.to_string()).collect();
+    let pcm = read_sample(sample);
+    let ranked = model.detect_language(&pcm, &options).unwrap();
+    let n = if languages.is_empty() { model.languages().len() } else { languages.len() };
+    assert_eq!(ranked.len(), n, "{name} {sample}");
+    assert_eq!(ranked[0].code, code, "{name} {sample}: {:?}", &ranked[..2]);
+    let language = model.transcribe_with(&pcm, &options).unwrap().language;
+    assert_eq!(language.as_deref(), Some(code), "{name} {sample}: transcript");
+  }
 }
 
 fn check(name: &str, samples: &[&str]) {
@@ -458,6 +493,15 @@ fn whisper_tiny() {
   const SAMPLES: &[&str] =
     &["jfk", "zh-short", "ru-long", "jobs-silence", "uk-short+lang=uk", "ru-long+lang=uk"];
   check("whisper-tiny", SAMPLES);
+  // uk-short is Russian to whisper-tiny but for an allowlist without it; ru-long is past 30 s.
+  let detected: &[(&str, &[&str], &str)] = &[
+    ("jfk", &[], "en"),
+    ("zh-short", &[], "zh"),
+    ("ru-long", &[], "ru"),
+    ("uk-short", &[], "ru"),
+    ("uk-short", &["uk", "en"], "uk"),
+  ];
+  detect("whisper-tiny", detected);
 }
 
 #[test]

@@ -11,7 +11,8 @@ pub(crate) mod tokenizer;
 use std::sync::{Mutex, PoisonError};
 
 use encoder::Encoder;
-use frontend::{Frontend, HOP, N_FFT, SAMPLES};
+pub(crate) use frontend::SAMPLES;
+use frontend::{Frontend, HOP, N_FFT};
 use search::Ids;
 use tokenizer::Tokenizer;
 
@@ -23,7 +24,7 @@ use crate::{Token, Transcript};
 
 /// The no-speech skip: a window is dropped when the no-speech probability is above this and the
 /// average log-probability of its tokens below `LOGPROB`.
-const NO_SPEECH: f32 = 0.6;
+pub(crate) const NO_SPEECH: f32 = 0.6;
 const LOGPROB: f32 = -1.0;
 
 pub struct Whisper {
@@ -168,30 +169,33 @@ impl Whisper {
     !self.languages.is_empty()
   }
 
-  /// With `language`, an index in `general.languages`, every window is decoded in that language;
-  /// without, in the one detected on the first window.
-  pub fn transcribe(&self, pcm: &[f32], language: Option<usize>) -> Result<Transcript> {
+  /// Every window is decoded in the language `pick` chooses on the first one, as an index in
+  /// `general.languages`, from the logits of the language tokens on SOT and the no-speech
+  /// probability; it isn't called for `.en` models. Returns the index too.
+  pub fn transcribe(
+    &self,
+    pcm: &[f32],
+    mut pick: impl FnMut(&[f32], f32) -> usize,
+  ) -> Result<(Transcript, Option<usize>)> {
     let mels = self.encoder.cfg.mels;
     let window = 2 * self.encoder.cfg.frames;
     let mel = self.frontend.compute(pcm);
     let total = mel.len() / mels;
     let mut a = self.lock();
-    let (mut seek, mut language) = (0, language.map(|i| self.languages[i]));
-    let (mut text, mut tokens) = (Vec::new(), Vec::new());
+    let mut seek = 0;
+    let (mut text, mut tokens, mut language) = (Vec::new(), Vec::new(), None);
     while seek < total {
       let frames = (total - seek).min(window);
       let mut chunk = mel[seek * mels..(seek + frames) * mels].to_vec();
       chunk.resize(window * mels, 0.0);
       let sot = self.window(&mut a, &chunk)?;
       let no_speech = search::probability(&sot, self.no_speech);
-      let prompt = match self.languages.first() {
-        Some(&first) => {
-          // Detected on the first window: the first of the highest.
-          let best = |best: usize, &id: &usize| if sot[id] > sot[best] { id } else { best };
-          let language = *language.get_or_insert_with(|| self.languages.iter().fold(first, best));
-          vec![self.sot, language, self.transcribe]
+      let prompt = match self.multilingual() {
+        true => {
+          let i = *language.get_or_insert_with(|| pick(&self.language_logits(&sot), no_speech));
+          vec![self.sot, self.languages[i], self.transcribe]
         }
-        None => vec![self.sot],
+        false => vec![self.sot],
       };
       let logits = if prompt.len() > 1 { self.steps(&mut a, &prompt[1..], 1)? } else { sot };
       let (generated, logprob) =
@@ -219,7 +223,21 @@ impl Whisper {
       seek += if advance == 0 { frames } else { advance };
     }
     let text = tokenizer::trim(&String::from_utf8_lossy(&text)).to_string();
-    Ok(Transcript { text, tokens })
+    Ok((Transcript { text, tokens, language: None }, language))
+  }
+
+  /// The logits of the language tokens on SOT and the no-speech probability, for audio of up to
+  /// 30 s on its own: one window, as `transcribe` runs its first.
+  pub fn detect(&self, pcm: &[f32]) -> Result<(Vec<f32>, f32)> {
+    let window = 2 * self.encoder.cfg.frames * self.encoder.cfg.mels;
+    let mut mel = self.frontend.compute(&pcm[..pcm.len().min(SAMPLES)]);
+    mel.resize(window, 0.0);
+    let sot = self.window(&mut self.lock(), &mel)?;
+    Ok((self.language_logits(&sot), search::probability(&sot, self.no_speech)))
+  }
+
+  fn language_logits(&self, sot: &[f32]) -> Vec<f32> {
+    self.languages.iter().map(|&id| sot[id]).collect()
   }
 
   /// Encodes a window of mel frames, computes the cross K/V and runs the decoder on SOT; returns

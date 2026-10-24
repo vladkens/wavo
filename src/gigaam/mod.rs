@@ -133,6 +133,6 @@ impl Gigaam {
     let tokens: Vec<Token> = (ids.iter().zip(frames).zip(pieces))
       .map(|((&id, frame), piece)| Token { id: id as u32, piece, start_ms: frame * FRAME_MS })
       .collect();
-    Ok(Transcript { text, tokens })
+    Ok(Transcript { text, tokens, language: None })
   }
 }
