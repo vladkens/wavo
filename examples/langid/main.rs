@@ -9,7 +9,9 @@
 //!
 //! Each runs when its model is downloaded. Consecutive pieces of one language make a span.
 
-mod text;
+#[allow(dead_code)] // `name` is for `wavo serve`
+#[path = "../../src/cli/lid.rs"]
+mod lid;
 
 use std::error::Error;
 use std::ops::ControlFlow;
@@ -120,10 +122,7 @@ fn whisper(model: &Model, pcm: &[f32], languages: &[String]) -> Result<()> {
 }
 
 fn parakeet(model: &Model, pcm: &[f32], languages: &[String]) -> Result<()> {
-  let mut allow: Vec<&str> = languages.iter().map(String::as_str).collect();
-  if allow.is_empty() {
-    allow = model.languages().iter().map(String::as_str).collect();
-  }
+  let allow = if languages.is_empty() { model.languages() } else { languages };
 
   let mut o = Options::default();
   o.window_ms = Some(30_000);
@@ -131,7 +130,7 @@ fn parakeet(model: &Model, pcm: &[f32], languages: &[String]) -> Result<()> {
   let (mut spans, mut last) = (Vec::new(), None);
   for (start, end, transcript) in pieces(model, pcm, &o)? {
     // A piece without text keeps the language before it.
-    let lang = text::whatlang(&transcript.text, &allow).or(last);
+    let lang = lid::language(&transcript.text, allow).map(|l| l.0).or(last);
     last = lang;
     push(&mut spans, start, end, lang.unwrap_or("?").to_string(), &transcript.text);
   }

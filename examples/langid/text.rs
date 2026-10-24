@@ -1,56 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! The language of a transcript, for models that don't say (Parakeet v3 and ultra): whatlang's
-//! trigrams, or a few rules (script, letters and common words) for a handful of languages.
-// The demo takes whatlang only; the evaluation measures both.
-#![allow(dead_code)]
-
-/// ISO 639-1, as wavo's models name languages, and whatlang's ISO 639-3.
-const CODES: &[(&str, &str)] = &[
-  ("en", "eng"),
-  ("ru", "rus"),
-  ("uk", "ukr"),
-  ("be", "bel"),
-  ("bg", "bul"),
-  ("de", "deu"),
-  ("fr", "fra"),
-  ("es", "spa"),
-  ("it", "ita"),
-  ("pt", "por"),
-  ("pl", "pol"),
-  ("cs", "ces"),
-  ("sk", "slk"),
-  ("sl", "slv"),
-  ("hr", "hrv"),
-  ("nl", "nld"),
-  ("da", "dan"),
-  ("sv", "swe"),
-  ("fi", "fin"),
-  ("et", "est"),
-  ("lv", "lav"),
-  ("lt", "lit"),
-  ("hu", "hun"),
-  ("ro", "ron"),
-  ("el", "ell"),
-  ("he", "heb"),
-  ("ar", "ara"),
-  ("zh", "cmn"),
-  ("ja", "jpn"),
-  ("ko", "kor"),
-];
-
-/// The language of `text` among `allow` (ISO 639-1; whatlang's 69 when empty) by whatlang, as
-/// ISO 639-1 (639-3 for a language outside `CODES`); `None` when it can't tell, as for no letters.
-pub fn whatlang(text: &str, allow: &[&str]) -> Option<&'static str> {
-  let lang =
-    |c: &&str| CODES.iter().find(|x| x.0 == *c).and_then(|x| whatlang::Lang::from_code(x.1));
-  let list: Vec<whatlang::Lang> = allow.iter().filter_map(lang).collect();
-  let detector = match list.is_empty() {
-    true => whatlang::Detector::new(),
-    false => whatlang::Detector::with_allowlist(list),
-  };
-  let code = detector.detect(text)?.lang().code();
-  Some(CODES.iter().find(|x| x.1 == code).map_or(code, |x| x.0))
-}
+//! The language of a transcript by a few rules (script, letters and common words) for a handful
+//! of languages: the hand-rolled alternative to whatlang (`src/cli/lid.rs`) the evaluation
+//! measures.
 
 /// Letters, then common words, of the languages the rules know.
 const RULES: &[(&str, &str, &str)] = &[

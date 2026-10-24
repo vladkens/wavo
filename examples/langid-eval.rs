@@ -9,9 +9,11 @@
 //! - `langid-eval episodes`: synthetic episodes of same-language blocks; spans, boundaries and
 //!   false switches for whisper-tiny per piece (policies simulated on the pieces' probabilities,
 //!   and the library's `sticky_language`) and for Parakeet per piece with text language ID.
-//! - `langid-eval switch WAV...`: each downloaded model's transcript of each file, for
-//!   code-switched speech.
+//! - `langid-eval switch`: code-switched clips through each model.
 
+#[allow(dead_code)] // `name` is for `wavo serve`
+#[path = "../src/cli/lid.rs"]
+mod lid;
 #[path = "langid/text.rs"]
 mod text;
 
@@ -38,9 +40,15 @@ fn main() -> Result<()> {
     ["audio", model] => audio(model),
     ["text", model] => text_lid(model),
     ["episodes"] => episodes(),
-    ["switch", ref wavs @ ..] => switch(wavs),
-    _ => Err("usage: langid-eval audio MODEL | text MODEL | episodes | switch WAV...".into()),
+    ["switch"] => switch(),
+    _ => Err("usage: langid-eval audio MODEL | text MODEL | episodes | switch".into()),
   }
+}
+
+/// whatlang's language of `text` among `allow`, as `wavo serve` takes it.
+fn whatlang(text: &str, allow: &[&str]) -> Option<&'static str> {
+  let codes: Vec<String> = allow.iter().map(|c| c.to_string()).collect();
+  lid::language(text, &codes).map(|l| l.0)
 }
 
 fn root() -> PathBuf {
@@ -213,10 +221,10 @@ fn text_lid(name: &str) -> Result<()> {
           asr.push(t.elapsed().as_secs_f64() * 1e3);
           let chars = transcript.text.chars().count();
           let bucket = buckets.iter().position(|&b| chars <= b).unwrap();
-          for (m, (_, langs, whatlang)) in methods.iter().enumerate() {
+          for (m, (_, langs, trigrams)) in methods.iter().enumerate() {
             let t = Instant::now();
-            let got = match whatlang {
-              true => text::whatlang(&transcript.text, langs),
+            let got = match trigrams {
+              true => whatlang(&transcript.text, langs),
               false => text::rules(&transcript.text, langs),
             };
             times.push((m, t.elapsed().as_secs_f64() * 1e6));
@@ -278,6 +286,10 @@ const EPISODES: &[Episode] = &[
   Episode { name: "ru→uk", blocks: &[("ru", 120), ("uk", 120)] },
   Episode { name: "de→en→de", blocks: &[("de", 60), ("en", 60), ("de", 60)] },
   Episode { name: "en→ru→en→ru", blocks: &[("en", 60), ("ru", 60), ("en", 40), ("ru", 60)] },
+  Episode {
+    name: "silence→en→ru→de→uk",
+    blocks: &[("-", 4), ("en", 34), ("ru", 64), ("de", 51), ("uk", 44)],
+  },
 ];
 
 /// The audio of an episode and its truth: (language, start, end) in samples. A block takes its
@@ -366,13 +378,15 @@ fn score(spans: &[Span], truth: &[(String, usize, usize)]) -> (f64, Vec<f64>, us
   (ok as f64 / all.max(1) as f64, errors, missed, matched.iter().filter(|m| !**m).count())
 }
 
-/// A language choice per piece from its probabilities (allowlist order) and whether it has
-/// speech: `p` and `k` as `SWITCH_P` and `SWITCH_K`, `twice` for two such pieces in a row.
+/// A language choice per piece from its probabilities (most likely first) and whether it has
+/// speech: `p` and `k` as `SWITCH_P` and `SWITCH_K`, `twice` for two such pieces in a row; also a
+/// switch when the current language is under `floor`.
 fn policy(
   pieces: &[(Vec<(String, f32)>, bool)],
   p: f32,
   k: f32,
   twice: bool,
+  floor: f32,
 ) -> Vec<Option<String>> {
   let mut current: Option<String> = None;
   let mut pending: Option<String> = None;
@@ -388,7 +402,9 @@ fn policy(
 
         best.0.clone()
       }
-      Some(c) if *speech && best.0 != *c && best.1 >= p && best.1 >= k * prob(c) => {
+      Some(c)
+        if *speech && best.0 != *c && (best.1 >= p && best.1 >= k * prob(c) || prob(c) < floor) =>
+      {
         if !twice || pending.as_deref() == Some(&best.0) {
           current = Some(best.0.clone());
           pending = None;
@@ -445,60 +461,72 @@ fn episodes() -> Result<()> {
     }
   };
 
-  // Whisper-tiny: pieces of up to 30 s; their probabilities and whether they have text.
-  let tiny = load("whisper-tiny")?;
-  for (e, (pcm, truth)) in EPISODES.iter().zip(&built) {
-    for (label, langs) in [("all", vec![]), ("13", LANGS.to_vec())] {
-      let ranges = wavo::split(pcm, 30_000);
-      let mut pieces = Vec::new();
-      for r in &ranges {
-        let ranked = tiny.detect_language(&pcm[r.clone()], &options(&langs))?;
-        let text = tiny.transcribe_with(&pcm[r.clone()], &options(&langs))?;
-        let probs: Vec<(String, f32)> =
-          ranked.into_iter().map(|l| (l.code, l.probability)).collect();
-        pieces.push((probs, !text.text.is_empty()));
-      }
+  // Whisper: pieces of up to 30 or 10 s; their probabilities and whether they have text.
+  for name in ["whisper-tiny", "whisper-base"] {
+    let Ok(model) = load(name) else { continue };
+    for (e, (pcm, truth)) in EPISODES.iter().zip(&built) {
+      let mut own: Vec<&str> = e.blocks.iter().map(|b| b.0).filter(|l| *l != "-").collect();
+      own.push("en");
+      own.sort();
+      own.dedup();
+      for window in [30_000, 10_000] {
+        for (label, langs) in [("all", vec![]), ("own+en", own.clone())] {
+          let ranges = wavo::split(pcm, window);
+          let mut pieces = Vec::new();
+          for r in &ranges {
+            let ranked = model.detect_language(&pcm[r.clone()], &options(&langs))?;
+            let text = model.transcribe_with(&pcm[r.clone()], &options(&langs))?;
+            let probs: Vec<(String, f32)> =
+              ranked.into_iter().map(|l| (l.code, l.probability)).collect();
+            pieces.push((probs, !text.text.is_empty()));
+          }
 
-      let spans = |choice: Vec<Option<String>>| -> Vec<Span> {
-        (ranges.iter().zip(choice))
-          .map(|(r, lang)| Span { start: r.start, end: r.end, lang })
-          .collect()
-      };
-      for (name, p, k, twice) in [
-        ("independent", 0.0, 0.0, false),
-        ("sticky 0.5/2×", 0.5, 2.0, false),
-        ("sticky 0.7/4×", 0.7, 4.0, false),
-        ("sticky 0.9/10×", 0.9, 10.0, false),
-        ("sticky 0.7/4×, twice", 0.7, 4.0, true),
-      ] {
-        let choice = match name {
-          "independent" => pieces.iter().map(|p| Some(p.0[0].0.clone())).collect(),
-          _ => policy(&pieces, p, k, twice),
-        };
-        add(&format!("whisper-tiny {name}, allowlist {label}"), e.name, &spans(choice), truth);
-      }
+          let spans = |choice: Vec<Option<String>>| -> Vec<Span> {
+            (ranges.iter().zip(choice))
+              .map(|(r, lang)| Span { start: r.start, end: r.end, lang })
+              .collect()
+          };
+          for (policy_name, p, k, twice, floor) in [
+            ("independent", 0.0, 0.0, false, 0.0),
+            ("sticky 0.5/2×", 0.5, 2.0, false, 0.0),
+            ("sticky 0.7/4×", 0.7, 4.0, false, 0.0),
+            ("sticky 0.9/10×", 0.9, 10.0, false, 0.0),
+            ("sticky 0.7/4×, twice", 0.7, 4.0, true, 0.0),
+            ("sticky: current < 0.1", 2.0, 0.0, false, 0.1),
+            ("sticky 0.7/4× or current < 0.05", 0.7, 4.0, false, 0.05),
+            ("sticky 0.7/4× or current < 0.1", 0.7, 4.0, false, 0.1),
+          ] {
+            let choice = match policy_name {
+              "independent" => pieces.iter().map(|p| Some(p.0[0].0.clone())).collect(),
+              _ => policy(&pieces, p, k, twice, floor),
+            };
+            let method = format!("{name} {} s, {policy_name}, {label}", window / 1000);
+            add(&method, e.name, &spans(choice), truth);
+          }
 
-      // The library's own: transcribe_long with sticky_language, which must match 0.7/4×.
-      let mut o = options(&langs);
-      o.sticky_language = true;
-      let mut got = Vec::new();
-      tiny.transcribe_long(pcm, &o, |piece| {
-        got.push(piece.transcript.language.clone());
-        ControlFlow::Continue(())
-      })?;
-      let sim = policy(&pieces, 0.7, 4.0, false);
-      if got != sim {
-        eprintln!("{} {label}: sticky_language {got:?}\n  simulated {sim:?}", e.name);
+          // The library's own: transcribe_long with sticky_language, which must match 0.7/4×.
+          let mut o = options(&langs);
+          o.sticky_language = true;
+          o.window_ms = Some(window);
+          let mut got = Vec::new();
+          model.transcribe_long(pcm, &o, |piece| {
+            got.push(piece.transcript.language.clone());
+            ControlFlow::Continue(())
+          })?;
+          let sim = policy(&pieces, 0.7, 4.0, false, 0.0);
+          if got != sim {
+            eprintln!("{name} {} {window} {label}: library {got:?}\n  simulated {sim:?}", e.name);
+          }
+        }
       }
     }
   }
 
-  drop(tiny);
   for name in ["parakeet-ultra", "parakeet-v3"] {
     let model = load(name)?;
     let parakeet: Vec<&str> = model.languages().iter().map(String::as_str).collect();
     for (e, (pcm, truth)) in EPISODES.iter().zip(&built) {
-      for window in [30_000, 60_000] {
+      for window in [10_000, 30_000, 60_000] {
         let mut o = Options::default();
         o.window_ms = Some(window);
         let mut pieces: Vec<(usize, String)> = Vec::new();
@@ -506,18 +534,24 @@ fn episodes() -> Result<()> {
           pieces.push((p.start_ms as usize * 16, p.transcript.text.clone()));
           ControlFlow::Continue(())
         })?;
-        for (label, langs) in [("25", parakeet.clone()), ("10", PARAKEET.to_vec())] {
+        // Every piece with text, or only those over 20 characters; the others keep the language
+        // before them.
+        for min in [1, 21] {
           let mut last = None;
           let spans: Vec<Span> = (0..pieces.len())
             .map(|i| {
               let end = pieces.get(i + 1).map_or(pcm.len(), |p| p.0);
-              // A piece without text keeps the language before it.
-              let lang = text::whatlang(&pieces[i].1, &langs).map(str::to_string).or(last.clone());
+              let text = &pieces[i].1;
+              let lang = match text.chars().count() >= min {
+                true => whatlang(text, &parakeet).map(str::to_string).or(last.clone()),
+                false => last.clone(),
+              };
               last.clone_from(&lang);
               Span { start: pieces[i].0, end, lang }
             })
             .collect();
-          let method = format!("{name} {} s + whatlang {label}", window / 1000);
+          let more = if min > 1 { ", text > 20 chars" } else { "" };
+          let method = format!("{name} {} s + whatlang{more}", window / 1000);
           add(&method, e.name, &spans, truth);
         }
       }
@@ -549,25 +583,69 @@ fn episodes() -> Result<()> {
   Ok(())
 }
 
-fn switch(wavs: &[&str]) -> Result<()> {
-  let downloaded = wavo::hub::Hub::new().downloaded();
-  for (info, path) in downloaded {
-    if !["gigaam-v3", "parakeet-v3", "parakeet-ultra", "whisper-tiny"].contains(&info.name) {
-      continue;
+/// Code-switched clips in `3rd/lid/cs-fleurs/` (CS-FLEURS read ru-en and de-en, `file`, pair and
+/// text per line) and `3rd/lid/tts/` (macOS `say` Russian with English terms, `file` and text):
+/// each model's transcript, and for Russian how many of the reference's Latin-script words come
+/// out in Latin script.
+fn switch() -> Result<()> {
+  let mut clips: Vec<(PathBuf, &str, String)> = Vec::new();
+  for dir in ["cs-fleurs", "tts"] {
+    let dir = root().join(dir);
+    for line in std::fs::read_to_string(dir.join("list.tsv"))?.lines() {
+      let f: Vec<&str> = line.split('\t').collect();
+      let lang = if f[0].starts_with("deu") { "de" } else { "ru" };
+      clips.push((dir.join(f[0]), lang, f[f.len() - 1].to_string()));
     }
+  }
 
-    let model = Model::load_with(path, wavo::Backend::Gpu)?;
-    for wav in wavs {
-      let pcm = read_wav(Path::new(wav))?;
-      let mut o = Options::default();
-      if info.name == "whisper-tiny" {
-        o.language = Some("ru".into());
+  let latin = |text: &str| -> Vec<String> {
+    let words = text.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '\'');
+    let latin = |w: &&str| w.chars().any(|c| c.is_ascii_alphabetic());
+    words.filter(latin).map(|w| w.to_lowercase()).collect()
+  };
+  println!(
+    "| model | ru: reference Latin words kept in Latin | ru: Latin words written |\n|---|---|---|"
+  );
+  let mut samples: Vec<String> = Vec::new();
+  for name in ["parakeet-ultra", "parakeet-v3", "gigaam-v3", "whisper-tiny", "whisper-base"] {
+    let Ok(model) = load(name) else { continue };
+    let (mut kept, mut want, mut written) = (0, 0, 0);
+    for (path, lang, reference) in &clips {
+      if name == "gigaam-v3" && *lang != "ru" {
+        continue;
       }
 
-      let got = model.transcribe_with(&pcm, &o)?;
-      let name = Path::new(wav).file_stem().unwrap().to_string_lossy();
-      println!("{}\t{name}\t{}", info.name, got.text);
+      let mut o = Options::default();
+      if name.starts_with("whisper") {
+        o.language = Some(lang.to_string());
+      }
+
+      let got = model.transcribe_with(&read_wav(path)?, &o)?.text;
+      let file = path.file_stem().unwrap().to_string_lossy();
+      samples.push(format!("{name}\t{file}\t{got}"));
+      if *lang == "ru" {
+        let mut hyp = latin(&got);
+        written += hyp.len();
+        for w in latin(reference) {
+          want += 1;
+          if let Some(i) = hyp.iter().position(|h| *h == w) {
+            hyp.swap_remove(i);
+            kept += 1;
+          }
+        }
+      }
     }
+
+    println!("| {name} | {} | {written} |", pct(kept, want));
+  }
+
+  println!();
+  for (path, _, reference) in &clips {
+    println!("reference\t{}\t{reference}", path.file_stem().unwrap().to_string_lossy());
+  }
+
+  for s in samples {
+    println!("{s}");
   }
 
   Ok(())
