@@ -17,6 +17,9 @@ runs the open ASR models that [transcribe.cpp](https://github.com/handy-computer
 publishes. Use it as a command-line tool with an ollama-like model manager, or as a library that
 builds with a plain `cargo build`.
 
+Want dictation on a Mac? [Wavo](https://github.com/vladkens/wavo-app) is a dictation app built on
+wavo: hold a hotkey, speak, and the text lands where you were typing.
+
 ## 🌟 Features
 
 - 📏 Audio of any length: long recordings are split at pauses and joined back, no chunking on
