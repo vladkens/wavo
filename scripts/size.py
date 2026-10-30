@@ -31,13 +31,13 @@ DIRS = ("src", "examples", "tests")
 EXTS = (".rs", ".wgsl", ".metal")
 KINDS = ("code", "docs", "comments", "tests", "blank")
 # The code lines each part may have: the core (src/'s top-level files and src/gpu/mod.rs: the
-# public API, errors, the GGUF reader, the GPU runtime, the CPU paths, the FFT, the shared conformer and transformer
-# blocks, the tokenizer, the splitting of long audio), the GPU kernels (WGSL and Metal), each
-# model family (src/<family>/), the Neural Engine backend (src/ane/), the hub (src/hub/), and the
-# CLI in three: its core (src/cli/ without the two others), its debug commands (cli/debug.rs) and
-# its server (cli/serve.rs and cli/http.rs). A budget is whole hundreds (STEP): a change that
-# doesn't fit is written tighter, or the budget goes up by a hundred, a decision recorded in its
-# PR; never by the few lines one change needs.
+# public API, errors, the GGUF reader, the GPU runtime, the CPU paths, the FFT, the shared
+# conformer and transformer blocks, the tokenizer, the splitting of long audio), the GPU kernels
+# (WGSL and Metal), each model family (src/<family>/), the Neural Engine backend (src/ane/), the
+# hub (src/hub/), and the CLI in three: its core (src/cli/ without the two others), its debug
+# commands (cli/debug.rs) and its server (cli/serve.rs and cli/http.rs). A budget is whole
+# hundreds (STEP): a change that doesn't fit is written tighter, or the budget goes up by a
+# hundred, a decision recorded in its PR; never by the few lines one change needs.
 STEP = 100
 # Directories under src/ whose code counts in the core.
 CORE = ("gpu",)
@@ -59,9 +59,11 @@ BUDGETS = {
 def module(path: str, files: bool) -> str:
   """The module a file's lines count in.
 
-  >>> [module(p, False) for p in ("src/gguf.rs", "src/gpu/mod.rs", "src/gpu/ops.wgsl", "src/gpu/gemm_tensor.metal")]
+  >>> [module(p, False) for p in ("src/gguf.rs", "src/gpu/mod.rs", "src/gpu/ops.wgsl",
+  ...   "src/gpu/gemm_tensor.metal")]
   ['gguf', 'gpu', 'kernels', 'kernels']
-  >>> [module(p, False) for p in ("src/whisper/mod.rs", "src/cli/main.rs", "src/cli/http.rs", "src/cli/debug.rs", "tests/models.rs")]
+  >>> [module(p, False) for p in ("src/whisper/mod.rs", "src/cli/main.rs", "src/cli/http.rs",
+  ...   "src/cli/debug.rs", "tests/models.rs")]
   ['whisper', 'cli', 'cli/serve', 'cli/debug', 'tests']
   """
   if files:
@@ -90,7 +92,8 @@ def part(path: str) -> str | None:
   """The budget a file's code counts against: its module's, or the core's for src/'s top-level
   files and the GPU runtime; examples and tests have none, another directory is `src/<dir>`.
 
-  >>> [part(p) for p in ("src/gguf.rs", "src/gpu/mod.rs", "src/gpu/ops.wgsl", "src/parakeet/mod.rs", "src/cli/http.rs")]
+  >>> [part(p) for p in ("src/gguf.rs", "src/gpu/mod.rs", "src/gpu/ops.wgsl", "src/parakeet/mod.rs",
+  ...   "src/cli/http.rs")]
   ['core', 'core', 'kernels', 'parakeet', 'cli/serve']
   >>> [part(p) for p in ("src/hub/cache.rs", "examples/batch.rs", "src/vad/mod.rs")]
   ['hub', None, 'src/vad']
@@ -113,7 +116,11 @@ def check(files: dict[str, str]) -> list[str]:
       used[p] += count(text)["code"]
 
   problems = [f"no budget for {p}" for p in used if p not in BUDGETS]
-  problems += [f"{p}: budget {limit} is not whole hundreds: raise it by {STEP}, not by a few lines" for p, limit in BUDGETS.items() if limit % STEP]
+  problems += [
+    f"{p}: budget {limit} is not whole hundreds: raise it by {STEP}, not by a few lines"
+    for p, limit in BUDGETS.items()
+    if limit % STEP
+  ]
   for line in problems:
     print(line)
 
@@ -129,7 +136,8 @@ def check(files: dict[str, str]) -> list[str]:
 def braces(line: str, pair: str = "{}") -> int:
   """Opening minus closing brackets of a line, outside char literals, strings and its comment.
 
-  >>> [braces(x) for x in ('"http://x"; if a {', "match c { '{' => 1", "'\\\\u{7b}'", 'f("}") // {')]
+  >>> [braces(x) for x in ('"http://x"; if a {', "match c { '{' => 1", "'\\\\u{7b}'",
+  ...   'f("}") // {')]
   [1, 1, 0, 0]
   """
   line = re.sub(r"'(\\[^']*|[^'\\])'", "", line)
@@ -186,9 +194,12 @@ def count(text: str) -> dict[str, int]:
 def summary(path: str, text: str) -> str:
   """The first sentence of a file's leading `//!` doc, or of a kernel's comment below its header.
 
-  >>> summary("src/gpu/ops.wgsl", "// Copyright (c) vladkens\\n// Row-wise kernels. More.\\nfn a() {}\\n")
+  >>> summary("src/gpu/ops.wgsl",
+  ...   "// Copyright (c) vladkens\\n// Row-wise kernels. More.\\nfn a() {}\\n")
   'Row-wise kernels'
-  >>> summary("src/lib.rs", "// Copyright\\n#![allow(x)]\\n#![cfg_attr(\\n  doc = \\"[a]: b\\"\\n)]\\n//! Speech. More.\\n")
+  >>> summary("src/lib.rs",
+  ...   "// Copyright\\n#![allow(x)]\\n#![cfg_attr(\\n  doc = \\"[a]: b\\"\\n)]\\n"
+  ...   "//! Speech. More.\\n")
   'Speech'
   """
   kernel = not path.endswith(".rs")
@@ -209,24 +220,17 @@ def summary(path: str, text: str) -> str:
 
 
 def files_now() -> dict[str, str]:
-  out = {}
-  for d in DIRS:
-    for p in sorted((ROOT / d).rglob("*")):
-      if p.suffix in EXTS:
-        out[str(p.relative_to(ROOT))] = p.read_text()
-
-  return out
+  paths = [p for d in DIRS for p in sorted((ROOT / d).rglob("*")) if p.suffix in EXTS]
+  return {str(p.relative_to(ROOT)): p.read_text() for p in paths}
 
 
 def files_at(ref: str) -> dict[str, str]:
-  git = ["git", "-C", str(ROOT)]
-  names = subprocess.run([*git, "ls-tree", "-r", "--name-only", ref, *DIRS], capture_output=True, text=True, check=True).stdout
-  out = {}
-  for name in names.split():
-    if name.endswith(EXTS):
-      out[name] = subprocess.run([*git, "show", f"{ref}:{name}"], capture_output=True, text=True, check=True).stdout
+  def git(*args: str) -> str:
+    cmd = ["git", "-C", str(ROOT), *args]
+    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
 
-  return out
+  names = git("ls-tree", "-r", "--name-only", ref, *DIRS).split()
+  return {x: git("show", f"{ref}:{x}") for x in names if x.endswith(EXTS)}
 
 
 def table(files: dict[str, str], by_file: bool) -> dict[str, dict[str, int]]:
@@ -281,7 +285,8 @@ def main():
       print("-" * (len(head) + (11 if base else 0)))
 
     pct = 100 * r["code"] / max(total["code"], 1)
-    line = f"{m or 'total':<{w}} {r['code']:>7} {pct:>4.0f} {r['docs']:>6} {r['comments']:>6} {r['tests']:>6}"
+    line = f"{m or 'total':<{w}} {r['code']:>7} {pct:>4.0f}"
+    line += f" {r['docs']:>6} {r['comments']:>6} {r['tests']:>6}"
     if base is not None:
       was = sum(b["code"] for b in base.values()) if m is None else base.get(m, {"code": 0})["code"]
       line += f" {r['code'] - was:>+10}"
