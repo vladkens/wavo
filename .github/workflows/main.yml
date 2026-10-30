@@ -35,9 +35,13 @@ jobs:
           path: ~/.cache/huggingface/hub
           key: ${{ steps.models.outputs.key }}
       - run: rustup toolchain install nightly --profile minimal --component rustfmt
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: make build
       - run: make models > "$RUNNER_TEMP/models.log" 2>&1 & # downloads in the background
+      # The size budgets fail every run but main's, where two PRs that each fit can merge over one: there they warn.
       - run: make check
+        env:
+          SIZE_WARN: ${{ github.ref == 'refs/heads/main' && '1' || '' }}
       - run: make samples
       - run: make models # waits for those downloads, or retries a failed one
       - if: github.ref == 'refs/heads/main' && steps.hf.outputs.cache-hit != 'true'

@@ -316,9 +316,7 @@ details, including downloading on a thread with progress and cancel, as
 
 ## 🤝 Contributing
 
-Pull requests are welcome, and so are your agents: point them at [agents.md](agents.md). When
-reporting a bug, include the output of `wavo debug`: it shows the GPU wavo runs on and which of
-its kernels the GPU allows.
+Pull requests are welcome, including ones made with agents: point yours at [agents.md](agents.md). When reporting a bug, include the output of `wavo debug`: it shows the GPU wavo runs on and which of its kernels the GPU allows.
 
 <details>
 <summary>Installing a branch</summary>

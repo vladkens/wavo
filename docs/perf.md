@@ -4,6 +4,8 @@ The log of every optimization attempt, kept or rejected, so that no idea is trie
 knowing it. Read it before speed work and add each attempt to the Log. Current speed is the
 readme's Speed table; a task's benchmark numbers go in its plan's "## Result" section and its PR.
 
+Measure with `wavo bench` against the reference's `transcribe-bench` on the same GGUF and WAV: at least 10 warm calls, median and min, A/B/A back to back, one GPU job at a time; when the two A runs differ by more than 3%, rerun later instead of concluding. For text agreement and speed on many recordings, use `make compare`.
+
 Unless stated: Apple M2 (8 CPU and 10 GPU cores, 24 GiB), macOS 27, wgpu 30.0.1 on Metal, warm
 medians without model load, against transcribe.cpp 5bb2deb on Metal on the same Q8_0 GGUF. Clips:
 GigaAM `ru` 4.5 s, `ru-short` 11 s, `ru-long` 33.8 s; Parakeet `jfk` 11 s, `dots` 35.3 s,

@@ -9,6 +9,8 @@ prepare:
 
 check:
 	cargo +nightly fmt --check
+	uv run --no-project --python '>=3.11' python -m doctest scripts/size.py
+	uv run scripts/size.py --check
 	cargo clippy $(CARGO_FLAGS) --all-targets -- -D warnings
 	cargo clippy $(CARGO_FLAGS) --no-default-features --all-targets -- -D warnings
 	cargo clippy $(CARGO_FLAGS) --no-default-features --features hub --all-targets -- -D warnings
@@ -36,7 +38,7 @@ clean:
 	cargo clean
 
 # wavo
-.PHONY: test-unit models models-all samples samples-he reference fixtures compare bench-compare
+.PHONY: test-unit models models-all samples samples-he reference fixtures compare bench-compare size
 
 ALL_MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
 	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 parakeet-tdt-0.6b-v3-he parakeet-ultra \
@@ -95,3 +97,7 @@ compare:
 # Coarse speed check against main's dev build, for CI (see the script).
 bench-compare:
 	scripts/ci-bench.sh
+
+# Code, docs and tests per module; ARGS="--files", "--map" (each file and what it does), "--check" (the budgets) or "--vs main".
+size:
+	uv run scripts/size.py $(ARGS)
