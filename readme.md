@@ -33,17 +33,6 @@ builds with a plain `cargo build`.
 - 🔌 `wavo serve`: a local server for apps built on OpenAI's transcription API
 - 🌍 English, Russian, 25 European languages, and 100 with Whisper
 
-## 🤖 How it's made
-
-wavo is written by AI agents (Claude Code, Codex) following [agents.md](agents.md); I choose what
-to build and review every pull request. Each model's output is checked against transcribe.cpp's
-own ([fixtures](tests/fixtures/)), and every speed change is measured and logged in
-[docs/perf.md](docs/perf.md). This isn't a weekend prompt: I've written software by hand for years
-— [macmon](https://github.com/vladkens/macmon) (Rust, Apple Silicon system monitor),
-[twscrape](https://github.com/vladkens/twscrape) (Python, X/Twitter scraping) and
-[ecloop](https://github.com/vladkens/ecloop) (C, low-level elliptic-curve math) — and agents are
-how I build now.
-
 ## 🧠 Models
 
 | Name | Size | Languages | Output |
@@ -365,6 +354,12 @@ wavo's kernels and algorithms are built from the ideas and code of these project
   ivrit.ai, Apache-2.0
 - [parakeet-tdt-0.6b-v3-he](https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he) © Yakov
   Kolani, CC-BY-4.0
+
+## 🤖 How it's made
+
+wavo is written by AI agents (Claude Code, Codex) following [agents.md](agents.md); I choose what to build and review every pull request. Each model's output is checked against transcribe.cpp's transcripts of the same audio ([fixtures](tests/fixtures/)), and every speed change is measured and logged in [docs/perf.md](docs/perf.md). I've written software by hand for years ([macmon](https://github.com/vladkens/macmon), [twscrape](https://github.com/vladkens/twscrape), [ecloop](https://github.com/vladkens/ecloop)); agents are how I build now.
+
+Releases are rare; the CLI and data formats stay compatible, the API may still change before 1.0, and every break is listed in [changelog.md](changelog.md).
 
 ## 📝 License
 
