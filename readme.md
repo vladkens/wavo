@@ -351,7 +351,7 @@ wavo's kernels and algorithms are built from the ideas and code of these project
 
 ## 🤖 How it's made
 
-wavo is written by AI agents (Claude Code, Codex) following [agents.md](agents.md); I choose what to build and review every pull request. Each model's output is checked against transcribe.cpp's transcripts of the same audio ([fixtures](tests/fixtures/)), and every speed change is measured and logged in [docs/perf.md](docs/perf.md). I've written software by hand for years ([macmon](https://github.com/vladkens/macmon), [twscrape](https://github.com/vladkens/twscrape), [ecloop](https://github.com/vladkens/ecloop)); agents are how I build now. Releases are rare; the CLI and data formats stay compatible, the API may still change before 1.0, and every break is listed in [changelog.md](changelog.md).
+wavo is built with AI agents following [agents.md](agents.md); I decide what to build and review every change. I've written software by hand for years ([macmon](https://github.com/vladkens/macmon), [twscrape](https://github.com/vladkens/twscrape), [ecloop](https://github.com/vladkens/ecloop)). Releases are rare; the API may change before 1.0.
 
 ## 🤝 Contributing
 
