@@ -303,22 +303,6 @@ when `wavo pull` already did ([why](https://docs.rs/wavo/latest/wavo/#neural-eng
 details, including downloading on a thread with progress and cancel, as
 [examples/hub.rs](examples/hub.rs) does.
 
-## 🤝 Contributing
-
-Pull requests are welcome, including ones made with agents: point yours at [agents.md](agents.md). When reporting a bug, include the output of `wavo debug`: it shows the GPU wavo runs on and which of its kernels the GPU allows.
-
-<details>
-<summary>Installing a branch</summary>
-
-```sh
-cargo install --git https://github.com/vladkens/wavo --branch feat/NAME --locked  # a PR branch
-cargo install --git https://github.com/vladkens/wavo --locked --force             # back to main
-cargo install --path . --locked                                                   # a local checkout
-cargo uninstall wavo                                                              # remove it
-```
-
-</details>
-
 ## 🙏 Credits
 
 wavo's kernels and algorithms are built from the ideas and code of these projects:
@@ -355,16 +339,6 @@ wavo's kernels and algorithms are built from the ideas and code of these project
 - [parakeet-tdt-0.6b-v3-he](https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he) © Yakov
   Kolani, CC-BY-4.0
 
-## 🤖 How it's made
-
-wavo is written by AI agents (Claude Code, Codex) following [agents.md](agents.md); I choose what to build and review every pull request. Each model's output is checked against transcribe.cpp's transcripts of the same audio ([fixtures](tests/fixtures/)), and every speed change is measured and logged in [docs/perf.md](docs/perf.md). I've written software by hand for years ([macmon](https://github.com/vladkens/macmon), [twscrape](https://github.com/vladkens/twscrape), [ecloop](https://github.com/vladkens/ecloop)); agents are how I build now.
-
-Releases are rare; the CLI and data formats stay compatible, the API may still change before 1.0, and every break is listed in [changelog.md](changelog.md).
-
-## 📝 License
-
-Distributed under the [MIT License](LICENSE).
-
 ## 🔍 See also
 
 - [handy-computer/transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) – The
@@ -374,3 +348,27 @@ Distributed under the [MIT License](LICENSE).
   streaming included.
 - [senstella/parakeet-mlx](https://github.com/senstella/parakeet-mlx) – Parakeet in Python on
   MLX, Apple Silicon only.
+
+## 🤖 How it's made
+
+wavo is written by AI agents (Claude Code, Codex) following [agents.md](agents.md); I choose what to build and review every pull request. Each model's output is checked against transcribe.cpp's transcripts of the same audio ([fixtures](tests/fixtures/)), and every speed change is measured and logged in [docs/perf.md](docs/perf.md). I've written software by hand for years ([macmon](https://github.com/vladkens/macmon), [twscrape](https://github.com/vladkens/twscrape), [ecloop](https://github.com/vladkens/ecloop)); agents are how I build now. Releases are rare; the CLI and data formats stay compatible, the API may still change before 1.0, and every break is listed in [changelog.md](changelog.md).
+
+## 🤝 Contributing
+
+Pull requests are welcome, including ones made with agents: point yours at [agents.md](agents.md). When reporting a bug, include the output of `wavo debug`: it shows the GPU wavo runs on and which of its kernels the GPU allows.
+
+<details>
+<summary>Installing a branch</summary>
+
+```sh
+cargo install --git https://github.com/vladkens/wavo --branch feat/NAME --locked  # a PR branch
+cargo install --git https://github.com/vladkens/wavo --locked --force             # back to main
+cargo install --path . --locked                                                   # a local checkout
+cargo uninstall wavo                                                              # remove it
+```
+
+</details>
+
+## 📝 License
+
+Distributed under the [MIT License](LICENSE).
