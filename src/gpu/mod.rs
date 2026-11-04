@@ -3,14 +3,14 @@
 //! Each kernel has a portable version; a fast one (subgroups, cooperative matrices) replaces it
 //! when the device supports it and a probe dispatch of that pipeline succeeds.
 
+mod problem;
+
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 
+pub use problem::GpuProblem;
 use wgpu::BindGroup;
 pub use wgpu::Buffer;
-
-mod problem;
-pub use problem::{GpuProblem, gpu_problem};
 
 use crate::error::{Error, Result, bail};
 use crate::gguf::{Tensor, Type};
@@ -131,12 +131,10 @@ fn kernels(adapter: &wgpu::Adapter) -> Kernels {
 
 impl Device {
   /// What keeps the GPU from running models fast: [`GpuProblem::NoDriver`] for a GPU emulated on
-  /// the CPU ([`DeviceKind::SoftwareGpu`]), or [`GpuProblem::NoAccess`] when [`gpu_problem`] tells
-  /// that is why; `None` for other devices. Costs nothing beyond `gpu_problem`'s file checks: the
-  /// device is already known, from a loaded model or from [`devices`](crate::devices), which may
-  /// wake a discrete GPU.
+  /// the CPU ([`DeviceKind::SoftwareGpu`]), `None` for other devices. Costs nothing: the device is
+  /// already known, from a loaded model or from [`devices`](crate::devices).
   pub fn gpu_problem(&self) -> Option<GpuProblem> {
-    (self.kind == DeviceKind::SoftwareGpu).then(|| gpu_problem().unwrap_or(GpuProblem::NoDriver))
+    (self.kind == DeviceKind::SoftwareGpu).then_some(GpuProblem::NoDriver)
   }
 
   /// The device of an adapter from `adapter()` or `devices()`.

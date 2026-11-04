@@ -251,7 +251,7 @@ use std::path::Path;
 
 use error::bail;
 pub use error::{Error, Result};
-pub use gpu::{Api, Device, DeviceKind, GpuProblem, Kernels, gpu_problem};
+pub use gpu::{Api, Device, DeviceKind, GpuProblem, Kernels};
 pub use split::split;
 
 /// Every GPU adapter wavo can run a model on, through Vulkan, Metal or DX12, starting with the

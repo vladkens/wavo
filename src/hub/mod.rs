@@ -571,6 +571,7 @@ mod tests {
     // family renamed away from it would turn that flag false.
     let archs = ["parakeet", "gigaam", "whisper", "moonshine"];
     assert_eq!(families.map(str::to_lowercase), archs);
+
     for m in MODELS {
       assert!(families.contains(&m.family), "{}", m.name);
       assert!(!m.maker.is_empty() && !m.languages.is_empty(), "{}", m.name);

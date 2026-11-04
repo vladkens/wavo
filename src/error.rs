@@ -134,11 +134,10 @@ impl Error {
     )
   }
 
-  /// What to fix after this error: for [`Error::Adapter`] (no GPU adapter),
-  /// [`gpu_problem`](crate::gpu_problem)'s answer, or else
-  /// [`GpuProblem::NoDriver`](crate::GpuProblem::NoDriver). `None` on macOS, where there is no
-  /// driver to install, and for every other error: [`Error::Device`] among them, whose cause wgpu
-  /// doesn't tell (out of memory, a lost device or a driver fault).
+  /// What to fix after this error: [`GpuProblem::NoDriver`](crate::GpuProblem::NoDriver) for
+  /// [`Error::Adapter`] (no GPU adapter). `None` on macOS, where there is no driver to install, and
+  /// for every other error: [`Error::Device`] among them, whose cause wgpu doesn't tell (out of
+  /// memory, a lost device or a driver fault).
   ///
   /// # Examples
   ///
@@ -153,7 +152,7 @@ impl Error {
   /// ```
   pub fn gpu_problem(&self) -> Option<crate::GpuProblem> {
     let adapter = matches!(self, Self::Adapter(_)) && !cfg!(target_os = "macos");
-    adapter.then(|| crate::gpu_problem().unwrap_or(crate::GpuProblem::NoDriver))
+    adapter.then_some(crate::GpuProblem::NoDriver)
   }
 }
 
