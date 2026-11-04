@@ -49,9 +49,6 @@ pub enum Issue {
   /// container started without `--device /dev/dri`: the cause behind a
   /// [`SoftwareGpu`](Self::SoftwareGpu) or [`NoGpu`](Self::NoGpu).
   NoGpuDevice,
-  /// The GPU refused a device with the limits a model needs (buffer sizes, workgroup memory): an
-  /// old GPU or driver. Only from [`Error::issue`], for [`Error::Device`] at load.
-  GpuTooOld,
 }
 
 impl std::fmt::Display for Issue {
@@ -63,14 +60,12 @@ impl std::fmt::Display for Issue {
     let slow = "a software GPU, emulated on the CPU: expect 10-50x slower transcription";
     let usermod = "sudo usermod -aG render,video $USER, then log in again";
     let container = "no GPU driver loaded, or a container without --device /dev/dri";
-    let old = "the GPU lacks the limits wavo needs: update its driver or use another GPU";
     match self {
       Self::NoGpu if mac => f.write_str("no Metal GPU (in a virtual machine?)"),
       Self::NoGpu => write!(f, "no GPU found: {driver}{}", if linux { mesa } else { "" }),
       Self::SoftwareGpu => write!(f, "{slow}; {driver}"),
       Self::NoGpuAccess => write!(f, "no permission to open /dev/dri/renderD*: {usermod}"),
       Self::NoGpuDevice => write!(f, "no /dev/dri/renderD*: {container}"),
-      Self::GpuTooOld => f.write_str(old),
     }
   }
 }
@@ -105,8 +100,9 @@ impl Device {
 impl Error {
   /// The fixable cause behind this error, for an app to explain it in its own words:
   /// [`Error::Adapter`] gives [`Issue::NoGpu`], or on Linux the first of [`issues`] when there is
-  /// one; [`Error::Device`] gives [`Issue::GpuTooOld`]. `None` for errors with no setup cause,
-  /// such as [`Error::Cancelled`] or [`Error::AudioTooLong`].
+  /// one. `None` for the rest: errors with no setup cause, such as [`Error::Cancelled`] or
+  /// [`Error::AudioTooLong`], and [`Error::Device`], whose cause wgpu doesn't tell (out of memory,
+  /// a lost device or a driver fault, more often than limits the GPU lacks).
   ///
   /// # Examples
   ///
@@ -120,11 +116,8 @@ impl Error {
   /// }
   /// ```
   pub fn issue(&self) -> Option<Issue> {
-    match self {
-      Self::Adapter(_) => Some(issues().into_iter().next().unwrap_or(Issue::NoGpu)),
-      Self::Device(_) => Some(Issue::GpuTooOld),
-      _ => None,
-    }
+    let adapter = matches!(self, Self::Adapter(_));
+    adapter.then(|| issues().into_iter().next().unwrap_or(Issue::NoGpu))
   }
 }
 
@@ -191,7 +184,7 @@ mod tests {
   fn messages() {
     use Issue::*;
 
-    for issue in [NoGpu, SoftwareGpu, NoGpuAccess, NoGpuDevice, GpuTooOld] {
+    for issue in [NoGpu, SoftwareGpu, NoGpuAccess, NoGpuDevice] {
       let driver = matches!(issue, NoGpu | SoftwareGpu);
       let vulkan = issue.to_string().contains("Vulkan");
       assert_eq!(vulkan, driver && cfg!(target_os = "linux"), "{issue:?}");
