@@ -100,7 +100,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
   let models = names.iter().map(|m| load(m, &crate::model_path(m.name, download, Backend::Auto)?));
   let models = models.collect::<Result<Vec<_>>>()?;
   let device = models[0].model.device();
-  for warning in debug::warnings(device) {
+  if let Some(warning) = debug::warning(device) {
     eprintln!("warning: {warning}");
   }
 
@@ -245,10 +245,9 @@ impl Server {
     let extra = self.extra.try_lock().map(|x| x.used.iter().filter_map(Weak::upgrade).collect());
     let extra: Vec<_> = extra.unwrap_or_default();
     let names: Vec<String> = self.models.iter().chain(&extra).map(|m| quote(m.info.name)).collect();
-    let warnings: Vec<String> = debug::warnings(device).iter().map(|w| quote(w)).collect();
-    let (device, names, warnings) =
-      (quote(&device.to_string()), names.join(", "), warnings.join(", "));
-    let fields = format!("\"device\": {device}, \"models\": [{names}], \"warnings\": [{warnings}]");
+    let warning = debug::warning(device).map(|w| quote(&w)).unwrap_or_default();
+    let (device, names) = (quote(&device.to_string()), names.join(", "));
+    let fields = format!("\"device\": {device}, \"models\": [{names}], \"warnings\": [{warning}]");
     let body = format!("{{\"status\": \"ok\", {fields}}}\n");
     Reply { content_type: JSON, body, note: String::new() }
   }

@@ -258,7 +258,7 @@ fn run(args: &[&str]) -> Result<()> {
   let pcm = audio::read(audio)?;
   bar.set_message("loading the model");
   let model = load(&path, on)?;
-  for warning in debug::warnings(model.device()) {
+  if let Some(warning) = debug::warning(model.device()) {
     bar.suspend(|| eprintln!("warning: {warning}"));
   }
 

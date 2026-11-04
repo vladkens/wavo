@@ -9,6 +9,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use wgpu::BindGroup;
 pub use wgpu::Buffer;
 
+mod problem;
+pub use problem::{GpuProblem, gpu_problem};
+
 use crate::error::{Error, Result, bail};
 use crate::gguf::{Tensor, Type};
 
@@ -127,6 +130,15 @@ fn kernels(adapter: &wgpu::Adapter) -> Kernels {
 }
 
 impl Device {
+  /// What keeps the GPU from running models fast: [`GpuProblem::NoDriver`] for a GPU emulated on
+  /// the CPU ([`DeviceKind::SoftwareGpu`]), or [`GpuProblem::NoAccess`] when [`gpu_problem`] tells
+  /// that is why; `None` for other devices. Costs nothing beyond `gpu_problem`'s file checks: the
+  /// device is already known, from a loaded model or from [`devices`](crate::devices), which may
+  /// wake a discrete GPU.
+  pub fn gpu_problem(&self) -> Option<GpuProblem> {
+    (self.kind == DeviceKind::SoftwareGpu).then(|| gpu_problem().unwrap_or(GpuProblem::NoDriver))
+  }
+
   /// The device of an adapter from `adapter()` or `devices()`.
   fn new(info: &wgpu::AdapterInfo, kernels: Kernels) -> Self {
     let api = match info.backend {

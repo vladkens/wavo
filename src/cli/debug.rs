@@ -68,13 +68,13 @@ fn gpu(w: &mut impl Write) -> Result<Vec<String>> {
     Ok(devices) => devices,
     Err(e) => {
       writeln!(w, "error={e}")?;
-      let fallback = "no GPU adapter found: wavo can't load a model";
-      return Ok(vec![e.issue().map_or(fallback.into(), |x| x.to_string())]);
+      let fix = e.gpu_problem().map_or("wavo can't load a model".into(), |x| x.to_string());
+      return Ok(vec![format!("no GPU adapter found: {fix}")]);
     }
   };
 
   adapters(w, &devices)?;
-  Ok(devices.first().map(warnings).unwrap_or_default())
+  Ok(devices.first().and_then(warning).into_iter().collect())
 }
 
 fn models(w: &mut impl Write) -> Result<()> {
@@ -88,12 +88,10 @@ fn models(w: &mut impl Write) -> Result<()> {
   Ok(())
 }
 
-/// The warnings about the device a model runs on, for `wavo run` and `wavo serve` too: a software
-/// GPU, and on Linux the likely cause.
-pub fn warnings(d: &Device) -> Vec<String> {
-  let Some(issue) = d.issue() else { return Vec::new() };
-  let causes = wavo::issues().into_iter().map(|x| x.to_string());
-  std::iter::once(format!("{}: {issue}", d.name)).chain(causes).collect()
+/// The warning about the device a model runs on, for `wavo run` and `wavo serve` too: a software
+/// GPU, with what to fix.
+pub fn warning(d: &Device) -> Option<String> {
+  Some(format!("{} is a software GPU, 10-50x slower: {}", d.name, d.gpu_problem()?))
 }
 
 /// Each device with the features and limits its kernels depend on; the first is wavo's.

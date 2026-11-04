@@ -133,6 +133,28 @@ impl Error {
         | Self::NeuralEngine(_)
     )
   }
+
+  /// What to fix after this error: for [`Error::Adapter`] (no GPU adapter),
+  /// [`gpu_problem`](crate::gpu_problem)'s answer, or else
+  /// [`GpuProblem::NoDriver`](crate::GpuProblem::NoDriver). `None` on macOS, where there is no
+  /// driver to install, and for every other error: [`Error::Device`] among them, whose cause wgpu
+  /// doesn't tell (out of memory, a lost device or a driver fault).
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// match wavo::Model::load("gigaam-v3-e2e-rnnt-Q8_0.gguf") {
+  ///   Ok(model) => println!("on {}", model.device()),
+  ///   Err(e) => match e.gpu_problem() {
+  ///     Some(problem) => eprintln!("no GPU: {problem}"),
+  ///     None => eprintln!("can't load the model: {e}"),
+  ///   },
+  /// }
+  /// ```
+  pub fn gpu_problem(&self) -> Option<crate::GpuProblem> {
+    let adapter = matches!(self, Self::Adapter(_)) && !cfg!(target_os = "macos");
+    adapter.then(|| crate::gpu_problem().unwrap_or(crate::GpuProblem::NoDriver))
+  }
 }
 
 /// `Result` with wavo's [`Error`].
