@@ -105,6 +105,24 @@ impl ModelInfo {
   pub fn file(&self) -> String {
     format!("{}-Q8_0.gguf", self.full_name)
   }
+
+  /// Whether the model's family has a Neural Engine program (Parakeet and GigaAM), so that
+  /// [`Model::prepare`](crate::Model::prepare) and [`Model::load`](crate::Model::load) can run it
+  /// there. A fact of the catalog, the same on every machine: whether this one has a Neural Engine
+  /// shows in [`devices`](crate::devices).
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use wavo::hub::lookup;
+  ///
+  /// assert!(lookup("parakeet-v3")?.neural_engine());
+  /// assert!(!lookup("whisper-turbo")?.neural_engine());
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn neural_engine(&self) -> bool {
+    crate::program(&self.family.to_lowercase()).is_some()
+  }
 }
 
 /// transcribe.cpp's account, which publishes most models.
@@ -548,13 +566,25 @@ mod tests {
 
   #[test]
   fn catalog_fields() {
+    let families = ["Parakeet", "GigaAM", "Whisper", "Moonshine"];
+    // Lowercased, the `general.architecture` the loader takes and `neural_engine` looks up: a
+    // family renamed away from it would turn that flag false.
+    let archs = ["parakeet", "gigaam", "whisper", "moonshine"];
+    assert_eq!(families.map(str::to_lowercase), archs);
     for m in MODELS {
-      assert!(["Parakeet", "GigaAM", "Whisper", "Moonshine"].contains(&m.family), "{}", m.name);
+      assert!(families.contains(&m.family), "{}", m.name);
       assert!(!m.maker.is_empty() && !m.languages.is_empty(), "{}", m.name);
       let repo: Vec<&str> =
         m.card.strip_prefix("https://huggingface.co/").unwrap_or("").split('/').collect();
       assert!(repo.len() == 2 && !repo.contains(&""), "{}: {}", m.name, m.card);
     }
+
+    for (arch, _) in crate::NEURAL_ENGINE {
+      assert!(archs.contains(arch), "{arch}");
+    }
+
+    assert!(lookup("gigaam-v3").unwrap().neural_engine());
+    assert!(!lookup("moonshine-tiny").unwrap().neural_engine());
   }
 
   #[test]

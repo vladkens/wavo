@@ -239,6 +239,7 @@ mod gpu;
 #[cfg(feature = "hub")]
 #[cfg_attr(docsrs, doc(cfg(feature = "hub")))]
 pub mod hub;
+mod issue;
 mod moonshine;
 mod parakeet;
 mod sentencepiece;
@@ -252,6 +253,7 @@ use std::path::Path;
 use error::bail;
 pub use error::{Error, Result};
 pub use gpu::{Api, Device, DeviceKind, Kernels};
+pub use issue::{Issue, issues};
 pub use split::split;
 
 /// Every GPU adapter wavo can run a model on, through Vulkan, Metal or DX12, starting with the
@@ -262,7 +264,7 @@ pub use split::split;
 ///
 /// Only the adapters' info and features are read: no device is created and no kernel compiles, so
 /// it takes milliseconds and works without a model, for example to warn about a
-/// [`SoftwareGpu`](DeviceKind::SoftwareGpu) before downloading one.
+/// [`SoftwareGpu`](DeviceKind::SoftwareGpu) with [`Device::issue`] before downloading one.
 ///
 /// # Errors
 ///
@@ -735,7 +737,7 @@ impl Model {
   /// on a laptop with two GPUs, though the driver decides. wgpu's `WGPU_BACKEND` environment
   /// variable (`vulkan`, `metal` or `dx12`) overrides the API. The adapter may be a
   /// [`SoftwareGpu`](DeviceKind::SoftwareGpu), such as WARP or llvmpipe, when no hardware driver
-  /// is installed.
+  /// is installed: [`Device::issue`] says so, and on Linux [`issues`] may tell why.
   ///
   /// One model runs on one device for its lifetime. To use several GPUs, load several models;
   /// choosing the GPU is not supported yet.
@@ -745,8 +747,8 @@ impl Model {
   /// ```no_run
   /// let model = wavo::Model::load("gigaam-v3-e2e-rnnt-Q8_0.gguf")?;
   /// println!("running on {}", model.device()); // running on Apple M2 (Metal, integrated)
-  /// if model.device().kind == wavo::DeviceKind::SoftwareGpu {
-  ///   eprintln!("no GPU driver found: transcription will be slow");
+  /// if let Some(issue) = model.device().issue() {
+  ///   eprintln!("{}: {issue}", model.device().name); // a software GPU, emulated on the CPU: …
   /// }
   /// # Ok::<(), wavo::Error>(())
   /// ```

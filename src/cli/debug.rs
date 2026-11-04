@@ -68,19 +68,13 @@ fn gpu(w: &mut impl Write) -> Result<Vec<String>> {
     Ok(devices) => devices,
     Err(e) => {
       writeln!(w, "error={e}")?;
-      return Ok(vec!["no GPU adapter found: wavo can't load a model".into()]);
+      let fallback = "no GPU adapter found: wavo can't load a model";
+      return Ok(vec![e.issue().map_or(fallback.into(), |x| x.to_string())]);
     }
   };
 
   adapters(w, &devices)?;
-  let mut warnings = Vec::new();
-  if let Some(d) = devices.first().filter(|d| d.kind == DeviceKind::SoftwareGpu) {
-    warnings.extend(software(d));
-    #[cfg(target_os = "linux")]
-    warnings.extend(dri());
-  }
-
-  Ok(warnings)
+  Ok(devices.first().map(warnings).unwrap_or_default())
 }
 
 fn models(w: &mut impl Write) -> Result<()> {
@@ -94,11 +88,12 @@ fn models(w: &mut impl Write) -> Result<()> {
   Ok(())
 }
 
-/// The warning for a device emulated on the CPU, for `wavo run` too.
-pub fn software(d: &Device) -> Option<String> {
-  let msg = "is a software GPU, emulated on the CPU: expect 10-50x slower transcription";
-  let fix = "install the GPU's Vulkan driver";
-  (d.kind == DeviceKind::SoftwareGpu).then(|| format!("{} {msg}; {fix}", d.name))
+/// The warnings about the device a model runs on, for `wavo run` and `wavo serve` too: a software
+/// GPU, and on Linux the likely cause.
+pub fn warnings(d: &Device) -> Vec<String> {
+  let Some(issue) = d.issue() else { return Vec::new() };
+  let causes = wavo::issues().into_iter().map(|x| x.to_string());
+  std::iter::once(format!("{}: {issue}", d.name)).chain(causes).collect()
 }
 
 /// Each device with the features and limits its kernels depend on; the first is wavo's.
@@ -394,25 +389,6 @@ fn system() -> System {
     ("memory", memory.parse().map_or(memory, bytes)),
   ];
   (get("os"), rows)
-}
-
-/// Why Linux may hide the GPU: no render node, or none this user may open.
-#[cfg(target_os = "linux")]
-fn dri() -> Option<String> {
-  let nodes = std::fs::read_dir("/dev/dri").into_iter().flatten().flatten().map(|e| e.path());
-  let nodes: Vec<_> =
-    nodes.filter(|p| p.to_string_lossy().starts_with("/dev/dri/renderD")).collect();
-  let Some(first) = nodes.first() else {
-    return Some(
-      "no /dev/dri/renderD*: no GPU driver loaded, or a container without --device /dev/dri".into(),
-    );
-  };
-
-  let open = |p| std::fs::OpenOptions::new().read(true).write(true).open(p);
-  let errors: Vec<_> = nodes.iter().map(open).filter_map(Result::err).collect();
-  let err = errors.first().filter(|_| errors.len() == nodes.len())?;
-  let fix = "sudo usermod -aG render,video $USER, then log in again";
-  Some(format!("can't open {}: {err}; {fix}", first.display()))
 }
 
 #[cfg(test)]
