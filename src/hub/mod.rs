@@ -566,22 +566,17 @@ mod tests {
 
   #[test]
   fn catalog_fields() {
-    let families = ["Parakeet", "GigaAM", "Whisper", "Moonshine"];
-    // Lowercased, the `general.architecture` the loader takes and `neural_engine` looks up: a
-    // family renamed away from it would turn that flag false.
-    let archs = ["parakeet", "gigaam", "whisper", "moonshine"];
-    assert_eq!(families.map(str::to_lowercase), archs);
-
     for m in MODELS {
-      assert!(families.contains(&m.family), "{}", m.name);
+      assert!(["Parakeet", "GigaAM", "Whisper", "Moonshine"].contains(&m.family), "{}", m.name);
       assert!(!m.maker.is_empty() && !m.languages.is_empty(), "{}", m.name);
       let repo: Vec<&str> =
         m.card.strip_prefix("https://huggingface.co/").unwrap_or("").split('/').collect();
       assert!(repo.len() == 2 && !repo.contains(&""), "{}: {}", m.name, m.card);
     }
 
+    // `neural_engine` looks a program up by the family lowercased: a renamed family fails here.
     for (arch, _) in crate::NEURAL_ENGINE {
-      assert!(archs.contains(arch), "{arch}");
+      assert!(MODELS.iter().any(|m| m.family.to_lowercase() == *arch), "{arch}");
     }
 
     assert!(lookup("gigaam-v3").unwrap().neural_engine());

@@ -93,6 +93,10 @@ fn main() -> ExitCode {
     Err(e) if broken_pipe(&e) => ExitCode::SUCCESS,
     Err(e) => {
       eprintln!("error: {e:#}");
+      if let Some(problem) = e.downcast_ref::<wavo::Error>().and_then(wavo::Error::gpu_problem) {
+        eprintln!("{problem}");
+      }
+
       ExitCode::FAILURE
     }
   }

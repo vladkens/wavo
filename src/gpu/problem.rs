@@ -33,7 +33,7 @@ pub enum GpuProblem {
   /// group): no adapter at all, or a GPU emulated on the CPU
   /// ([`DeviceKind::SoftwareGpu`](crate::DeviceKind::SoftwareGpu): llvmpipe on Linux, WARP on
   /// Windows, 10–50× slower). On Linux the fix is a Vulkan driver, on Windows the GPU maker's
-  /// driver.
+  /// driver; on macOS it means no Metal, as in some virtual machines.
   NoDriver,
 }
 
