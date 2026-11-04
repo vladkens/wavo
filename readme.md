@@ -17,6 +17,8 @@ runs the open ASR models that [transcribe.cpp](https://github.com/handy-computer
 publishes. Use it as a command-line tool with an ollama-like model manager, or as a library that
 builds with a plain `cargo build`.
 
+[Wavo](https://github.com/vladkens/wavo-app) is a real app built on this library: offline push-to-talk dictation for macOS, Windows and Linux. Install it to try wavo without a terminal, or read its code as an example for your own app.
+
 ## 🌟 Features
 
 - 📏 Audio of any length: long recordings are split at pauses and joined back, no chunking on
