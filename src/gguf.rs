@@ -1,5 +1,5 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! GGUF v3 reader: metadata from the header, F32/F16/Q8_0 tensors streamed from the file.
+//! GGUF v3 reader: metadata from the header, F32/F16/Q8_0/Q5_0 tensors streamed from the file.
 
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -17,6 +17,9 @@ pub enum Type {
   F16,
   /// Blocks of 32 weights: f16 scale + 32 × i8 (34 bytes).
   Q8_0,
+  /// Blocks of 32 weights: f16 scale, 4 high-bit bytes, 16 low nibbles (22 bytes). A weight is
+  /// `(code - 16) · scale`, with `code` in 0..31.
+  Q5_0,
 }
 
 impl Type {
@@ -24,6 +27,7 @@ impl Type {
     match id {
       0 => Some(Self::F32),
       1 => Some(Self::F16),
+      6 => Some(Self::Q5_0),
       8 => Some(Self::Q8_0),
       _ => None,
     }
@@ -34,8 +38,75 @@ impl Type {
       Self::F32 => n * 4,
       Self::F16 => n * 2,
       Self::Q8_0 => n / 32 * 34,
+      Self::Q5_0 => n / 32 * 22,
     }
   }
+}
+
+/// Codes 0..31 of one ggml Q5_0 block, in weight order. The block is an f16 scale, four high-bit
+/// bytes, then sixteen low nibbles.
+pub(crate) fn q5_codes(block: &[u8; 22]) -> [u8; 32] {
+  let qh = u32::from_le_bytes([block[2], block[3], block[4], block[5]]);
+  let mut codes = [0u8; 32];
+  for j in 0..16 {
+    let byte = block[6 + j];
+    codes[j] = (byte & 0x0f) | (((qh >> j) & 1) << 4) as u8;
+    codes[j + 16] = (byte >> 4) | (((qh >> (j + 16)) & 1) << 4) as u8;
+  }
+  codes
+}
+
+/// The block's codes packed little-endian, five bits each, then four zero bytes. A group of four
+/// starts at bit `group * 20`, and the padding keeps that group's load inside the 24 bytes.
+pub(crate) fn q5_packed(block: &[u8; 22]) -> [u8; 24] {
+  let mut out = [0u8; 24];
+  let mut acc = 0u64;
+  let mut bits = 0;
+  let mut at = 0;
+  for code in q5_codes(block) {
+    acc |= u64::from(code) << bits;
+    bits += 5;
+    while bits >= 8 {
+      out[at] = acc as u8;
+      acc >>= 8;
+      bits -= 8;
+      at += 1;
+    }
+  }
+  out
+}
+
+/// ggml Q5_0 over `w`, whose length is a multiple of 32. The scale is the largest-magnitude
+/// element divided by −16 (the first one on a tie), stored as f16.
+#[cfg(test)]
+pub(crate) fn quantize_q5_0(w: &[f32]) -> Vec<u8> {
+  debug_assert!(w.len().is_multiple_of(32));
+  let mut out = Vec::with_capacity(w.len() / 32 * 22);
+  for block in w.as_chunks::<32>().0 {
+    let mut max = block[0];
+    for &x in &block[1..] {
+      if x.abs() > max.abs() {
+        max = x;
+      }
+    }
+    let d = max / -16.0;
+    let id = if d == 0.0 { 0.0 } else { 1.0 / d };
+    let mut codes = [0u8; 32];
+    for (code, &x) in codes.iter_mut().zip(block) {
+      *code = (x * id + 16.5).trunc().clamp(0.0, 31.0) as u8;
+    }
+    let mut qh = 0u32;
+    let mut qs = [0u8; 16];
+    for j in 0..16 {
+      qs[j] = (codes[j] & 0x0f) | (codes[j + 16] << 4);
+      qh |= ((codes[j] >> 4) as u32) << j;
+      qh |= ((codes[j + 16] >> 4) as u32) << (j + 16);
+    }
+    out.extend(f16::from_f32(d).to_le_bytes());
+    out.extend(qh.to_le_bytes());
+    out.extend(qs);
+  }
+  out
 }
 
 /// A metadata value, decoded from the header when a model reads it.
@@ -283,6 +354,12 @@ impl Tensor<'_> {
           block[2..].iter().map(move |&q| q as i8 as f32 * d)
         })
         .collect(),
+      Type::Q5_0 => (b.as_chunks::<22>().0.iter())
+        .flat_map(|block| {
+          let d = f16::from_le_bytes([block[0], block[1]]).to_f32();
+          q5_codes(block).into_iter().map(move |c| (c as i32 - 16) as f32 * d)
+        })
+        .collect(),
     })
   }
 }
@@ -480,6 +557,77 @@ mod tests {
     let mut pieces = Vec::new();
     q.read(16, |offset, piece| pieces.push((offset, piece.len()))).unwrap();
     assert_eq!(pieces, [(0, 16), (16, 16), (32, 2)]);
+  }
+
+  /// One Q5_0 block: f16 scale, high bits of `codes`, then the low nibbles. `codes` are 0..31.
+  fn q5_block(codes: [u8; 32], scale: f32) -> [u8; 22] {
+    let mut qh = 0u32;
+    let mut qs = [0u8; 16];
+    for j in 0..16 {
+      qs[j] = (codes[j] & 0x0f) | (codes[j + 16] << 4);
+      qh |= ((codes[j] >> 4) as u32) << j;
+      qh |= ((codes[j + 16] >> 4) as u32) << (j + 16);
+    }
+    let mut block = [0u8; 22];
+    block[0..2].copy_from_slice(&f16::from_f32(scale).to_le_bytes());
+    block[2..6].copy_from_slice(&qh.to_le_bytes());
+    block[6..22].copy_from_slice(&qs);
+    block
+  }
+
+  /// The shader's group load: four codes at `group`, from the 24-byte pack.
+  fn q5_group(packed: &[u8; 24], group: usize) -> [u8; 4] {
+    let bit = group * 20;
+    let byte = bit >> 3;
+    let i = byte >> 2;
+    let s = (byte & 3) * 8;
+    let mut word = u32::from_le_bytes(packed[i * 4..][..4].try_into().unwrap());
+    if s != 0 {
+      let hi = u32::from_le_bytes(packed[(i + 1) * 4..][..4].try_into().unwrap());
+      word = (word >> s) | (hi << (32 - s));
+    }
+    word >>= bit & 7;
+    [
+      (word & 31) as u8,
+      ((word >> 5) & 31) as u8,
+      ((word >> 10) & 31) as u8,
+      ((word >> 15) & 31) as u8,
+    ]
+  }
+
+  #[test]
+  fn q5_0_round_trips() {
+    let codes = std::array::from_fn(|i| i as u8);
+    let block = q5_block(codes, 0.5);
+    let g = Gguf::with_tensors(&[("q", &[32], Type::Q5_0, &block)]);
+    let expected: Vec<f32> = (0..32).map(|i| (i as f32 - 16.0) * 0.5).collect();
+    assert_eq!(g.tensor("q", &[32]).unwrap().to_f32().unwrap(), expected);
+
+    // −16..15 is an exact grid: the scale is 1 and the codes are 0..31.
+    let grid: Vec<f32> = (0i32..32).map(|i| (i - 16) as f32).collect();
+    assert_eq!(quantize_q5_0(&grid), q5_block(codes, 1.0));
+
+    let packed = q5_packed(&block);
+    for group in 0..8 {
+      assert_eq!(&q5_group(&packed, group), &codes[group * 4..group * 4 + 4]);
+    }
+
+    let zeros = quantize_q5_0(&[0.0; 32]);
+    let z: &[u8; 22] = zeros.as_slice().try_into().unwrap();
+    assert_eq!(q5_codes(z), [16; 32]);
+    assert_eq!(f16::from_le_bytes([zeros[0], zeros[1]]).to_f32(), 0.0);
+    let g = Gguf::with_tensors(&[("z", &[32], Type::Q5_0, &zeros)]);
+    assert_eq!(g.tensor("z", &[32]).unwrap().to_f32().unwrap(), vec![0.0; 32]);
+
+    // The first of two equal magnitudes wins, so the scale is negative and −8 clips to −7.5.
+    let mut tied = [0.0; 32];
+    tied[0] = 8.0;
+    tied[1] = -8.0;
+    let q = quantize_q5_0(&tied);
+    let g = Gguf::with_tensors(&[("t", &[32], Type::Q5_0, &q)]);
+    let got = g.tensor("t", &[32]).unwrap().to_f32().unwrap();
+    assert_eq!(got[0], 8.0);
+    assert_eq!(got[1], -7.5);
   }
 
   #[test]

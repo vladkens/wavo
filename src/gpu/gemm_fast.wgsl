@@ -39,7 +39,7 @@ var<immediate> p: Params;
 @group(0) @binding(1) var<storage, read> bias: array<f32>;
 @group(0) @binding(2) var<storage, read_write> c: array<f32>;
 @group(0) @binding(3) var<storage, read> w: array<u32>;
-// Q8_0 block scales as f16 pairs.
+// Q8_0 and Q5_0 block scales as f16 pairs.
 @group(0) @binding(4) var<storage, read> scales: array<u32>;
 
 alias AM = coop_mat8x8<f16, A>;
@@ -63,6 +63,27 @@ fn gelu(x: f32) -> f32 {
 fn scale(block: u32) -> f32 {
   let s = unpack2x16float(scales[block / 2u]);
   return select(s.x, s.y, (block & 1u) == 1u);
+}
+
+// Same load as gemm.wgsl's q5_word and q5_4. This module is not concatenated with that one.
+fn q5_word(x: u32) -> u32 {
+  let block = x / 32u;
+  let group = (x % 32u) / 4u;
+  let bit = group * 20u;
+  let byte = block * 24u + (bit >> 3u);
+  let i = byte >> 2u;
+  let s = (byte & 3u) * 8u;
+  var word = w[i];
+  if (s != 0u) {
+    word = (word >> s) | (w[i + 1u] << (32u - s));
+  }
+  return word >> (bit & 7u);
+}
+
+fn q5_4(x: u32) -> vec4<f32> {
+  let packed = q5_word(x);
+  let q = vec4(f32(packed & 31u), f32((packed >> 5u) & 31u), f32((packed >> 10u) & 31u), f32((packed >> 15u) & 31u));
+  return (q - 16.0) * scale(x / 32u);
 }
 
 // Stages a[m0 + i / (KS / 4)][k0 + i % (KS / 4) · 4 ..+4].
@@ -90,6 +111,7 @@ fn stage_w(n0: u32, k0: u32, i: u32) {
     switch WTYPE {
       case 0u: { v = bitcast<vec4<f32>>(vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u])); }
       case 1u: { v = vec4(unpack2x16float(w[x / 2u]), unpack2x16float(w[x / 2u + 1u])); }
+      case 3u: { v = q5_4(x); }
       default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
     }
   }

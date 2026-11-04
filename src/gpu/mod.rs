@@ -10,7 +10,7 @@ use wgpu::BindGroup;
 pub use wgpu::Buffer;
 
 use crate::error::{Error, Result, bail};
-use crate::gguf::{Tensor, Type};
+use crate::gguf::{Tensor, Type, q5_packed};
 
 type Pipeline = wgpu::ComputePipeline;
 
@@ -278,7 +278,7 @@ impl Portable {
     let attention = module(device, include_str!("attention.wgsl"));
     let spatial = module(device, include_str!("spatial.wgsl"));
     Self {
-      gemm: (0..3)
+      gemm: (0..4)
         .map(|ty| match cpu {
           true => pipeline(device, &gemm, "gemm64", &[("WTYPE", ty as f64)]),
           false => {
@@ -326,7 +326,7 @@ fn compile_fast(device: &wgpu::Device, f: usize) -> Option<FastPipelines> {
     .replace("F: u32 = 8u", &format!("F: u32 = {f}u"))
     .replace("8x8", &format!("{f}x{f}"));
   let gemm = module(device, &source);
-  let gemm: Vec<_> = (0..6)
+  let gemm: Vec<_> = (0..8)
     .map(|i| {
       let constants = [("WTYPE", (i / 2) as f64), ("ROWS", ((4 * f) << (i % 2)) as f64)];
       pipeline(device, &gemm, "gemm", &constants)
@@ -388,7 +388,8 @@ struct TensorGemm {
 }
 
 /// A linear layer `y = x·Wᵀ + b` with `W` row-major `[n][k]`, kept in its GGUF type. Q8_0 is
-/// stored as int8 data (4 per u32, row-major) plus one f16 scale per 32-weight block.
+/// int8 data (4 per u32) plus one f16 scale per 32 weights. Q5_0 is 5-bit codes in weight order,
+/// 24 bytes per 32, plus the same scale buffer.
 pub struct Linear {
   /// Rows of `W`, padded to a multiple of 64 for the tile reads.
   n: usize,
@@ -397,7 +398,7 @@ pub struct Linear {
   k: usize,
   /// Outputs written a second time after the `cols` others, with their own bias.
   dual: usize,
-  /// GEMM pipeline index: 0: F32, 1: F16, 2: Q8_0
+  /// GEMM pipeline index: 0: F32, 1: F16, 2: Q8_0, 3: Q5_0
   ty: usize,
   weight: Buffer,
   scales: Option<Buffer>,
@@ -618,6 +619,7 @@ impl Gpu {
   /// The probes run in one submission; a device error turns them all off.
   fn probe(&self, size: usize, compiled: FastPipelines) -> Fast {
     let (gemm, [layer_norm, conv_glu, attention, relative]) = compiled;
+    let n_gemm = gemm.len();
     // Per kernel: bindings, the output's, params and subgroups.
     let mut probes: Vec<_> = gemm.into_iter().map(|k| (Some(k), 5, 2, 6, 4.0)).collect();
     probes.extend([
@@ -655,8 +657,8 @@ impl Gpu {
       k.filter(|_| got.get(2 * i..2 * i + 2) == Some(&[32.0, subgroups][..]))
     });
     let mut next = || kept.next().flatten();
-    // All six GEMMs are taken before any is checked, so the kernels after them stay in place.
-    let gemm: Vec<_> = (0..6).map(|_| next()).collect();
+    // Every GEMM is taken before any is checked, so the kernels after them stay in place.
+    let gemm: Vec<_> = (0..n_gemm).map(|_| next()).collect();
     let gemm: Option<Vec<_>> = gemm.into_iter().collect();
     let (layer_norm, conv_glu, attention, relative) = (next(), next(), next(), next());
     Fast {
@@ -820,6 +822,24 @@ impl Gpu {
           block += w.len() / 32;
         }
         (2, self.filled(dv), Some(self.filled(sv)))
+      }
+      Type::Q5_0 => {
+        // 24 bytes of codes per block, and the f16 scale. Pieces of 8192 blocks.
+        let (mut dv, mut sv) =
+          (self.fill(n * k / 32 * 24, rows * k / 32 * 24)?, self.fill(n * k / 16, rows * k / 16)?);
+        let mut block = 0;
+        for w in weights {
+          w.read(22 << 13, |i, piece| {
+            let blocks = piece.as_chunks::<22>().0;
+            let (a, b) = (block + i / 22, block + i / 22 + blocks.len());
+            let d = dv.slice(a * 24..b * 24).into_chunks::<24>().0;
+            d.write_iter(blocks.iter().map(q5_packed));
+            let s = sv.slice(a * 2..b * 2).into_chunks::<2>().0;
+            s.write_iter(blocks.iter().map(|q| [q[0], q[1]]));
+          })?;
+          block += w.len() / 32;
+        }
+        (3, self.filled(dv), Some(self.filled(sv)))
       }
     };
     let dual = bias.len().saturating_sub(rows);
@@ -1209,7 +1229,7 @@ impl Forced {
 fn compile_tensor(device: &wgpu::Device) -> Option<TensorGemm> {
   let scopes = [wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation]
     .map(|f| device.push_error_scope(f));
-  let names = ["cast", "gemm_f32", "gemm_f16", "gemm_q8"];
+  let names = ["cast", "gemm_f32", "gemm_f16", "gemm_q8", "gemm_q5"];
   let entry_points = names.map(|n| wgpu::PassthroughShaderEntryPoint {
     name: n.into(),
     workgroup_size: (if n == "cast" { 256 } else { 128 }, 1, 1),
@@ -1286,7 +1306,7 @@ fn pipeline(
 
 /// The `entry` specialized for each weight type.
 fn gemms(device: &wgpu::Device, module: &wgpu::ShaderModule, entry: &str) -> Vec<Pipeline> {
-  (0..3).map(|ty| pipeline(device, module, entry, &[("WTYPE", ty as f64)])).collect()
+  (0..4).map(|ty| pipeline(device, module, entry, &[("WTYPE", ty as f64)])).collect()
 }
 
 /// Records kernel dispatches into a compute pass.
@@ -1396,7 +1416,7 @@ impl<'a> Pass<'a> {
     let gpu = self.gpu;
     let [mode, alpha] = epilogue.params();
     let params = [m as u32, l.cols as u32, l.k as u32, mode, alpha, l.dual as u32];
-    // Only Q8_0 reads scales; other types bind the bias in their place.
+    // Q8_0 and Q5_0 read scales; other types bind the bias in their place.
     let scales = l.scales.as_ref().unwrap_or(&l.bias);
     if let Some(t) = &gpu.fast.tensor {
       // The tensor GEMM reads a as f16 from device memory (k is a multiple of 32 by `linear`).
@@ -1685,7 +1705,7 @@ mod tests {
   use half::f16;
 
   use super::*;
-  use crate::gguf::Gguf;
+  use crate::gguf::{Gguf, quantize_q5_0};
 
   /// The portable path, then the fast one (also portable where the adapter doesn't offer it).
   fn gpus() -> &'static [Gpu; 2] {
@@ -1796,8 +1816,9 @@ mod tests {
     Epilogue::Tanh,
   ];
 
-  /// A random [n][k] weight as F32, F16 and Q8_0 GGUF tensor data.
-  fn weights(n: usize, k: usize) -> [(Type, Vec<u8>); 3] {
+  /// A random [n][k] weight as F32, F16, Q8_0 and Q5_0 GGUF tensor data. Q5_0 is last, and empty
+  /// unless `k` is a multiple of 32.
+  fn weights(n: usize, k: usize) -> [(Type, Vec<u8>); 4] {
     let w = random(n * k, 1);
     let f32s: Vec<u8> = bytemuck::cast_slice(&w).to_vec();
     let f16s: Vec<u8> = w.iter().flat_map(|x| f16::from_f32(*x).to_le_bytes()).collect();
@@ -1808,7 +1829,8 @@ mod tests {
         f16::from_f32(d).to_le_bytes().into_iter().chain(q)
       })
       .collect();
-    [(Type::F32, f32s), (Type::F16, f16s), (Type::Q8_0, q8)]
+    let q5 = if k.is_multiple_of(32) { quantize_q5_0(&w) } else { Vec::new() };
+    [(Type::F32, f32s), (Type::F16, f16s), (Type::Q8_0, q8), (Type::Q5_0, q5)]
   }
 
   #[test]
@@ -1895,9 +1917,12 @@ mod tests {
           f16::from_f32(d).to_le_bytes().into_iter().chain(q)
         })
         .collect();
+      let q5 = quantize_q5_0(&w);
       // Each weight is stored as two halves stacked along n, like q over k.
       let wd = [k, n / 2];
-      for (ty, bytes) in [(Type::F32, f32s), (Type::F16, &f16s), (Type::Q8_0, &q8)] {
+      for (ty, bytes) in
+        [(Type::F32, f32s), (Type::F16, &f16s), (Type::Q8_0, &q8), (Type::Q5_0, &q5)]
+      {
         let (w1, w2) = bytes.split_at(bytes.len() / 2);
         let file = Gguf::with_tensors(&[("w1", &wd, ty, w1), ("w2", &wd, ty, w2)]);
         let t = |name| file.tensor(name, &wd).unwrap();
