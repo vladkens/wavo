@@ -20,7 +20,7 @@ use wavo::hub::{self, Hub, ModelInfo};
 
 use crate::http::{self, Head, Part, Res, fail};
 use crate::output::{self, quote};
-use crate::{Download, audio, debug, models, split};
+use crate::{Download, audio, models, split};
 
 const USAGE: &str = "usage: wavo serve [MODEL...] [--host ADDR] [--port PORT] [--api-key KEY] [-y]";
 /// Connections served at once; as many more get 503, and past that they are dropped.
@@ -100,7 +100,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
   let models = names.iter().map(|m| load(m, &crate::model_path(m.name, download, Backend::Auto)?));
   let models = models.collect::<Result<Vec<_>>>()?;
   let device = models[0].model.device();
-  if let Some(warning) = debug::software(device) {
+  if let Some(warning) = device.warning() {
     eprintln!("warning: {warning}");
   }
 
@@ -245,7 +245,7 @@ impl Server {
     let extra = self.extra.try_lock().map(|x| x.used.iter().filter_map(Weak::upgrade).collect());
     let extra: Vec<_> = extra.unwrap_or_default();
     let names: Vec<String> = self.models.iter().chain(&extra).map(|m| quote(m.info.name)).collect();
-    let warning = debug::software(device).map(|w| quote(&w)).unwrap_or_default();
+    let warning = device.warning().map(|w| quote(&w)).unwrap_or_default();
     let (device, names) = (quote(&device.to_string()), names.join(", "));
     let fields = format!("\"device\": {device}, \"models\": [{names}], \"warnings\": [{warning}]");
     let body = format!("{{\"status\": \"ok\", {fields}}}\n");

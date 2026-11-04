@@ -105,6 +105,11 @@ impl ModelInfo {
   pub fn file(&self) -> String {
     format!("{}-Q8_0.gguf", self.full_name)
   }
+
+  /// Whether the model's family runs on the Neural Engine (Parakeet, GigaAM).
+  pub fn neural_engine(&self) -> bool {
+    crate::program(&self.family.to_lowercase()).is_some()
+  }
 }
 
 /// transcribe.cpp's account, which publishes most models.
@@ -555,6 +560,14 @@ mod tests {
         m.card.strip_prefix("https://huggingface.co/").unwrap_or("").split('/').collect();
       assert!(repo.len() == 2 && !repo.contains(&""), "{}: {}", m.name, m.card);
     }
+
+    // `neural_engine` looks a program up by the family lowercased: a renamed family fails here.
+    for (arch, _) in crate::NEURAL_ENGINE {
+      assert!(MODELS.iter().any(|m| m.family.to_lowercase() == *arch), "{arch}");
+    }
+
+    assert!(lookup("gigaam-v3").unwrap().neural_engine());
+    assert!(!lookup("moonshine-tiny").unwrap().neural_engine());
   }
 
   #[test]

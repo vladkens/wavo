@@ -127,6 +127,14 @@ fn kernels(adapter: &wgpu::Adapter) -> Kernels {
 }
 
 impl Device {
+  /// The warning for a GPU emulated on the CPU, the one wavo's CLI prints; `None` for a real GPU.
+  pub fn warning(&self) -> Option<String> {
+    let fix =
+      if cfg!(windows) { "install the GPU's driver" } else { "install the GPU's Vulkan driver" };
+    let msg = "is a software GPU, emulated on the CPU: expect 10-50x slower transcription";
+    (self.kind == DeviceKind::SoftwareGpu).then(|| format!("{} {msg}; {fix}", self.name))
+  }
+
   /// The device of an adapter from `adapter()` or `devices()`.
   fn new(info: &wgpu::AdapterInfo, kernels: Kernels) -> Self {
     let api = match info.backend {

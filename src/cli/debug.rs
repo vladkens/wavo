@@ -75,7 +75,7 @@ fn gpu(w: &mut impl Write) -> Result<Vec<String>> {
   adapters(w, &devices)?;
   let mut warnings = Vec::new();
   if let Some(d) = devices.first().filter(|d| d.kind == DeviceKind::SoftwareGpu) {
-    warnings.extend(software(d));
+    warnings.extend(d.warning());
     #[cfg(target_os = "linux")]
     warnings.extend(dri());
   }
@@ -92,13 +92,6 @@ fn models(w: &mut impl Write) -> Result<()> {
   }
 
   Ok(())
-}
-
-/// The warning for a device emulated on the CPU, for `wavo run` too.
-pub fn software(d: &Device) -> Option<String> {
-  let msg = "is a software GPU, emulated on the CPU: expect 10-50x slower transcription";
-  let fix = "install the GPU's Vulkan driver";
-  (d.kind == DeviceKind::SoftwareGpu).then(|| format!("{} {msg}; {fix}", d.name))
 }
 
 /// Each device with the features and limits its kernels depend on; the first is wavo's.
