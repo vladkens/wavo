@@ -93,10 +93,6 @@ fn main() -> ExitCode {
     Err(e) if broken_pipe(&e) => ExitCode::SUCCESS,
     Err(e) => {
       eprintln!("error: {e:#}");
-      if let Some(problem) = e.downcast_ref::<wavo::Error>().and_then(wavo::Error::gpu_problem) {
-        eprintln!("{problem}");
-      }
-
       ExitCode::FAILURE
     }
   }
@@ -262,7 +258,7 @@ fn run(args: &[&str]) -> Result<()> {
   let pcm = audio::read(audio)?;
   bar.set_message("loading the model");
   let model = load(&path, on)?;
-  if let Some(warning) = debug::warning(model.device()) {
+  if let Some(warning) = model.device().warning() {
     bar.suspend(|| eprintln!("warning: {warning}"));
   }
 

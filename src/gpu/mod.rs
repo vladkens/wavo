@@ -3,12 +3,9 @@
 //! Each kernel has a portable version; a fast one (subgroups, cooperative matrices) replaces it
 //! when the device supports it and a probe dispatch of that pipeline succeeds.
 
-mod problem;
-
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 
-pub use problem::GpuProblem;
 use wgpu::BindGroup;
 pub use wgpu::Buffer;
 
@@ -130,11 +127,12 @@ fn kernels(adapter: &wgpu::Adapter) -> Kernels {
 }
 
 impl Device {
-  /// What keeps the GPU from running models fast: [`GpuProblem::NoDriver`] for a GPU emulated on
-  /// the CPU ([`DeviceKind::SoftwareGpu`]), `None` for other devices. Costs nothing: the device is
-  /// already known, from a loaded model or from [`devices`](crate::devices).
-  pub fn gpu_problem(&self) -> Option<GpuProblem> {
-    (self.kind == DeviceKind::SoftwareGpu).then_some(GpuProblem::NoDriver)
+  /// The warning for a GPU emulated on the CPU, the one wavo's CLI prints; `None` for a real GPU.
+  pub fn warning(&self) -> Option<String> {
+    let fix =
+      if cfg!(windows) { "install the GPU's driver" } else { "install the GPU's Vulkan driver" };
+    let msg = "is a software GPU, emulated on the CPU: expect 10-50x slower transcription";
+    (self.kind == DeviceKind::SoftwareGpu).then(|| format!("{} {msg}; {fix}", self.name))
   }
 
   /// The device of an adapter from `adapter()` or `devices()`.

@@ -106,20 +106,7 @@ impl ModelInfo {
     format!("{}-Q8_0.gguf", self.full_name)
   }
 
-  /// Whether the model's family has a Neural Engine program (Parakeet and GigaAM), so that
-  /// [`Model::prepare`](crate::Model::prepare) and [`Model::load`](crate::Model::load) can run it
-  /// there. A fact of the catalog, the same on every machine: whether this one has a Neural Engine
-  /// shows in [`devices`](crate::devices).
-  ///
-  /// # Examples
-  ///
-  /// ```
-  /// use wavo::hub::lookup;
-  ///
-  /// assert!(lookup("parakeet-v3")?.neural_engine());
-  /// assert!(!lookup("whisper-turbo")?.neural_engine());
-  /// # Ok::<(), wavo::Error>(())
-  /// ```
+  /// Whether the model's family runs on the Neural Engine (Parakeet, GigaAM).
   pub fn neural_engine(&self) -> bool {
     crate::program(&self.family.to_lowercase()).is_some()
   }

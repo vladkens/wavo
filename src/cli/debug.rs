@@ -68,13 +68,19 @@ fn gpu(w: &mut impl Write) -> Result<Vec<String>> {
     Ok(devices) => devices,
     Err(e) => {
       writeln!(w, "error={e}")?;
-      let fix = e.gpu_problem().map_or("wavo can't load a model".into(), |x| x.to_string());
-      return Ok(vec![format!("no GPU adapter found: {fix}")]);
+      return Ok(vec!["no GPU adapter found: wavo can't load a model".into()]);
     }
   };
 
   adapters(w, &devices)?;
-  Ok(devices.first().and_then(warning).into_iter().collect())
+  let mut warnings = Vec::new();
+  if let Some(d) = devices.first().filter(|d| d.kind == DeviceKind::SoftwareGpu) {
+    warnings.extend(d.warning());
+    #[cfg(target_os = "linux")]
+    warnings.extend(dri());
+  }
+
+  Ok(warnings)
 }
 
 fn models(w: &mut impl Write) -> Result<()> {
@@ -86,12 +92,6 @@ fn models(w: &mut impl Write) -> Result<()> {
   }
 
   Ok(())
-}
-
-/// The warning about the device a model runs on, for `wavo run` and `wavo serve` too: a software
-/// GPU, with what to fix.
-pub fn warning(d: &Device) -> Option<String> {
-  Some(format!("{} is a software GPU, 10-50x slower: {}", d.name, d.gpu_problem()?))
 }
 
 /// Each device with the features and limits its kernels depend on; the first is wavo's.
@@ -387,6 +387,25 @@ fn system() -> System {
     ("memory", memory.parse().map_or(memory, bytes)),
   ];
   (get("os"), rows)
+}
+
+/// Why Linux may hide the GPU: no render node, or none this user may open.
+#[cfg(target_os = "linux")]
+fn dri() -> Option<String> {
+  let nodes = std::fs::read_dir("/dev/dri").into_iter().flatten().flatten().map(|e| e.path());
+  let nodes: Vec<_> =
+    nodes.filter(|p| p.to_string_lossy().starts_with("/dev/dri/renderD")).collect();
+  let Some(first) = nodes.first() else {
+    return Some(
+      "no /dev/dri/renderD*: no GPU driver loaded, or a container without --device /dev/dri".into(),
+    );
+  };
+
+  let open = |p| std::fs::OpenOptions::new().read(true).write(true).open(p);
+  let errors: Vec<_> = nodes.iter().map(open).filter_map(Result::err).collect();
+  let err = errors.first().filter(|_| errors.len() == nodes.len())?;
+  let fix = "sudo usermod -aG render,video $USER, then log in again";
+  Some(format!("can't open {}: {err}; {fix}", first.display()))
 }
 
 #[cfg(test)]

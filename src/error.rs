@@ -133,25 +133,6 @@ impl Error {
         | Self::NeuralEngine(_)
     )
   }
-
-  /// What to fix after this error: [`GpuProblem::NoDriver`](crate::GpuProblem::NoDriver) for
-  /// [`Error::Adapter`] (no GPU adapter). `None` for every other error: [`Error::Device`] among
-  /// them, whose cause wgpu doesn't tell (out of memory, a lost device or a driver fault).
-  ///
-  /// # Examples
-  ///
-  /// ```no_run
-  /// match wavo::Model::load("gigaam-v3-e2e-rnnt-Q8_0.gguf") {
-  ///   Ok(model) => println!("on {}", model.device()),
-  ///   Err(e) => match e.gpu_problem() {
-  ///     Some(problem) => eprintln!("no GPU: {problem}"),
-  ///     None => eprintln!("can't load the model: {e}"),
-  ///   },
-  /// }
-  /// ```
-  pub fn gpu_problem(&self) -> Option<crate::GpuProblem> {
-    matches!(self, Self::Adapter(_)).then_some(crate::GpuProblem::NoDriver)
-  }
 }
 
 /// `Result` with wavo's [`Error`].
