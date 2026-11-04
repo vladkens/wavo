@@ -19,7 +19,7 @@ Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, 
 - One module per model family, `src/<family>/`; a variant is config + head, not a copy. No generic graph runtime, plugin layers or disabled experiment code.
 - Validate GGUF metadata and tensor shapes once at load, with clear errors. Model files are trusted: no guards against crafted files, no defensive checks in hot paths.
 - A new model's encoder records its layers through `Pass::layers` (drivers like i915 cancel GPU work over ~20 s).
-- Each part has a code budget, tests, docs and comments excluded (`BUDGETS` in `scripts/size.py`: the core, the kernels, each family, `src/ane/`, `src/hub/`, and `src/cli/` in three: its core, `debug.rs`, and its server (`serve.rs`, `http.rs`)), checked by `make size ARGS=--check` (and `make check`); simplify before growing past one, and raising one is a decision recorded in the PR. The CLI hand-rolls argument parsing, JSON, SRT and HTTP (on `std::net` with `httparse`): no clap, serde, HTTP framework or async runtime.
+- The CLI hand-rolls argument parsing, JSON, SRT and HTTP (on `std::net` with `httparse`): no clap, serde, HTTP framework or async runtime.
 - Public items document their units and failure cases, with examples as doctests.
 - Start every `.rs`, `.wgsl` and `.metal` file with `// Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo`.
 - Helper scripts: `scripts/`, kebab-case, `sh` or Python with `uv run`.
@@ -38,8 +38,7 @@ Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, 
 2. Read the reference's `scripts/convert-<family>.py`, `src/arch/<family>/` and `docs/models/<variant>.md`.
 3. Generate fixtures with `make fixtures MODEL=<name> SAMPLES="..."`: 2–4 clips in the model's language (short, ~11 s, long, plus silence where relevant). The model's first commit already produces a transcript.
 4. Pass the fixtures of every model in the family exactly, then benchmark against the reference; if wavo is slower, work through `docs/perf.md` or report the gap to the person.
-5. A new family gets its own budget in `BUDGETS` in `scripts/size.py`: its code (`make size`) rounded up to the next hundred.
-6. Update `docs/roadmap.md`.
+5. Update `docs/roadmap.md`.
 
 ## Correctness
 
