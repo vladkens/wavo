@@ -10,10 +10,12 @@ use wgpu::BindGroup;
 pub use wgpu::Buffer;
 
 use crate::error::{Error, Result, bail};
-use crate::gguf::{Tensor, Type, q4_0_packed, q4_1_packed, q5_1_packed, q5_packed};
+use crate::gguf::{
+  Tensor, Type, q4_0_packed, q4_1_packed, q4k_packed, q4k_scales, q5_1_packed, q5_packed,
+};
 
-/// Pipeline order: F32, F16, Q8_0, Q5_0, Q4_0, Q4_1, Q5_1.
-const WEIGHT_TYPES: usize = 7;
+/// Pipeline order: F32, F16, Q8_0, Q5_0, Q4_0, Q4_1, Q5_1, Q4_K.
+const WEIGHT_TYPES: usize = 8;
 
 type Pipeline = wgpu::ComputePipeline;
 
@@ -253,7 +255,7 @@ pub(crate) struct WeightBytes {
   pub n: usize,
   /// Weights in a row.
   pub k: usize,
-  /// GEMM index: 0 F32, 1 F16, 2 Q8_0, 3 Q5_0, 4 Q4_0, 5 Q4_1, 6 Q5_1.
+  /// GEMM index: 0 F32, 1 F16, 2 Q8_0, 3 Q5_0, 4 Q4_0, 5 Q4_1, 6 Q5_1, 7 Q4_K.
   pub ty: usize,
   /// Bytes of the weight buffer.
   pub weight: u64,
@@ -442,7 +444,9 @@ struct TensorGemm {
 /// A linear layer `y = x·Wᵀ + b` with `W` row-major `[n][k]`, kept in its GGUF type. Q8_0 is
 /// int8 data (4 per u32) plus one f16 scale per 32 weights. Q5_0 and Q5_1 are 5-bit codes in
 /// weight order, 24 bytes per 32. Q4_0 and Q4_1 are nibbles in weight order, 16 bytes per 32.
-/// Q8_0, Q5_0 and Q4_0 share one f16 scale per block. Q4_1 and Q5_1 store an f16 minimum beside it.
+/// Q4_K is nibbles in weight order, 128 bytes per 256, plus the superblock scale, minimum, and
+/// eight decoded scales and minimums (20 bytes). Q8_0, Q5_0 and Q4_0 share one f16 scale per
+/// block. Q4_1 and Q5_1 store an f16 minimum beside it.
 pub struct Linear {
   /// Rows of `W`, padded to a multiple of 64 for the tile reads.
   n: usize,
@@ -455,7 +459,7 @@ pub struct Linear {
   src_k: usize,
   /// Outputs written a second time after the `cols` others, with their own bias.
   dual: usize,
-  /// GEMM pipeline index: 0: F32, 1: F16, 2: Q8_0, 3: Q5_0, 4: Q4_0, 5: Q4_1, 6: Q5_1.
+  /// GEMM pipeline index: 0: F32, 1: F16, 2: Q8_0, 3: Q5_0, 4: Q4_0, 5: Q4_1, 6: Q5_1, 7: Q4_K.
   ty: usize,
   weight: Buffer,
   scales: Option<Buffer>,
@@ -975,6 +979,30 @@ impl Gpu {
         }
         (6, self.filled(dv), Some(self.filled(sv)))
       }
+      Type::Q4_K => {
+        if weights.iter().any(|w| !w.len().is_multiple_of(256)) {
+          bail!("linear layer {k}→{rows}: Q4_K needs a multiple of 256 weights");
+        }
+        // 128 bytes of nibbles and 20 bytes of scales per block of 256. Pieces of 8192 blocks.
+        let blocks = |rows: usize| rows * k / 256;
+        let (mut dv, mut sv) = (
+          self.fill(blocks(n) * 128, blocks(rows) * 128)?,
+          self.fill(blocks(n) * 20, blocks(rows) * 20)?,
+        );
+        let mut block = 0;
+        for w in weights {
+          w.read(144 << 13, |i, piece| {
+            let blocks = piece.as_chunks::<144>().0;
+            let (a, b) = (block + i / 144, block + i / 144 + blocks.len());
+            let d = dv.slice(a * 128..b * 128).into_chunks::<128>().0;
+            d.write_iter(blocks.iter().map(q4k_packed));
+            let s = sv.slice(a * 20..b * 20).into_chunks::<20>().0;
+            s.write_iter(blocks.iter().map(q4k_scales));
+          })?;
+          block += w.len() / 256;
+        }
+        (7, self.filled(dv), Some(self.filled(sv)))
+      }
     };
     let dual = bias.len().saturating_sub(rows);
     if !bias.is_empty() && bias.len() < rows || dual > rows {
@@ -1394,8 +1422,17 @@ impl Forced {
 fn compile_tensor(device: &wgpu::Device) -> Option<TensorGemm> {
   let scopes = [wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation]
     .map(|f| device.push_error_scope(f));
-  let names =
-    ["cast", "gemm_f32", "gemm_f16", "gemm_q8", "gemm_q5", "gemm_q4", "gemm_q4_1", "gemm_q5_1"];
+  let names = [
+    "cast",
+    "gemm_f32",
+    "gemm_f16",
+    "gemm_q8",
+    "gemm_q5",
+    "gemm_q4",
+    "gemm_q4_1",
+    "gemm_q5_1",
+    "gemm_q4_k",
+  ];
   let entry_points = names.map(|n| wgpu::PassthroughShaderEntryPoint {
     name: n.into(),
     workgroup_size: (if n == "cast" { 256 } else { 128 }, 1, 1),
@@ -1873,7 +1910,9 @@ mod tests {
   use half::f16;
 
   use super::*;
-  use crate::gguf::{Gguf, quantize_q4_0, quantize_q4_1, quantize_q5_0, quantize_q5_1};
+  use crate::gguf::{
+    Gguf, quantize_q4_0, quantize_q4_1, quantize_q4_k, quantize_q5_0, quantize_q5_1,
+  };
 
   /// The portable path, then the fast one (also portable where the adapter doesn't offer it).
   fn gpus() -> &'static [Gpu; 2] {
@@ -2207,6 +2246,77 @@ mod tests {
         let got = run(gpu, &vec![0.0; want.len()], |p, col| p.im2col(&xb, col, t_in, ch, shape));
         assert_close(&got, &want);
       }
+    }
+  }
+
+  #[test]
+  fn q4_k_gemm() {
+    // 64×256 keeps every block inside a row. 8×288 shares a block across rows (2304 weights, nine
+    // blocks) and pads the outputs to 64. The embedding case needs a bias buffer at least k long,
+    // which 256 rows gives.
+    let half = |x: &f32| f16::from_f32(*x).to_f32();
+    for (n, k, cols) in [(64, 256, 64), (8, 288, 64)] {
+      let bytes = quantize_q4_k(&random(n * k, 1));
+      let bias = random(n, 2);
+      let file = Gguf::with_tensors(&[("w", &[k, n], Type::Q4_K, &bytes)]);
+      let t = file.tensor("w", &[k, n]).unwrap();
+      let wf = t.to_f32().unwrap();
+      let rounded: Vec<f32> = wf.iter().map(half).collect();
+      for gpu in gpus() {
+        let l = gpu.linear(&[file.tensor("w", &[k, n]).unwrap()], &bias).unwrap();
+        assert_eq!(l.ty, 7);
+        for m in [1, 37] {
+          let a = random(m * k, 3);
+          let fast = gpu.tile_rows(n.next_multiple_of(64), m).is_some();
+          let ar: Vec<f32> = if fast { a.iter().map(half).collect() } else { a.clone() };
+          let c = random(m * cols + 1, 4);
+          let ab = up(gpu, &a);
+          for e in [Epilogue::Bias, Epilogue::Silu] {
+            let want: Vec<f32> = (0..c.len())
+              .map(|i| {
+                let (r, j) = (i / cols, i % cols);
+                if r == m {
+                  c[i]
+                } else {
+                  let v = if j < n {
+                    bias[j] + (0..k).map(|x| ar[r * k + x] * rounded[j * k + x]).sum::<f32>()
+                  } else {
+                    0.0
+                  };
+                  epilogue(e, v, c[i])
+                }
+              })
+              .collect();
+            let got = run(gpu, &c, |p, out| p.gemm(&ab, &l, out, m, e));
+            assert_close(&got, &want);
+          }
+        }
+        let a = random(k, 3);
+        let ab = up(gpu, &a);
+        let c = random(3 + cols + 1, 4);
+        let want: Vec<f32> = (0..c.len())
+          .map(|i| match i.checked_sub(3) {
+            Some(j) if j < n => bias[j] + (0..k).map(|x| a[x] * wf[j * k + x]).sum::<f32>(),
+            Some(j) if j < cols => 0.0,
+            _ => c[i],
+          })
+          .collect();
+        assert_close(&run(gpu, &c, |p, out| p.gemv(&ab, &l, out, Epilogue::Bias, 3)), &want);
+      }
+    }
+
+    let (n, k) = (256, 256);
+    let bytes = quantize_q4_k(&random(n * k, 8));
+    let bias = random(n, 2);
+    let file = Gguf::with_tensors(&[("w", &[k, n], Type::Q4_K, &bytes)]);
+    let wf = file.tensor("w", &[k, n]).unwrap().to_f32().unwrap();
+    let pos = random(2 * k, 6);
+    for gpu in gpus() {
+      let l = gpu.linear(&[file.tensor("w", &[k, n]).unwrap()], &bias).unwrap();
+      let pb = up(gpu, &pos);
+      let ids = up(gpu, &[f32::from_bits(1), f32::from_bits(7)]);
+      let want: Vec<f32> = (0..k).map(|i| wf[7 * k + i] + pos[k + i] + bias[i]).collect();
+      assert_close(&run(gpu, &vec![0.0; k], |p, out| p.embed(&l, &pb, out, (&ids, 1), k)), &want);
     }
   }
 

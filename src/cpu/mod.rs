@@ -193,8 +193,9 @@ fn tile<const R: usize, const F: usize>(w: &[f32], z: &[f32], k: usize) -> [[f32
 
 /// Weights `[rows][k]` for `matvecs`. Q8_0, Q5_0 and Q4_0 keep signed codes and one f32 scale per
 /// 32 weights (`q · d`, exact in f32). Q4_1 and Q5_1 expand to f32, because each block also has a
-/// minimum; the flat length has to be a whole number of blocks, or the last row is short. F32 and
-/// F16 stay as f32, as the reference reads them.
+/// minimum; the flat length has to be a whole number of blocks, or the last row is short. Q4_K
+/// expands to f32, because each block also has a minimum. F32 and F16 stay as f32, as the
+/// reference reads them.
 pub enum Matrix {
   Q8(Q8),
   F32 { k: usize, w: Vec<f32> },
@@ -212,7 +213,9 @@ impl Matrix {
       bail!("quantized weights of {n} are not a whole number of blocks");
     }
     Ok(match t.ty {
-      Type::F32 | Type::F16 | Type::Q4_1 | Type::Q5_1 => Self::F32 { k, w: t.to_f32()? },
+      Type::F32 | Type::F16 | Type::Q4_1 | Type::Q5_1 | Type::Q4_K => {
+        Self::F32 { k, w: t.to_f32()? }
+      }
       Type::Q8_0 => Self::Q8(Q8::new(&[t])?),
       Type::Q5_0 => {
         let mut b = Vec::new();
@@ -627,6 +630,7 @@ mod tests {
   #[test]
   fn block32_matches_dot() {
     // Grids that quantize back to themselves. Q4_0 stays on the Q8 tile; Q4_1 and Q5_1 expand.
+    // Q4_K expands too; its block is 256, so it has its own test.
     // 70 rows: a full 64-row block and a short one whose last 4-row group has 2 rows.
     let (k, rows) = (64, 70);
     let x: Vec<f32> = (0..k).map(|i| (i * 31 % 17) as f32 / 8.0 - 1.0).collect();
@@ -655,5 +659,23 @@ mod tests {
       let [got] = super::matvecs([(&w, &x)]);
       assert_eq!(got.into_iter().map(f32::to_bits).collect::<Vec<_>>(), want, "{ty:?}");
     }
+  }
+
+  #[test]
+  fn q4_k_matches_dot() {
+    // Two rows of 256. The expanded f32 row is the dequantized block, and the matvec matches a
+    // dot of that row.
+    let (k, rows) = (256, 2);
+    let v: Vec<f32> = (0..rows * k).map(|i| (i % 19) as f32 / 3.0 - 2.0).collect();
+    let bytes = crate::gguf::quantize_q4_k(&v);
+    let x: Vec<f32> = (0..k).map(|i| (i * 31 % 17) as f32 / 8.0 - 1.0).collect();
+    let g = Gguf::with_tensors(&[("w", &[k, rows], Type::Q4_K, &bytes)]);
+    let t = g.tensor("w", &[k, rows]).unwrap();
+    let deq = t.to_f32().unwrap();
+    let w = super::Matrix::new(&t).unwrap();
+    assert_eq!(w.row(1), deq[k..]);
+    let want: Vec<u32> = deq.chunks_exact(k).map(|r| super::dot(r, &x).to_bits()).collect();
+    let [got] = super::matvecs([(&w, &x)]);
+    assert_eq!(got.into_iter().map(f32::to_bits).collect::<Vec<_>>(), want);
   }
 }

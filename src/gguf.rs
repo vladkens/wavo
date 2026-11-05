@@ -1,6 +1,6 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! GGUF v3 reader: metadata from the header, F32/F16/Q8_0/Q5_0/Q4_0/Q4_1/Q5_1 tensors streamed
-//! from the file.
+//! GGUF v3 reader: metadata from the header, F32/F16/Q8_0/Q5_0/Q4_0/Q4_1/Q5_1/Q4_K tensors
+//! streamed from the file.
 
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -30,6 +30,13 @@ pub enum Type {
   /// Blocks of 32 weights: f16 scale, f16 minimum, 4 high-bit bytes, 16 low nibbles (24 bytes). A
   /// weight is `code · scale + minimum`, with `code` in 0..31.
   Q5_1,
+  /// Blocks of 256 weights: f16 superblock scale, f16 superblock minimum, 12 bytes of 6-bit
+  /// scales and minimums, 128 bytes of nibbles (144 bytes). A weight is
+  /// `code · d · scale - dmin · min`, with `code` in 0..15 and `scale` and `min` in 0..63. The
+  /// element count is a multiple of 256. Blocks follow weight order, so a row whose length is not
+  /// a multiple of 256 shares a block with the next row.
+  #[allow(non_camel_case_types)]
+  Q4_K,
 }
 
 impl Type {
@@ -42,6 +49,7 @@ impl Type {
       6 => Some(Self::Q5_0),
       7 => Some(Self::Q5_1),
       8 => Some(Self::Q8_0),
+      12 => Some(Self::Q4_K),
       _ => None,
     }
   }
@@ -55,6 +63,7 @@ impl Type {
       Self::Q4_0 => n / 32 * 18,
       Self::Q4_1 => n / 32 * 20,
       Self::Q5_1 => n / 32 * 24,
+      Self::Q4_K => n / 256 * 144,
     }
   }
 }
@@ -144,6 +153,83 @@ pub(crate) fn q4_0_packed(block: &[u8; 18]) -> [u8; 16] {
 pub(crate) fn q4_1_packed(block: &[u8; 20]) -> [u8; 16] {
   let qs: &[u8; 16] = block[4..].try_into().unwrap();
   q4_packed(qs)
+}
+
+/// 6-bit scale and minimum of sub-block `j` (0..8) from a Q4_K block's 12 scale bytes.
+pub(crate) fn scale_min_k4(scales: &[u8; 12], j: usize) -> (u8, u8) {
+  if j < 4 {
+    (scales[j] & 63, scales[j + 4] & 63)
+  } else {
+    let scale = (scales[j + 4] & 0x0f) | ((scales[j - 4] >> 6) << 4);
+    let min = (scales[j + 4] >> 4) | ((scales[j] >> 6) << 4);
+    (scale, min)
+  }
+}
+
+/// Eight 6-bit scales and eight 6-bit minimums packed into the 12 byte Q4_K scale field.
+#[cfg(test)]
+fn pack_scales_k4(scale: &[u8; 8], min: &[u8; 8]) -> [u8; 12] {
+  let mut s = [0u8; 12];
+  for j in 0..8 {
+    if j < 4 {
+      s[j] = scale[j];
+      s[j + 4] = min[j];
+    } else {
+      s[j + 4] = (scale[j] & 0x0f) | ((min[j] & 0x0f) << 4);
+      s[j - 4] |= (scale[j] >> 4) << 6;
+      s[j] |= (min[j] >> 4) << 6;
+    }
+  }
+  s
+}
+
+/// Codes 0..15 of one Q4_K block, in weight order. Each 32 bytes hold one group of 32 in the low
+/// nibbles and the next group in the high nibbles.
+pub(crate) fn q4k_codes(qs: &[u8; 128]) -> [u8; 256] {
+  let mut codes = [0u8; 256];
+  for j in (0..256).step_by(64) {
+    for l in 0..32 {
+      let byte = qs[j / 2 + l];
+      codes[j + l] = byte & 0x0f;
+      codes[j + l + 32] = byte >> 4;
+    }
+  }
+  codes
+}
+
+#[cfg(test)]
+fn pack_qs_k4(codes: &[u8; 256]) -> [u8; 128] {
+  let mut qs = [0u8; 128];
+  for j in (0..256).step_by(64) {
+    for l in 0..32 {
+      qs[j / 2 + l] = (codes[j + l] & 0x0f) | (codes[j + l + 32] << 4);
+    }
+  }
+  qs
+}
+
+/// Q4_K nibbles in weight order, 128 bytes per 256 weights.
+pub(crate) fn q4k_packed(block: &[u8; 144]) -> [u8; 128] {
+  let qs: &[u8; 128] = block[16..].try_into().unwrap();
+  let codes = q4k_codes(qs);
+  let mut out = [0u8; 128];
+  for (i, code) in codes.into_iter().enumerate() {
+    out[i / 2] |= code << ((i % 2) * 4);
+  }
+  out
+}
+
+/// Superblock f16 scale and minimum, then the eight decoded scales and eight decoded minimums.
+pub(crate) fn q4k_scales(block: &[u8; 144]) -> [u8; 20] {
+  let mut out = [0u8; 20];
+  out[..4].copy_from_slice(&block[..4]);
+  let scales: &[u8; 12] = block[4..16].try_into().unwrap();
+  for j in 0..8 {
+    let (scale, min) = scale_min_k4(scales, j);
+    out[4 + j] = scale;
+    out[12 + j] = min;
+  }
+  out
 }
 
 /// Largest-magnitude element of a block, the first one when two tie.
@@ -271,6 +357,66 @@ pub(crate) fn quantize_q5_1(w: &[f32]) -> Vec<u8> {
     out.extend(f16::from_f32(min).to_le_bytes());
     out.extend(qh.to_le_bytes());
     out.extend(qs);
+  }
+  out
+}
+
+/// ggml Q4_K over `w`, whose length is a multiple of 256. Each group of 32 is an affine 4-bit
+/// grid whose scale and minimum are then quantized to 6 bits against the largest in the block of
+/// 256. A positive group minimum is pulled down to 0, so the stored minimum stays non-negative.
+#[cfg(test)]
+pub(crate) fn quantize_q4_k(w: &[f32]) -> Vec<u8> {
+  debug_assert!(w.len().is_multiple_of(256));
+  let mut out = Vec::with_capacity(w.len() / 256 * 144);
+  for block in w.as_chunks::<256>().0 {
+    let mut group_scale = [0f32; 8];
+    let mut group_min = [0f32; 8];
+    for j in 0..8 {
+      let sub = &block[j * 32..j * 32 + 32];
+      let (mut min, mut max) = (sub[0], sub[0]);
+      for &x in &sub[1..] {
+        if x < min {
+          min = x;
+        }
+        if x > max {
+          max = x;
+        }
+      }
+      if min > 0.0 {
+        min = 0.0;
+      }
+      group_scale[j] = if max == min { 0.0 } else { (max - min) / 15.0 };
+      group_min[j] = -min;
+    }
+    let max_scale = group_scale.into_iter().fold(0.0, f32::max);
+    let max_min = group_min.into_iter().fold(0.0, f32::max);
+    let d = f16::from_f32(if max_scale > 0.0 { max_scale / 63.0 } else { 0.0 });
+    let dmin = f16::from_f32(if max_min > 0.0 { max_min / 63.0 } else { 0.0 });
+    let (d_s, m_s) = (d.to_f32(), dmin.to_f32());
+    let q6 = |x: f32| (x + 0.5).trunc().clamp(0.0, 63.0) as u8;
+    let mut scale = [0u8; 8];
+    let mut min = [0u8; 8];
+    for j in 0..8 {
+      scale[j] = if d_s == 0.0 { 0 } else { q6(group_scale[j] / d_s) };
+      min[j] = if m_s == 0.0 { 0 } else { q6(group_min[j] / m_s) };
+    }
+    let mut codes = [0u8; 256];
+    for j in 0..8 {
+      let dq = d_s * scale[j] as f32;
+      if dq == 0.0 {
+        continue;
+      }
+      let dm = m_s * min[j] as f32;
+      let id = 1.0 / dq;
+      for l in 0..32 {
+        let x = block[j * 32 + l];
+        codes[j * 32 + l] = ((x + dm) * id + 0.5).trunc().clamp(0.0, 15.0) as u8;
+      }
+    }
+    out.extend(d.to_le_bytes());
+    out.extend(dmin.to_le_bytes());
+    out.extend(pack_scales_k4(&scale, &min));
+    out.extend(pack_qs_k4(&codes));
   }
   out
 }
@@ -410,7 +556,11 @@ impl Gguf {
     };
     g.data = end.next_multiple_of(align);
     for (name, t) in &g.tensors {
-      if g.data + t.offset + t.ty.size(t.dims.iter().product()) > len {
+      let n = t.dims.iter().product::<usize>();
+      if t.ty == Type::Q4_K && !n.is_multiple_of(256) {
+        bail!("tensor {name}: Q4_K has {n} weights, not a multiple of 256");
+      }
+      if g.data + t.offset + t.ty.size(n) > len {
         bail!("tensor {name} is out of file bounds");
       }
     }
@@ -546,6 +696,20 @@ impl Tensor<'_> {
           let d = f16::from_le_bytes([block[0], block[1]]).to_f32();
           let m = f16::from_le_bytes([block[2], block[3]]).to_f32();
           q5_1_codes(block).into_iter().map(move |c| c as f32 * d + m)
+        })
+        .collect(),
+      Type::Q4_K => (b.as_chunks::<144>().0.iter())
+        .flat_map(|block| {
+          let d = f16::from_le_bytes([block[0], block[1]]).to_f32();
+          let min = f16::from_le_bytes([block[2], block[3]]).to_f32();
+          let scales: &[u8; 12] = block[4..16].try_into().unwrap();
+          let qs: &[u8; 128] = block[16..].try_into().unwrap();
+          let codes = q4k_codes(qs);
+          (0..8).flat_map(move |j| {
+            let (scale, m) = scale_min_k4(scales, j);
+            let (d1, m1) = (d * scale as f32, min * m as f32);
+            (0..32).map(move |l| d1 * codes[j * 32 + l] as f32 - m1)
+          })
         })
         .collect(),
     })
@@ -698,6 +862,7 @@ fn ggml_id(ty: Type) -> u32 {
     Type::Q5_0 => 6,
     Type::Q5_1 => 7,
     Type::Q8_0 => 8,
+    Type::Q4_K => 12,
   }
 }
 
@@ -1188,6 +1353,47 @@ mod tests {
     assert_eq!(g.tensor("bias", &[2]).unwrap().to_f32().unwrap(), floats);
     std::fs::remove_file(src).unwrap();
     std::fs::remove_file(dst).unwrap();
+  }
+
+  #[test]
+  fn q4_k_round_trips() {
+    let scale = [1u8, 2, 3, 4, 5, 6, 7, 8];
+    let min = [0u8, 1, 0, 1, 0, 1, 0, 1];
+    let codes = std::array::from_fn(|i| (i % 16) as u8);
+    let mut block = [0u8; 144];
+    block[..2].copy_from_slice(&f16::from_f32(0.5).to_le_bytes());
+    block[2..4].copy_from_slice(&f16::from_f32(0.25).to_le_bytes());
+    block[4..16].copy_from_slice(&pack_scales_k4(&scale, &min));
+    block[16..].copy_from_slice(&pack_qs_k4(&codes));
+    for j in 0..8 {
+      assert_eq!(scale_min_k4(block[4..16].try_into().unwrap(), j), (scale[j], min[j]));
+    }
+    let scales = q4k_scales(&block);
+    assert_eq!(&scales[4..12], &scale);
+    assert_eq!(&scales[12..20], &min);
+    let packed = q4k_packed(&block);
+    for group in 0..64 {
+      let local = group * 4;
+      let word = u32::from_le_bytes(packed[local / 8 * 4..][..4].try_into().unwrap());
+      let bits = (word >> ((local % 8) * 4)) & 0xffff;
+      let got = [
+        (bits & 15) as u8,
+        ((bits >> 4) & 15) as u8,
+        ((bits >> 8) & 15) as u8,
+        ((bits >> 12) & 15) as u8,
+      ];
+      assert_eq!(got, codes[local..local + 4]);
+    }
+    let g = Gguf::with_tensors(&[("q", &[256], Type::Q4_K, &block)]);
+    let expected: Vec<f32> = (0..256)
+      .map(|i| 0.5 * scale[i / 32] as f32 * codes[i] as f32 - 0.25 * min[i / 32] as f32)
+      .collect();
+    assert_eq!(g.tensor("q", &[256]).unwrap().to_f32().unwrap(), expected);
+
+    let zeros = quantize_q4_k(&[0.0; 256]);
+    assert_eq!(zeros, vec![0u8; 144]);
+    let g = Gguf::with_tensors(&[("z", &[256], Type::Q4_K, &zeros)]);
+    assert_eq!(g.tensor("z", &[256]).unwrap().to_f32().unwrap(), vec![0.0; 256]);
   }
 
   #[test]
