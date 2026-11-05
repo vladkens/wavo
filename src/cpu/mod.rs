@@ -546,13 +546,19 @@ mod tests {
   fn matrices_load_every_tensor_type() {
     // 70 rows of 64 weights q/8 with q in -15..=15: exact in all three types, Q8_0 with scale 1/8.
     let (k, rows) = (64, 70);
-    let v: Vec<f32> = (0..rows * k).map(|i| (i * 7919 % 31) as f32 / 8.0 - 15.0 / 8.0).collect();
+    let v: Vec<f32> = (0..rows * k)
+      .map(|i| {
+        let d = 0.5 * (1 + ((i / 32) % 3)) as f32;
+        ((i % 31) as f32 - 15.0) * d
+      })
+      .collect();
     let f32s: Vec<u8> = v.iter().flat_map(|v| v.to_le_bytes()).collect();
     let f16s: Vec<u8> = v.iter().flat_map(|&v| f16::from_f32(v).to_le_bytes()).collect();
     let mut q8 = Vec::new();
-    for b in v.as_chunks::<32>().0 {
-      q8.extend(f16::from_f32(0.125).to_le_bytes());
-      q8.extend(b.map(|v| (v * 8.0) as i8 as u8));
+    for (i, b) in v.as_chunks::<32>().0.iter().enumerate() {
+      let d = 0.5 * (1 + (i % 3)) as f32;
+      q8.extend(f16::from_f32(d).to_le_bytes());
+      q8.extend(b.map(|v| (v / d) as i8 as u8));
     }
 
     let x: Vec<f32> = (0..k).map(|i| (i * 31 % 17) as f32 / 8.0 - 1.0).collect();
@@ -560,7 +566,9 @@ mod tests {
     for (ty, bytes) in [(Type::F32, f32s), (Type::F16, f16s), (Type::Q8_0, q8)] {
       let g = Gguf::with_tensors(&[("w", &[k, rows], ty, &bytes)]);
       let w = super::Matrix::new(&g.tensor("w", &[k, rows]).unwrap()).unwrap();
-      assert_eq!(w.row(69), v[69 * k..], "{ty:?}");
+      for r in 0..rows {
+        assert_eq!(w.row(r), v[r * k..(r + 1) * k], "{ty:?}, row {r}");
+      }
       let [got] = super::matvecs([(&w, &x)]);
       assert_eq!(got.into_iter().map(f32::to_bits).collect::<Vec<_>>(), want, "{ty:?}");
     }
@@ -571,13 +579,20 @@ mod tests {
     // Each block is codes 0..31 at scale 0.5, which quantizes back to itself. 70 rows: a full
     // 64-row block and a short one whose last 4-row group has 2 rows.
     let (k, rows) = (64, 70);
-    let v: Vec<f32> = (0..rows * k).map(|i| (i % 32) as f32 * 0.5 - 8.0).collect();
+    let v: Vec<f32> = (0..rows * k)
+      .map(|i| {
+        let d = 0.5 * (1 + ((i / 32) % 3)) as f32;
+        ((i % 32) as f32 - 16.0) * d
+      })
+      .collect();
     let q5 = crate::gguf::quantize_q5_0(&v);
     let x: Vec<f32> = (0..k).map(|i| (i * 31 % 17) as f32 / 8.0 - 1.0).collect();
     let want: Vec<u32> = v.chunks_exact(k).map(|r| super::dot(r, &x).to_bits()).collect();
     let g = Gguf::with_tensors(&[("w", &[k, rows], Type::Q5_0, &q5)]);
     let w = super::Matrix::new(&g.tensor("w", &[k, rows]).unwrap()).unwrap();
-    assert_eq!(w.row(69), v[69 * k..]);
+    for r in 0..rows {
+      assert_eq!(w.row(r), v[r * k..(r + 1) * k], "row {r}");
+    }
     let [got] = super::matvecs([(&w, &x)]);
     assert_eq!(got.into_iter().map(f32::to_bits).collect::<Vec<_>>(), want);
   }
@@ -588,12 +603,16 @@ mod tests {
     // 70 rows: a full 64-row block and a short one whose last 4-row group has 2 rows.
     let (k, rows) = (64, 70);
     let x: Vec<f32> = (0..k).map(|i| (i * 31 % 17) as f32 / 8.0 - 1.0).collect();
-    let cases = [
-      (Type::Q4_0, (0..rows * k).map(|i| (i % 16) as f32 - 8.0).collect::<Vec<_>>()),
-      (Type::Q4_1, (0..rows * k).map(|i| (i % 16) as f32 - 1.0).collect::<Vec<_>>()),
-      (Type::Q5_1, (0..rows * k).map(|i| (i % 32) as f32).collect::<Vec<_>>()),
-    ];
-    for (ty, v) in cases {
+    for (ty, levels, offset) in
+      [(Type::Q4_0, 16, -8.0), (Type::Q4_1, 16, -1.0), (Type::Q5_1, 32, 0.0)]
+    {
+      let v: Vec<f32> = (0..rows * k)
+        .map(|i| {
+          let scale = 0.5 * (1 + ((i / 32) % 3)) as f32;
+          let code = (i % levels) as f32;
+          if ty == Type::Q4_0 { (code - 8.0) * scale } else { code * scale + offset }
+        })
+        .collect();
       let bytes = match ty {
         Type::Q4_0 => crate::gguf::quantize_q4_0(&v),
         Type::Q4_1 => crate::gguf::quantize_q4_1(&v),
@@ -603,7 +622,9 @@ mod tests {
       let want: Vec<u32> = v.chunks_exact(k).map(|r| super::dot(r, &x).to_bits()).collect();
       let g = Gguf::with_tensors(&[("w", &[k, rows], ty, &bytes)]);
       let w = super::Matrix::new(&g.tensor("w", &[k, rows]).unwrap()).unwrap();
-      assert_eq!(w.row(69), v[69 * k..], "{ty:?}");
+      for r in 0..rows {
+        assert_eq!(w.row(r), v[r * k..(r + 1) * k], "{ty:?}, row {r}");
+      }
       let [got] = super::matvecs([(&w, &x)]);
       assert_eq!(got.into_iter().map(f32::to_bits).collect::<Vec<_>>(), want, "{ty:?}");
     }

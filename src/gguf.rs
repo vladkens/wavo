@@ -943,6 +943,11 @@ mod tests {
     // −16..15 is an exact grid: the scale is 1 and the codes are 0..31.
     let grid: Vec<f32> = (0i32..32).map(|i| (i - 16) as f32).collect();
     assert_eq!(quantize_q5_0(&grid), q5_block(codes, 1.0));
+    let mut off_grid = grid.clone();
+    off_grid[1] = 2.7;
+    let q = quantize_q5_0(&off_grid);
+    let g = Gguf::with_tensors(&[("o", &[32], Type::Q5_0, &q)]);
+    assert_eq!(g.tensor("o", &[32]).unwrap().to_f32().unwrap()[1], 3.0);
 
     let packed = q5_packed(&block);
     for group in 0..8 {
@@ -965,6 +970,15 @@ mod tests {
     let got = g.tensor("t", &[32]).unwrap().to_f32().unwrap();
     assert_eq!(got[0], 8.0);
     assert_eq!(got[1], -7.5);
+  }
+
+  #[test]
+  fn q5_0_second_half_high_bits() {
+    let codes: [u8; 32] = std::array::from_fn(|i| ((i * 7) % 32) as u8);
+    let block = q5_block(codes, 0.5);
+    let g = Gguf::with_tensors(&[("q", &[32], Type::Q5_0, &block)]);
+    let expected: Vec<f32> = codes.iter().map(|&c| (c as f32 - 16.0) * 0.5).collect();
+    assert_eq!(g.tensor("q", &[32]).unwrap().to_f32().unwrap(), expected);
   }
 
   /// One Q4_0 block: f16 scale, then weight `j` in the low nibble and `j + 16` in the high one.
@@ -1025,6 +1039,11 @@ mod tests {
     let g = Gguf::with_tensors(&[("q", &[32], Type::Q4_0, &block)]);
     let expected: Vec<f32> = (0..32).map(|i| ((i % 16) as f32 - 8.0) * 0.5).collect();
     assert_eq!(g.tensor("q", &[32]).unwrap().to_f32().unwrap(), expected);
+    let distinct: [u8; 32] = std::array::from_fn(|i| if i < 16 { i as u8 } else { (31 - i) as u8 });
+    let distinct_block = q4_0_block(distinct, 0.5);
+    let g = Gguf::with_tensors(&[("q", &[32], Type::Q4_0, &distinct_block)]);
+    let expected: Vec<f32> = distinct.iter().map(|&c| (c as f32 - 8.0) * 0.5).collect();
+    assert_eq!(g.tensor("q", &[32]).unwrap().to_f32().unwrap(), expected);
 
     // −8..7 twice is an exact grid: the scale is 1 and each half is codes 0..15.
     let grid: Vec<f32> = (0..32).map(|i| (i % 16) as f32 - 8.0).collect();
@@ -1060,6 +1079,11 @@ mod tests {
     let block = q4_1_block(codes, 1.0, -1.0);
     let g = Gguf::with_tensors(&[("q", &[32], Type::Q4_1, &block)]);
     let expected: Vec<f32> = (0..32).map(|i| (i % 16) as f32 - 1.0).collect();
+    assert_eq!(g.tensor("q", &[32]).unwrap().to_f32().unwrap(), expected);
+    let distinct: [u8; 32] = std::array::from_fn(|i| if i < 16 { i as u8 } else { (31 - i) as u8 });
+    let distinct_block = q4_1_block(distinct, 0.5, -2.0);
+    let g = Gguf::with_tensors(&[("q", &[32], Type::Q4_1, &distinct_block)]);
+    let expected: Vec<f32> = distinct.iter().map(|&c| c as f32 * 0.5 - 2.0).collect();
     assert_eq!(g.tensor("q", &[32]).unwrap().to_f32().unwrap(), expected);
 
     let grid: Vec<f32> = (0..32).map(|i| (i % 16) as f32 - 1.0).collect();
