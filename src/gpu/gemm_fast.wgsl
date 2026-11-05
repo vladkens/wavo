@@ -32,6 +32,9 @@ struct Params {
   alpha: f32,
   dual: u32,
   offset: u32,
+  // Q4 and Q5 conv rows shorter than `k`: the file's blocks use this stride, and columns from
+  // here to `k` are zero. 0 means the stored row is already `k` wide.
+  src_k: u32,
 }
 
 var<immediate> p: Params;
@@ -117,6 +120,72 @@ fn q51_4(x: u32) -> vec4<f32> {
   return q5_codes4(x) * s.x + s.y;
 }
 
+fn src_stride() -> u32 {
+  return select(p.k, p.src_k, p.src_k != 0u);
+}
+
+fn lane(v: vec4<f32>, x: u32) -> f32 {
+  switch x & 3u {
+    case 0u: { return v.x; }
+    case 1u: { return v.y; }
+    case 2u: { return v.z; }
+    default: { return v.w; }
+  }
+}
+
+fn q4_one(e: u32) -> f32 { return lane(q4_4(e & ~3u), e); }
+fn q5_one(e: u32) -> f32 { return lane(q5_4(e & ~3u), e); }
+fn q41_one(e: u32) -> f32 { return lane(q41_4(e & ~3u), e); }
+fn q51_one(e: u32) -> f32 { return lane(q51_4(e & ~3u), e); }
+
+fn q4_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) { return q4_4(row * p.k + col); }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q4_one(e), col < src),
+    select(0.0, q4_one(e + 1u), col + 1u < src),
+    select(0.0, q4_one(e + 2u), col + 2u < src),
+    select(0.0, q4_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn q5_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) { return q5_4(row * p.k + col); }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q5_one(e), col < src),
+    select(0.0, q5_one(e + 1u), col + 1u < src),
+    select(0.0, q5_one(e + 2u), col + 2u < src),
+    select(0.0, q5_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn q41_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) { return q41_4(row * p.k + col); }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q41_one(e), col < src),
+    select(0.0, q41_one(e + 1u), col + 1u < src),
+    select(0.0, q41_one(e + 2u), col + 2u < src),
+    select(0.0, q41_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn q51_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) { return q51_4(row * p.k + col); }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q51_one(e), col < src),
+    select(0.0, q51_one(e + 1u), col + 1u < src),
+    select(0.0, q51_one(e + 2u), col + 2u < src),
+    select(0.0, q51_one(e + 3u), col + 3u < src),
+  );
+}
+
 // Stages a[m0 + i / (KS / 4)][k0 + i % (KS / 4) · 4 ..+4].
 fn stage_a(m0: u32, k0: u32, i: u32) {
   let r = i / (KS / 4u);
@@ -142,10 +211,10 @@ fn stage_w(n0: u32, k0: u32, i: u32) {
     switch WTYPE {
       case 0u: { v = bitcast<vec4<f32>>(vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u])); }
       case 1u: { v = vec4(unpack2x16float(w[x / 2u]), unpack2x16float(w[x / 2u + 1u])); }
-      case 3u: { v = q5_4(x); }
-      case 4u: { v = q4_4(x); }
-      case 5u: { v = q41_4(x); }
-      case 6u: { v = q51_4(x); }
+      case 3u: { v = q5_at(n0 + r, k0 + kk); }
+      case 4u: { v = q4_at(n0 + r, k0 + kk); }
+      case 5u: { v = q41_at(n0 + r, k0 + kk); }
+      case 6u: { v = q51_at(n0 + r, k0 + kk); }
       default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
     }
   }

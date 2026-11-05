@@ -1,7 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 // Linear layer c = epilogue(a·Wᵀ + bias): `a` is row-major [m][k] F32, W is [n][k] in its GGUF
 // type. A workgroup computes a ROWS×128 tile of c. K advances 32 per step (one block of 32). W
-// has a multiple of 64 rows and k % 32 == 0; c's rows are n + dual
+// has a multiple of 64 rows and k is a multiple of 32. A Q4 or Q5 conv whose stored row is
+// shorter sets `src_k`; columns from there to `k` are zero. c's rows are n + dual
 // wide, and outputs from n on (W's zero rows) are not written. W and `a` are rounded to f16, as
 // ggml-metal's `kernel_mul_mm` (`ggml/src/ggml-metal/kernels/mul_mm.metal`) does. Without the
 // rounding of W, near-ties (one CTC frame of e2e-ctc on ru-short) fall on the other side; without
@@ -26,6 +27,9 @@ struct Params {
   dual: u32,
   // gemv: c's first output; embed: the first float of the position's row in `a`.
   offset: u32,
+  // Q4 and Q5 conv rows shorter than `k`: the file's blocks use this stride, and columns from
+  // here to `k` are zero. 0 means the stored row is already `k` wide.
+  src_k: u32,
 }
 
 var<immediate> p: Params;
@@ -110,6 +114,84 @@ fn q51_4(x: u32) -> vec4<f32> {
   return q5_codes4(x) * s.x + s.y;
 }
 
+// Stride of a stored Q4 or Q5 row. Padded conv columns are not stored.
+fn src_stride() -> u32 {
+  return select(p.k, p.src_k, p.src_k != 0u);
+}
+
+fn q4_one(e: u32) -> f32 {
+  return lane(q4_4(e & ~3u), e);
+}
+
+fn q5_one(e: u32) -> f32 {
+  return lane(q5_4(e & ~3u), e);
+}
+
+fn q41_one(e: u32) -> f32 {
+  return lane(q41_4(e & ~3u), e);
+}
+
+fn q51_one(e: u32) -> f32 {
+  return lane(q51_4(e & ~3u), e);
+}
+
+// Four Q4 weights at `col` of a stored row. A row that already fills `k` is one aligned load.
+fn q4_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) {
+    return q4_4(row * p.k + col);
+  }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q4_one(e), col < src),
+    select(0.0, q4_one(e + 1u), col + 1u < src),
+    select(0.0, q4_one(e + 2u), col + 2u < src),
+    select(0.0, q4_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn q5_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) {
+    return q5_4(row * p.k + col);
+  }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q5_one(e), col < src),
+    select(0.0, q5_one(e + 1u), col + 1u < src),
+    select(0.0, q5_one(e + 2u), col + 2u < src),
+    select(0.0, q5_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn q41_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) {
+    return q41_4(row * p.k + col);
+  }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q41_one(e), col < src),
+    select(0.0, q41_one(e + 1u), col + 1u < src),
+    select(0.0, q41_one(e + 2u), col + 2u < src),
+    select(0.0, q41_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn q51_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) {
+    return q51_4(row * p.k + col);
+  }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q51_one(e), col < src),
+    select(0.0, q51_one(e + 1u), col + 1u < src),
+    select(0.0, q51_one(e + 2u), col + 2u < src),
+    select(0.0, q51_one(e + 3u), col + 3u < src),
+  );
+}
+
 fn lane(v: vec4<f32>, x: u32) -> f32 {
   switch x & 3u {
     case 0u: { return v.x; }
@@ -176,10 +258,10 @@ fn w_words(n: u32, k: u32) -> vec4<u32> {
   switch WTYPE {
     case 0u: { return vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u]); }
     case 1u: { return vec4(w[x / 2u], w[x / 2u + 1u], 0u, 0u); }
-    case 3u: { return bitcast<vec4<u32>>(q5_4(x)); }
-    case 4u: { return bitcast<vec4<u32>>(q4_4(x)); }
-    case 5u: { return bitcast<vec4<u32>>(q41_4(x)); }
-    case 6u: { return bitcast<vec4<u32>>(q51_4(x)); }
+    case 3u: { return bitcast<vec4<u32>>(q5_at(n, k)); }
+    case 4u: { return bitcast<vec4<u32>>(q4_at(n, k)); }
+    case 5u: { return bitcast<vec4<u32>>(q41_at(n, k)); }
+    case 6u: { return bitcast<vec4<u32>>(q51_at(n, k)); }
     default: { return vec4(w[x / 4u], scales[x / 64u], (x / 32u) & 1u, 0u); }
   }
 }
@@ -325,10 +407,10 @@ fn dot8(row: u32, j: u32, a0: vec4<f32>, a1: vec4<f32>) -> f32 {
       let w0 = vec4(unpack2x16float(w[h]), unpack2x16float(w[h + 1u]));
       return dot(w0, a0) + dot(vec4(unpack2x16float(w[h + 2u]), unpack2x16float(w[h + 3u])), a1);
     }
-    case 3u: { return dot(q5_4(x), a0) + dot(q5_4(x + 4u), a1); }
-    case 4u: { return dot(q4_4(x), a0) + dot(q4_4(x + 4u), a1); }
-    case 5u: { return dot(q41_4(x), a0) + dot(q41_4(x + 4u), a1); }
-    case 6u: { return dot(q51_4(x), a0) + dot(q51_4(x + 4u), a1); }
+    case 3u: { return dot(q5_at(row, 8u * j), a0) + dot(q5_at(row, 8u * j + 4u), a1); }
+    case 4u: { return dot(q4_at(row, 8u * j), a0) + dot(q4_at(row, 8u * j + 4u), a1); }
+    case 5u: { return dot(q41_at(row, 8u * j), a0) + dot(q41_at(row, 8u * j + 4u), a1); }
+    case 6u: { return dot(q51_at(row, 8u * j), a0) + dot(q51_at(row, 8u * j + 4u), a1); }
     default: {
       let q = x / 4u;
       let d = dot(vec4<f32>(unpack4xI8(w[q])), a0) + dot(vec4<f32>(unpack4xI8(w[q + 1u])), a1);
@@ -389,16 +471,21 @@ fn embed(@builtin(global_invocation_id) id: vec3<u32>) {
   if (i >= p.k) {
     return;
   }
-  let x = ids[p.m] * p.k + i;
+  let src = src_stride();
+  let x = ids[p.m] * src + i;
   var v: f32;
-  switch WTYPE {
-    case 0u: { v = bitcast<f32>(w[x]); }
-    case 1u: { v = unpack2x16float(w[x / 2u])[x % 2u]; }
-    case 3u: { v = lane(q5_4(x & ~3u), x); }
-    case 4u: { v = lane(q4_4(x & ~3u), x); }
-    case 5u: { v = lane(q41_4(x & ~3u), x); }
-    case 6u: { v = lane(q51_4(x & ~3u), x); }
-    default: { v = f32(unpack4xI8(w[x / 4u])[x % 4u]) * scale(x / 32u); }
+  if (p.src_k != 0u && i >= p.src_k) {
+    v = 0.0;
+  } else {
+    switch WTYPE {
+      case 0u: { v = bitcast<f32>(w[x]); }
+      case 1u: { v = unpack2x16float(w[x / 2u])[x % 2u]; }
+      case 3u: { v = q5_one(x); }
+      case 4u: { v = q4_one(x); }
+      case 5u: { v = q41_one(x); }
+      case 6u: { v = q51_one(x); }
+      default: { v = f32(unpack4xI8(w[x / 4u])[x % 4u]) * scale(x / 32u); }
+    }
   }
   c[i] = v + a[p.offset + i] + bias[i];
 }

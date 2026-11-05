@@ -19,6 +19,9 @@ struct Params {
   uint mode;
   float alpha;
   uint dual;
+  uint offset;
+  // Q4 and Q5 conv rows shorter than `k`. 0 means the stored row is already `k` wide.
+  uint src_k;
 };
 
 constant constexpr int ROWS = 128;
@@ -121,7 +124,24 @@ kernel void gemm(constant Params &p [[buffer(0)]], device half *a [[buffer(1)]],
   for (int k0 = 0; k0 < k; k0 += KS) {
     const int x = (n0 + r) * k + k0 + kc;
     for (short j = 0; j < 4; j++) {
-      if (WTYPE == 0) {
+      const int col = k0 + kc + 4 * j;
+      if (p.src_k != 0 && WTYPE >= 3) {
+        float4 v = 0;
+        const int base = (n0 + r) * (int)p.src_k + col;
+        for (int i = 0; i < 4; i++) {
+          if (col + i < (int)p.src_k) {
+            const int e = base + i;
+            const int a = e & ~3;
+            float4 q;
+            if (WTYPE == 3) q = q5_4((device const uchar *)w, scales, a);
+            else if (WTYPE == 4) q = q4_4((device const uchar *)w, scales, a);
+            else if (WTYPE == 5) q = q41_4((device const uchar *)w, scales, a);
+            else q = q51_4((device const uchar *)w, scales, a);
+            v[i] = q[e & 3];
+          }
+        }
+        dst[j] = half4(v);
+      } else if (WTYPE == 0) {
         dst[j] = half4(((device const float4 *)w)[x / 4 + j]);
       } else if (WTYPE == 1) {
         dst[j] = ((device const half4 *)w)[x / 4 + j];

@@ -40,15 +40,17 @@ fn gemm64(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index)
     // Each thread loads 8 weights: element e of the tile is W[n0 + e / 32][k0 + e % 32].
     for (var i = 0u; i < 2u; i++) {
       let e = (lid + i * 256u) * 4u;
-      let x = (n0 + e / 32u) * p.k + k0 + e % 32u;
+      let row = n0 + e / 32u;
+      let col = k0 + e % 32u;
+      let x = row * p.k + col;
       var v: vec4<f32>;
       switch WTYPE {
         case 0u: { v = bitcast<vec4<f32>>(vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u])); }
         case 1u: { v = vec4(unpack2x16float(w[x / 2u]), unpack2x16float(w[x / 2u + 1u])); }
-        case 3u: { v = q5_4(x); }
-        case 4u: { v = q4_4(x); }
-        case 5u: { v = q41_4(x); }
-        case 6u: { v = q51_4(x); }
+        case 3u: { v = q5_at(row, col); }
+        case 4u: { v = q4_at(row, col); }
+        case 5u: { v = q41_at(row, col); }
+        case 6u: { v = q51_at(row, col); }
         default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
       }
       let o = e / 32u * S + e % 32u;
