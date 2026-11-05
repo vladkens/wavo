@@ -1436,8 +1436,9 @@ fn compile_tensor(device: &wgpu::Device) -> Option<TensorGemm> {
       cache: None,
     })
   };
+  // `cast` takes its length. The GEMM takes m, n, k, mode, alpha, dual, offset, and src_k.
   let cast = pipeline("cast", 2, 1, 4);
-  let gemm = names[1..].iter().map(|n| pipeline(n, 5, 2, 24)).collect();
+  let gemm = names[1..].iter().map(|n| pipeline(n, 5, 2, 32)).collect();
   let errors = scopes.into_iter().rev().filter_map(|s| pollster::block_on(s.pop())).count();
   (errors == 0).then_some(TensorGemm { cast, gemm })
 }
