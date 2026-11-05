@@ -729,12 +729,114 @@ pub(crate) struct Q5Write {
   pub dst_bytes: u64,
 }
 
+/// Q8_0 tensors rewritten by [`write_q4_k`].
+#[cfg(test)]
+pub(crate) struct Q4Write {
+  /// Tensors stored as Q4_K.
+  pub q4: usize,
+  /// Weights in those tensors.
+  pub q4_elements: usize,
+  /// Tensors stored as Q5_0.
+  pub q5: usize,
+  /// Weights in those tensors.
+  pub q5_elements: usize,
+  /// Bytes of the source file.
+  pub src_bytes: u64,
+  /// Bytes of the written file.
+  pub dst_bytes: u64,
+}
+
 /// Writes `src` to `dst`, re-quantizing each Q8_0 tensor to Q5_0 when its row length
 /// (`len / dims.last()`) is a multiple of 32. The codes are round-to-nearest on the dequantized
 /// Q8_0 values. Other tensors are copied. Metadata is copied; a `general.file_type` of 7 (mostly
 /// Q8_0) becomes 8 (mostly Q5_0).
 #[cfg(test)]
 pub(crate) fn write_q5_0(src: &Path, dst: &Path) -> Result<Q5Write> {
+  let wrote = rewrite(
+    src,
+    dst,
+    |_, dims| {
+      let row = row_len(dims);
+      (row >= 32 && row.is_multiple_of(32)).then_some(Type::Q5_0)
+    },
+    Label::Q5,
+  )?;
+  Ok(Q5Write {
+    converted: wrote.converted,
+    elements: wrote.elements,
+    src_bytes: wrote.src_bytes,
+    dst_bytes: wrote.dst_bytes,
+  })
+}
+
+/// Writes `src` to `dst`. A Q8_0 tensor whose row length is a multiple of 32 becomes Q4_K when
+/// it holds a multiple of 256 weights and `q5` returns false. It becomes Q5_0 when `q5` returns
+/// true, and when the count is not a multiple of 256. The codes are round-to-nearest on the
+/// dequantized Q8_0 values. Other tensors are copied. A `general.file_type` of 7 becomes 14 when
+/// every converted tensor is Q4_K, and 15 when any is Q5_0.
+#[cfg(test)]
+pub(crate) fn write_q4_k(src: &Path, dst: &Path, q5: impl Fn(&str) -> bool) -> Result<Q4Write> {
+  let wrote = rewrite(
+    src,
+    dst,
+    |name, dims| {
+      let row = row_len(dims);
+      if row < 32 || !row.is_multiple_of(32) {
+        return None;
+      }
+      let n = dims.iter().product::<usize>();
+      if q5(name) || !n.is_multiple_of(256) { Some(Type::Q5_0) } else { Some(Type::Q4_K) }
+    },
+    Label::Q4,
+  )?;
+  Ok(Q4Write {
+    q4: wrote.q4,
+    q4_elements: wrote.q4_elements,
+    q5: wrote.q5,
+    q5_elements: wrote.q5_elements,
+    src_bytes: wrote.src_bytes,
+    dst_bytes: wrote.dst_bytes,
+  })
+}
+
+#[cfg(test)]
+fn row_len(dims: &[usize]) -> usize {
+  let n = dims.iter().product::<usize>();
+  match dims.last() {
+    Some(&d) if d > 0 => n / d,
+    _ => 0,
+  }
+}
+
+/// What a `general.file_type` of 7 is rewritten to.
+#[cfg(test)]
+enum Label {
+  /// Mostly Q5_0, file type 8.
+  Q5,
+  /// Mostly Q4_K. File type 14 when every converted tensor is Q4_K, 15 when any is Q5_0.
+  Q4,
+}
+
+#[cfg(test)]
+struct Rewritten {
+  converted: usize,
+  elements: usize,
+  q4: usize,
+  q4_elements: usize,
+  q5: usize,
+  q5_elements: usize,
+  src_bytes: u64,
+  dst_bytes: u64,
+}
+
+/// Copies `src` to `dst`. `pick` chooses a new type for each Q8_0 tensor, or `None` to copy it.
+#[cfg(test)]
+fn rewrite(
+  src: &Path,
+  dst: &Path,
+  pick: impl Fn(&str, &[usize]) -> Option<Type>,
+  label: Label,
+) -> Result<Rewritten> {
   use std::io::Write;
 
   let src_bytes = std::fs::metadata(src)?.len();
@@ -768,6 +870,10 @@ pub(crate) fn write_q5_0(src: &Path, dst: &Path) -> Result<Q5Write> {
 
   let mut converted = 0;
   let mut elements = 0;
+  let mut q4 = 0;
+  let mut q4_elements = 0;
+  let mut q5 = 0;
+  let mut q5_elements = 0;
   let mut tensors = Vec::with_capacity(n_tensors);
   for _ in 0..n_tensors {
     let name = r.string()?;
@@ -777,15 +883,28 @@ pub(crate) fn write_q5_0(src: &Path, dst: &Path) -> Result<Q5Write> {
     let Some(ty) = Type::from_ggml(id) else { bail!("tensor {name}: unsupported ggml type {id}") };
     _ = r.u64()?;
     let n = dims.iter().product::<usize>();
-    let row = match dims.last() {
-      Some(&d) if d > 0 => n / d,
-      _ => 0,
-    };
+    let row = row_len(&dims);
     let tensor = g.tensor(&name, &dims)?;
-    let (ty, bytes) = if ty == Type::Q8_0 && row >= 32 && row.is_multiple_of(32) {
+    let dest = if ty == Type::Q8_0 { pick(&name, &dims) } else { None };
+    let (ty, bytes) = if let Some(dest) = dest {
+      let values = tensor.to_f32()?;
+      let row_ok = row >= 32 && row.is_multiple_of(32);
+      let bytes = match dest {
+        Type::Q5_0 if row_ok => {
+          q5 += 1;
+          q5_elements += n;
+          quantize_q5_0(&values)
+        }
+        Type::Q4_K if row_ok && n.is_multiple_of(256) => {
+          q4 += 1;
+          q4_elements += n;
+          quantize_q4_k(&values)
+        }
+        other => bail!("tensor {name}: {n} weights cannot be stored as {other:?}"),
+      };
       converted += 1;
       elements += n;
-      (Type::Q5_0, quantize_q5_0(&tensor.to_f32()?))
+      (dest, bytes)
     } else {
       let mut bytes = vec![0u8; ty.size(n)];
       if !bytes.is_empty() {
@@ -813,7 +932,15 @@ pub(crate) fn write_q5_0(src: &Path, dst: &Path) -> Result<Q5Write> {
     .collect();
 
   let mut header = g.head[..meta_end].to_vec();
-  if let Some((pos, ty)) = file_type {
+  let replacement = match label {
+    Label::Q5 => Some(8u64),
+    Label::Q4 if q5 > 0 => Some(15),
+    Label::Q4 if q4 > 0 => Some(14),
+    Label::Q4 => None,
+  };
+  if let Some(id) = replacement
+    && let Some((pos, ty)) = file_type
+  {
     let width = if ty == 10 || ty == 11 { 8 } else { 4 };
     let cur = if width == 8 {
       u64::from_le_bytes(header[pos..pos + 8].try_into().unwrap())
@@ -821,7 +948,7 @@ pub(crate) fn write_q5_0(src: &Path, dst: &Path) -> Result<Q5Write> {
       u32::from_le_bytes(header[pos..pos + 4].try_into().unwrap()) as u64
     };
     if cur == 7 {
-      header[pos..pos + width].copy_from_slice(&8u64.to_le_bytes()[..width]);
+      header[pos..pos + width].copy_from_slice(&id.to_le_bytes()[..width]);
     }
   }
   for (name, dims, ty, at, _) in &placed {
@@ -848,7 +975,16 @@ pub(crate) fn write_q5_0(src: &Path, dst: &Path) -> Result<Q5Write> {
     cursor = at + bytes.len();
   }
   file.flush()?;
-  Ok(Q5Write { converted, elements, src_bytes, dst_bytes: (header.len() + cursor) as u64 })
+  Ok(Rewritten {
+    converted,
+    elements,
+    q4,
+    q4_elements,
+    q5,
+    q5_elements,
+    src_bytes,
+    dst_bytes: (header.len() + cursor) as u64,
+  })
 }
 
 /// ggml type id of `ty`.
@@ -1353,6 +1489,101 @@ mod tests {
     assert_eq!(g.tensor("bias", &[2]).unwrap().to_f32().unwrap(), floats);
     std::fs::remove_file(src).unwrap();
     std::fs::remove_file(dst).unwrap();
+  }
+
+  /// Eight Q8_0 rows on the −16..15 grid become one Q4_K block. A tensor named in `q5` stays
+  /// Q5_0, a 64-weight tensor is too short for Q4_K and stays Q5_0, a one-dimensional block is
+  /// copied, and an F32 tensor is copied. `general.file_type` 7 becomes 15 for that mix and 14
+  /// when every converted tensor is Q4_K.
+  #[test]
+  fn write_q4_k_repacks_blocks() {
+    let grid: [i8; 32] = std::array::from_fn(|i| i as i8 - 16);
+    let mut q8 = [0u8; 34];
+    q8[..2].copy_from_slice(&f16::from_f32(1.0).to_le_bytes());
+    for (i, v) in grid.iter().enumerate() {
+      q8[2 + i] = *v as u8;
+    }
+    let weights = q8.repeat(8);
+    let tail = q8.repeat(2);
+    let floats = [1.5f32, -2.0];
+    let values = |n: usize| grid.iter().map(|&v| v as f32).cycle().take(n).collect::<Vec<_>>();
+    let dequant = |ty: Type, dims: &[usize], bytes: &[u8]| {
+      Gguf::with_tensors(&[("t", dims, ty, bytes)]).tensor("t", dims).unwrap().to_f32().unwrap()
+    };
+    let q4 = dequant(Type::Q4_K, &[32, 8], &quantize_q4_k(&values(256)));
+    let q5_wide = dequant(Type::Q5_0, &[32, 8], &quantize_q5_0(&values(256)));
+    let q5_tail = dequant(Type::Q5_0, &[32, 2], &quantize_q5_0(&values(64)));
+
+    let build = |parts: &[(&str, &[u64], u32, &[u8])]| {
+      let mut data = Vec::new();
+      let mut placed = Vec::new();
+      for (name, dims, ty, bytes) in parts {
+        let at = data.len().next_multiple_of(32);
+        data.resize(at, 0);
+        placed.push((*name, *dims, *ty, at as u64));
+        data.extend(*bytes);
+      }
+      let mut f = b"GGUF".to_vec();
+      f.extend(3u32.to_le_bytes());
+      f.extend((parts.len() as u64).to_le_bytes());
+      f.extend(1u64.to_le_bytes());
+      string(&mut f, "general.file_type");
+      f.extend(4u32.to_le_bytes());
+      f.extend(7u32.to_le_bytes());
+      for (name, dims, ty, at) in placed {
+        string(&mut f, name);
+        f.extend((dims.len() as u32).to_le_bytes());
+        for d in dims {
+          f.extend(d.to_le_bytes());
+        }
+        f.extend(ty.to_le_bytes());
+        f.extend(at.to_le_bytes());
+      }
+      f.resize(f.len().next_multiple_of(32), 0);
+      f.extend(data);
+      f
+    };
+    let open = |bytes: &[u8], tag: &str, q5: fn(&str) -> bool| {
+      let dir = std::env::temp_dir();
+      let src = dir.join(format!("wavo-q4-src-{tag}-{}", std::process::id()));
+      let dst = dir.join(format!("wavo-q4-dst-{tag}-{}", std::process::id()));
+      std::fs::write(&src, bytes).unwrap();
+      let wrote = write_q4_k(&src, &dst, q5).unwrap();
+      let g = Gguf::open(&dst).unwrap();
+      assert_eq!(wrote.src_bytes, std::fs::metadata(&src).unwrap().len());
+      assert_eq!(wrote.dst_bytes, std::fs::metadata(&dst).unwrap().len());
+      assert!(wrote.dst_bytes < wrote.src_bytes);
+      std::fs::remove_file(src).unwrap();
+      std::fs::remove_file(dst).unwrap();
+      (wrote, g)
+    };
+
+    let mixed = build(&[
+      ("narrow", &[32, 8], 8, &weights),
+      ("wide", &[32, 8], 8, &weights),
+      ("tail", &[32, 2], 8, &tail),
+      ("kept", &[32], 8, &q8),
+      ("bias", &[2], 0, &floats.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>()),
+    ]);
+    let (wrote, g) = open(&mixed, "mix", |name| name == "wide");
+    assert_eq!((wrote.q4, wrote.q4_elements), (1, 256));
+    assert_eq!((wrote.q5, wrote.q5_elements), (2, 256 + 64));
+    assert_eq!(g.get::<u32>("general.file_type").unwrap(), 15);
+    assert_eq!(g.tensor("narrow", &[32, 8]).unwrap().ty, Type::Q4_K);
+    assert_eq!(g.tensor("narrow", &[32, 8]).unwrap().to_f32().unwrap(), q4);
+    assert_eq!(g.tensor("wide", &[32, 8]).unwrap().ty, Type::Q5_0);
+    assert_eq!(g.tensor("wide", &[32, 8]).unwrap().to_f32().unwrap(), q5_wide);
+    assert_eq!(g.tensor("tail", &[32, 2]).unwrap().ty, Type::Q5_0);
+    assert_eq!(g.tensor("tail", &[32, 2]).unwrap().to_f32().unwrap(), q5_tail);
+    assert_eq!(g.tensor("kept", &[32]).unwrap().ty, Type::Q8_0);
+    assert_eq!(g.tensor("kept", &[32]).unwrap().to_f32().unwrap(), values(32));
+    assert_eq!(g.tensor("bias", &[2]).unwrap().to_f32().unwrap(), floats);
+
+    let only = build(&[("narrow", &[32, 8], 8, &weights)]);
+    let (wrote, g) = open(&only, "q4", |_| false);
+    assert_eq!((wrote.q4, wrote.q5), (1, 0));
+    assert_eq!(g.get::<u32>("general.file_type").unwrap(), 14);
+    assert_eq!(g.tensor("narrow", &[32, 8]).unwrap().ty, Type::Q4_K);
   }
 
   #[test]

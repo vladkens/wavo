@@ -272,6 +272,8 @@ pub mod hub;
 mod moonshine;
 mod parakeet;
 #[cfg(all(test, feature = "hub"))]
+mod q4_fixture;
+#[cfg(all(test, feature = "hub"))]
 mod q5_fixture;
 mod sentencepiece;
 mod sortformer;
