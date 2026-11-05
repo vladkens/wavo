@@ -193,7 +193,8 @@ fn tile<const R: usize, const F: usize>(w: &[f32], z: &[f32], k: usize) -> [[f32
 
 /// Weights `[rows][k]` for `matvecs`. Q8_0, Q5_0 and Q4_0 keep signed codes and one f32 scale per
 /// 32 weights (`q · d`, exact in f32). Q4_1 and Q5_1 expand to f32, because each block also has a
-/// minimum. F32 and F16 stay as f32, as the reference reads them.
+/// minimum; the flat length has to be a whole number of blocks, or the last row is short. F32 and
+/// F16 stay as f32, as the reference reads them.
 pub enum Matrix {
   Q8(Q8),
   F32 { k: usize, w: Vec<f32> },
@@ -204,6 +205,11 @@ impl Matrix {
     let k = t.dims[0];
     if matches!(t.ty, Type::Q8_0 | Type::Q5_0 | Type::Q4_0) && !k.is_multiple_of(32) {
       bail!("quantized rows of {k} weights are not a multiple of 32");
+    }
+    // Q4_1 and Q5_1 decode whole blocks into a flat buffer. A short buffer panics on the last row.
+    let n = t.len();
+    if matches!(t.ty, Type::Q4_1 | Type::Q5_1) && !n.is_multiple_of(32) {
+      bail!("quantized weights of {n} are not a whole number of blocks");
     }
     Ok(match t.ty {
       Type::F32 | Type::F16 | Type::Q4_1 | Type::Q5_1 => Self::F32 { k, w: t.to_f32()? },
@@ -512,6 +518,27 @@ mod tests {
       let bytes = vec![0; block_size];
       let g = Gguf::with_tensors(&[("w", &[32], ty, &bytes)]);
       assert!(super::Matrix::new(&g.tensor("w", &[32]).unwrap()).is_ok(), "{ty:?}");
+    }
+  }
+
+  #[test]
+  fn affine_expansion_needs_whole_blocks() {
+    // [40, 2] stores two blocks (64 values). The second 40-wide row used to panic.
+    // Four rows of 40 are 160 values, five whole blocks, so a 40-wide row still loads.
+    for (ty, block) in [(Type::Q4_1, 20usize), (Type::Q5_1, 24)] {
+      let short = vec![0; 2 * block];
+      let g = Gguf::with_tensors(&[("w", &[40, 2], ty, &short)]);
+      match super::Matrix::new(&g.tensor("w", &[40, 2]).unwrap()) {
+        Err(err) => {
+          assert!(err.to_string().contains("not a whole number of blocks"), "{ty:?}: {err}")
+        }
+        Ok(_) => panic!("{ty:?} accepted a short expansion"),
+      }
+
+      let full = vec![0; 5 * block];
+      let g = Gguf::with_tensors(&[("w", &[40, 4], ty, &full)]);
+      let w = super::Matrix::new(&g.tensor("w", &[40, 4]).unwrap()).unwrap();
+      assert_eq!(w.row(3), vec![0.0; 40], "{ty:?}");
     }
   }
 
