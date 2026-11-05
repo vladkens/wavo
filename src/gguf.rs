@@ -364,6 +364,152 @@ impl Tensor<'_> {
   }
 }
 
+/// Q8_0 tensors rewritten as Q5_0 by [`write_q5_0`].
+#[cfg(test)]
+pub(crate) struct Q5Write {
+  /// Tensors whose row length is a multiple of 32.
+  pub converted: usize,
+  /// Weights in those tensors.
+  pub elements: usize,
+  /// Bytes of the source file.
+  pub src_bytes: u64,
+  /// Bytes of the written file.
+  pub dst_bytes: u64,
+}
+
+/// Writes `src` to `dst`, re-quantizing each Q8_0 tensor to Q5_0 when its row length
+/// (`len / dims.last()`) is a multiple of 32. The codes are round-to-nearest on the dequantized
+/// Q8_0 values. Other tensors are copied. Metadata is copied; a `general.file_type` of 7 (mostly
+/// Q8_0) becomes 8 (mostly Q5_0).
+#[cfg(test)]
+pub(crate) fn write_q5_0(src: &Path, dst: &Path) -> Result<Q5Write> {
+  use std::io::Write;
+
+  let src_bytes = std::fs::metadata(src)?.len();
+  let g = Gguf::open(src)?;
+  let align = match g.value("general.alignment") {
+    Ok((_, Value::Int(a))) if a > 0 => a as usize,
+    _ => 32,
+  };
+
+  let mut r = Reader { bytes: &g.head, pos: 0 };
+  if r.take(4)? != b"GGUF" {
+    bail!("not a GGUF file");
+  }
+  let version = r.u32()?;
+  if version != 3 {
+    bail!("unsupported GGUF version {version}");
+  }
+  let n_tensors = r.u64()? as usize;
+  let n_meta = r.u64()? as usize;
+  let mut file_type = None;
+  for _ in 0..n_meta {
+    let n = r.u64()? as usize;
+    let key = std::str::from_utf8(r.take(n)?).unwrap_or("");
+    let ty = r.u32()?;
+    if key == "general.file_type" && (ty == 4 || ty == 5 || ty == 10 || ty == 11) {
+      file_type = Some((r.pos, ty));
+    }
+    r.skip(ty)?;
+  }
+  let meta_end = r.pos;
+
+  let mut converted = 0;
+  let mut elements = 0;
+  let mut tensors = Vec::with_capacity(n_tensors);
+  for _ in 0..n_tensors {
+    let name = r.string()?;
+    let n_dims = r.u32()? as usize;
+    let dims = (0..n_dims).map(|_| r.u64().map(|d| d as usize)).collect::<Result<Vec<_>>>()?;
+    let id = r.u32()?;
+    let Some(ty) = Type::from_ggml(id) else { bail!("tensor {name}: unsupported ggml type {id}") };
+    _ = r.u64()?;
+    let n = dims.iter().product::<usize>();
+    let row = match dims.last() {
+      Some(&d) if d > 0 => n / d,
+      _ => 0,
+    };
+    let tensor = g.tensor(&name, &dims)?;
+    let (ty, bytes) = if ty == Type::Q8_0 && row >= 32 && row.is_multiple_of(32) {
+      converted += 1;
+      elements += n;
+      (Type::Q5_0, quantize_q5_0(&tensor.to_f32()?))
+    } else {
+      let mut bytes = vec![0u8; ty.size(n)];
+      if !bytes.is_empty() {
+        tensor.read(bytes.len(), |off, piece| {
+          bytes[off..off + piece.len()].copy_from_slice(piece);
+        })?;
+      }
+      (ty, bytes)
+    };
+    if bytes.len() != ty.size(n) {
+      bail!("tensor {name}: {} bytes for {n} {ty:?} weights", bytes.len());
+    }
+    tensors.push((name, dims, ty, bytes));
+  }
+
+  let mut offset = 0usize;
+  let placed: Vec<_> = tensors
+    .into_iter()
+    .map(|(name, dims, ty, bytes)| {
+      offset = offset.next_multiple_of(align);
+      let at = offset;
+      offset += bytes.len();
+      (name, dims, ty, at, bytes)
+    })
+    .collect();
+
+  let mut header = g.head[..meta_end].to_vec();
+  if let Some((pos, ty)) = file_type {
+    let width = if ty == 10 || ty == 11 { 8 } else { 4 };
+    let cur = if width == 8 {
+      u64::from_le_bytes(header[pos..pos + 8].try_into().unwrap())
+    } else {
+      u32::from_le_bytes(header[pos..pos + 4].try_into().unwrap()) as u64
+    };
+    if cur == 7 {
+      header[pos..pos + width].copy_from_slice(&8u64.to_le_bytes()[..width]);
+    }
+  }
+  for (name, dims, ty, at, _) in &placed {
+    let name = name.as_bytes();
+    header.extend((name.len() as u64).to_le_bytes());
+    header.extend(name);
+    header.extend((dims.len() as u32).to_le_bytes());
+    for d in dims {
+      header.extend((*d as u64).to_le_bytes());
+    }
+    header.extend(ggml_id(*ty).to_le_bytes());
+    header.extend((*at as u64).to_le_bytes());
+  }
+  header.resize(header.len().next_multiple_of(align), 0);
+
+  let mut file = std::io::BufWriter::new(File::create(dst)?);
+  file.write_all(&header)?;
+  let mut cursor = 0usize;
+  for (_, _, _, at, bytes) in &placed {
+    if *at > cursor {
+      file.write_all(&vec![0u8; at - cursor])?;
+    }
+    file.write_all(bytes)?;
+    cursor = at + bytes.len();
+  }
+  file.flush()?;
+  Ok(Q5Write { converted, elements, src_bytes, dst_bytes: (header.len() + cursor) as u64 })
+}
+
+/// ggml type id of `ty`.
+#[cfg(test)]
+fn ggml_id(ty: Type) -> u32 {
+  match ty {
+    Type::F32 => 0,
+    Type::F16 => 1,
+    Type::Q5_0 => 6,
+    Type::Q8_0 => 8,
+  }
+}
+
 #[cfg(test)]
 impl Gguf {
   /// An in-memory file holding `(name, ggml dims, type, data)` tensors, for tests.
@@ -628,6 +774,74 @@ mod tests {
     let got = g.tensor("t", &[32]).unwrap().to_f32().unwrap();
     assert_eq!(got[0], 8.0);
     assert_eq!(got[1], -7.5);
+  }
+
+  /// Two Q8_0 rows on the exact −16..15 grid become Q5_0. A one-dimensional Q8_0 block stays,
+  /// because its row length is 1, and an F32 tensor is copied. `general.file_type` 7 becomes 8.
+  #[test]
+  fn write_q5_0_repacks_rows() {
+    let grid: [i8; 32] = std::array::from_fn(|i| i as i8 - 16);
+    let mut q8 = [0u8; 34];
+    q8[..2].copy_from_slice(&f16::from_f32(1.0).to_le_bytes());
+    for (i, v) in grid.iter().enumerate() {
+      q8[2 + i] = *v as u8;
+    }
+    let weights = q8.repeat(2);
+    let floats = [1.5f32, -2.0];
+    let mut data = Vec::new();
+    let place = |data: &mut Vec<u8>| {
+      let at = data.len().next_multiple_of(32);
+      data.resize(at, 0);
+      at as u64
+    };
+    let w_at = place(&mut data);
+    data.extend(&weights);
+    let kept_at = place(&mut data);
+    data.extend(q8);
+    let bias_at = place(&mut data);
+    data.extend(floats.iter().flat_map(|v| v.to_le_bytes()));
+
+    let mut f = b"GGUF".to_vec();
+    f.extend(3u32.to_le_bytes());
+    f.extend(3u64.to_le_bytes());
+    f.extend(1u64.to_le_bytes());
+    string(&mut f, "general.file_type");
+    f.extend(4u32.to_le_bytes());
+    f.extend(7u32.to_le_bytes());
+    let info = |f: &mut Vec<u8>, name: &str, dims: &[u64], ty: u32, at: u64| {
+      string(f, name);
+      f.extend((dims.len() as u32).to_le_bytes());
+      for d in dims {
+        f.extend(d.to_le_bytes());
+      }
+      f.extend(ty.to_le_bytes());
+      f.extend(at.to_le_bytes());
+    };
+    info(&mut f, "w", &[32, 2], 8, w_at);
+    info(&mut f, "kept", &[32], 8, kept_at);
+    info(&mut f, "bias", &[2], 0, bias_at);
+    f.resize(f.len().next_multiple_of(32), 0);
+    f.extend(data);
+
+    let dir = std::env::temp_dir();
+    let src = dir.join(format!("wavo-q5-src-{}", std::process::id()));
+    let dst = dir.join(format!("wavo-q5-dst-{}", std::process::id()));
+    std::fs::write(&src, &f).unwrap();
+    let wrote = write_q5_0(&src, &dst).unwrap();
+    let g = Gguf::open(&dst).unwrap();
+    assert_eq!((wrote.converted, wrote.elements), (1, 64));
+    assert_eq!(wrote.src_bytes, std::fs::metadata(&src).unwrap().len());
+    assert_eq!(wrote.dst_bytes, std::fs::metadata(&dst).unwrap().len());
+    assert!(wrote.dst_bytes < wrote.src_bytes);
+    assert_eq!(g.get::<u32>("general.file_type").unwrap(), 8);
+    let expected: Vec<f32> = grid.iter().map(|&v| v as f32).cycle().take(64).collect();
+    assert_eq!(g.tensor("w", &[32, 2]).unwrap().ty, Type::Q5_0);
+    assert_eq!(g.tensor("w", &[32, 2]).unwrap().to_f32().unwrap(), expected);
+    assert_eq!(g.tensor("kept", &[32]).unwrap().ty, Type::Q8_0);
+    assert_eq!(g.tensor("kept", &[32]).unwrap().to_f32().unwrap(), &expected[..32]);
+    assert_eq!(g.tensor("bias", &[2]).unwrap().to_f32().unwrap(), floats);
+    std::fs::remove_file(src).unwrap();
+    std::fs::remove_file(dst).unwrap();
   }
 
   #[test]

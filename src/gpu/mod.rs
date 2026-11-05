@@ -235,6 +235,55 @@ pub struct Gpu {
   failure: Arc<Mutex<Option<String>>>,
   /// The tensor GEMM's input as f16, grown to the largest so far (bind groups keep older ones).
   halves: Mutex<Option<Buffer>>,
+  /// Linear uploads, when a test asked for them before this device was created.
+  #[cfg(all(test, feature = "hub"))]
+  packed: Option<Arc<Mutex<Vec<WeightBytes>>>>,
+}
+
+/// One linear upload. `weight` and `scales` are the resident buffer sizes, including rows padded
+/// to a multiple of 64.
+#[cfg(all(test, feature = "hub"))]
+pub(crate) struct WeightBytes {
+  /// Rows stored, before that pad.
+  pub rows: usize,
+  /// Rows allocated.
+  pub n: usize,
+  /// Weights in a row.
+  pub k: usize,
+  /// GEMM index: 0 F32, 1 F16, 2 Q8_0, 3 Q5_0.
+  pub ty: usize,
+  /// Bytes of the weight buffer.
+  pub weight: u64,
+  /// Bytes of the scale buffer, 0 when the type has none.
+  pub scales: u64,
+}
+
+#[cfg(all(test, feature = "hub"))]
+thread_local! {
+  static PACK_NEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The next device records each linear upload into [`Gpu::weight_bytes`].
+#[cfg(all(test, feature = "hub"))]
+pub(crate) fn record_weights() -> WeightGuard {
+  PACK_NEXT.with(|c| c.set(true));
+  WeightGuard
+}
+
+/// Clears [`record_weights`] if the device was never created.
+#[cfg(all(test, feature = "hub"))]
+pub(crate) struct WeightGuard;
+
+#[cfg(all(test, feature = "hub"))]
+impl Drop for WeightGuard {
+  fn drop(&mut self) {
+    PACK_NEXT.with(|c| c.set(false));
+  }
+}
+
+#[cfg(all(test, feature = "hub"))]
+fn armed_weights() -> Option<Arc<Mutex<Vec<WeightBytes>>>> {
+  PACK_NEXT.with(|c| c.take().then(|| Arc::new(Mutex::new(Vec::new()))))
 }
 
 /// The portable kernels, which every adapter runs; `Fast` replaces some of them.
@@ -554,6 +603,8 @@ impl Gpu {
       busy: Mutex::new(()),
       failure,
       halves: Mutex::new(None),
+      #[cfg(all(test, feature = "hub"))]
+      packed: armed_weights(),
     };
     if let (Some(size), Some(compiled)) = (size, compiled) {
       gpu.fast = gpu.probe(size, compiled);
@@ -850,7 +901,38 @@ impl Gpu {
     let mut padded = vec![0.0; n.max(cols + dual)];
     padded[..own.len()].copy_from_slice(own);
     padded[cols..cols + dual].copy_from_slice(second);
-    Ok(Linear { n, cols, k: kp, dual, ty, weight, scales, bias: self.upload(&padded)? })
+    let bias = self.upload(&padded)?;
+    #[cfg(all(test, feature = "hub"))]
+    self.note_weights(rows, n, k, ty, &weight, scales.as_ref());
+    Ok(Linear { n, cols, k: kp, dual, ty, weight, scales, bias })
+  }
+
+  #[cfg(all(test, feature = "hub"))]
+  fn note_weights(
+    &self,
+    rows: usize,
+    n: usize,
+    k: usize,
+    ty: usize,
+    weight: &Buffer,
+    scales: Option<&Buffer>,
+  ) {
+    let Some(slot) = &self.packed else { return };
+    slot.lock().unwrap_or_else(PoisonError::into_inner).push(WeightBytes {
+      rows,
+      n,
+      k,
+      ty,
+      weight: weight.size(),
+      scales: scales.map(Buffer::size).unwrap_or(0),
+    });
+  }
+
+  /// The linear uploads recorded for this device, then forgotten.
+  #[cfg(all(test, feature = "hub"))]
+  pub(crate) fn weight_bytes(&self) -> Vec<WeightBytes> {
+    let Some(slot) = &self.packed else { return Vec::new() };
+    std::mem::take(&mut slot.lock().unwrap_or_else(PoisonError::into_inner))
   }
 
   pub fn channels(&self, w: &[f32], b: &[f32]) -> Result<Channels> {
