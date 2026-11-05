@@ -372,52 +372,207 @@ pub(crate) fn quantize_q4_k(w: &[f32]) -> Vec<u8> {
     let mut group_scale = [0f32; 8];
     let mut group_min = [0f32; 8];
     for j in 0..8 {
-      let sub = &block[j * 32..j * 32 + 32];
-      let (mut min, mut max) = (sub[0], sub[0]);
-      for &x in &sub[1..] {
-        if x < min {
-          min = x;
-        }
-        if x > max {
-          max = x;
-        }
-      }
-      if min > 0.0 {
-        min = 0.0;
-      }
-      group_scale[j] = if max == min { 0.0 } else { (max - min) / 15.0 };
-      group_min[j] = -min;
+      let (scale, stored, _) = rtn_group(&block[j * 32..j * 32 + 32]);
+      group_scale[j] = scale;
+      group_min[j] = stored;
     }
-    let max_scale = group_scale.into_iter().fold(0.0, f32::max);
-    let max_min = group_min.into_iter().fold(0.0, f32::max);
-    let d = f16::from_f32(if max_scale > 0.0 { max_scale / 63.0 } else { 0.0 });
-    let dmin = f16::from_f32(if max_min > 0.0 { max_min / 63.0 } else { 0.0 });
-    let (d_s, m_s) = (d.to_f32(), dmin.to_f32());
-    let q6 = |x: f32| (x + 0.5).trunc().clamp(0.0, 63.0) as u8;
-    let mut scale = [0u8; 8];
-    let mut min = [0u8; 8];
-    for j in 0..8 {
-      scale[j] = if d_s == 0.0 { 0 } else { q6(group_scale[j] / d_s) };
-      min[j] = if m_s == 0.0 { 0 } else { q6(group_min[j] / m_s) };
-    }
-    let mut codes = [0u8; 256];
-    for j in 0..8 {
-      let dq = d_s * scale[j] as f32;
-      if dq == 0.0 {
-        continue;
-      }
-      let dm = m_s * min[j] as f32;
-      let id = 1.0 / dq;
-      for l in 0..32 {
-        let x = block[j * 32 + l];
-        codes[j * 32 + l] = ((x + dm) * id + 0.5).trunc().clamp(0.0, 15.0) as u8;
-      }
-    }
-    out.extend(d.to_le_bytes());
-    out.extend(dmin.to_le_bytes());
-    out.extend(pack_scales_k4(&scale, &min));
-    out.extend(pack_qs_k4(&codes));
+    out.extend(pack_q4k(&group_scale, &group_min, block));
   }
+  out
+}
+
+/// Q4_K with a per-input-channel importance. `channel_w` has one non-negative weight per column
+/// of a row (`w.len() / row` rows). A group of 32 keeps the min/max grid, then tries nearby code
+/// scales and keeps the one with the smaller weighted squared error. The 6-bit superblock scales
+/// are the same as [`quantize_q4_k`].
+#[cfg(test)]
+pub(crate) fn quantize_q4_k_weighted(w: &[f32], row: usize, channel_w: &[f32]) -> Vec<u8> {
+  debug_assert!(w.len().is_multiple_of(256) && row.is_multiple_of(32));
+  debug_assert_eq!(channel_w.len(), row);
+  let mut out = Vec::with_capacity(w.len() / 256 * 144);
+  for (b, block) in w.as_chunks::<256>().0.iter().enumerate() {
+    let origin = b * 256;
+    let mut group_scale = [0f32; 8];
+    let mut group_min = [0f32; 8];
+    for j in 0..8 {
+      let mut xs = [0f32; 32];
+      let mut ws = [0f32; 32];
+      for l in 0..32 {
+        let i = origin + j * 32 + l;
+        xs[l] = block[j * 32 + l];
+        ws[l] = channel_w[i % row];
+      }
+      let (scale, stored, _) = weighted_group(&xs, &ws);
+      group_scale[j] = scale;
+      group_min[j] = stored;
+    }
+    out.extend(pack_q4k(&group_scale, &group_min, block));
+  }
+  out
+}
+
+/// Q4_K after a group-wise Hessian update along each row. `hinv` is the inverse of the damped
+/// input Gram matrix, row-major, `row * row`. Each group of 32 is quantized with the round-to-
+/// nearest grid. The remaining columns of that row move by `Hinv` so the update cancels that
+/// group's error in the least-squares sense. Columns already visited stay as they were. A diagonal
+/// `hinv` leaves the weights unchanged, so the bytes match [`quantize_q4_k`].
+#[cfg(test)]
+pub(crate) fn quantize_q4_k_gptq(w: &[f32], row: usize, hinv: &[f64]) -> Vec<u8> {
+  debug_assert!(w.len().is_multiple_of(row) && row.is_multiple_of(32));
+  debug_assert_eq!(hinv.len(), row * row);
+  let mut data: Vec<f64> = w.iter().map(|&v| v as f64).collect();
+  let rows = w.len() / row;
+  for r in 0..rows {
+    let values = &mut data[r * row..(r + 1) * row];
+    for g in 0..row / 32 {
+      let i0 = g * 32;
+      let mut block = [0f32; 32];
+      for t in 0..32 {
+        block[t] = values[i0 + t] as f32;
+      }
+      let (scale, stored, codes) = rtn_group(&block);
+      let mut delta = [0f64; 32];
+      for t in 0..32 {
+        let rec = codes[t] as f64 * scale as f64 - stored as f64;
+        let pivot = hinv[(i0 + t) * row + i0 + t];
+        delta[t] = if pivot.abs() < 1e-18 { 0.0 } else { (values[i0 + t] - rec) / pivot };
+      }
+      for t in 0..32 {
+        let d = delta[t];
+        if d == 0.0 {
+          continue;
+        }
+        let hrow = &hinv[(i0 + t) * row + i0 + 32..(i0 + t) * row + row];
+        for (slot, &h) in values[i0 + 32..].iter_mut().zip(hrow) {
+          *slot -= d * h;
+        }
+      }
+    }
+  }
+  quantize_q4_k(&data.iter().map(|&v| v as f32).collect::<Vec<_>>())
+}
+
+/// Round-to-nearest group: scale `(max - min) / 15`, stored minimum `-min` (0 when `min > 0`).
+#[cfg(test)]
+fn rtn_group(sub: &[f32]) -> (f32, f32, [u8; 32]) {
+  let (mut min, mut max) = (sub[0], sub[0]);
+  for &x in &sub[1..] {
+    if x < min {
+      min = x;
+    }
+    if x > max {
+      max = x;
+    }
+  }
+  if min > 0.0 {
+    min = 0.0;
+  }
+  let scale = if max == min { 0.0 } else { (max - min) / 15.0 };
+  let stored = -min;
+  let mut codes = [0u8; 32];
+  if scale != 0.0 {
+    let id = 1.0 / scale;
+    for (code, &x) in codes.iter_mut().zip(sub) {
+      *code = ((x + stored) * id + 0.5).trunc().clamp(0.0, 15.0) as u8;
+    }
+  }
+  (scale, stored, codes)
+}
+
+/// Weighted squared error over candidate scales. The code assignment still uses the group's
+/// min and max; the weights choose the scale and the minimum among those candidates.
+#[cfg(test)]
+fn weighted_group(x: &[f32; 32], w: &[f32; 32]) -> (f32, f32, [u8; 32]) {
+  let (scale, stored, codes) = rtn_group(x);
+  let min = -stored;
+  let max = x.iter().copied().fold(x[0], f32::max);
+  if max == min {
+    return (scale, stored, codes);
+  }
+  let mut best_scale = scale;
+  let mut best_min = min;
+  let mut best_codes = codes;
+  let mut best_err = f64::MAX;
+  let mut consider = |iscale: f32| {
+    let mut codes = [0u8; 32];
+    let (mut sum_w, mut sum_x, mut sum_l, mut sum_l2, mut sum_xl) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for i in 0..32 {
+      // Half up, so the min/max scale assigns the same codes as round-to-nearest.
+      let l = (iscale * (x[i] - min) + 0.5).trunc().clamp(0.0, 15.0);
+      codes[i] = l as u8;
+      let wi = w[i].max(0.0) as f64;
+      let li = l as f64;
+      sum_w += wi;
+      sum_x += wi * x[i] as f64;
+      sum_l += wi * li;
+      sum_l2 += wi * li * li;
+      sum_xl += wi * li * x[i] as f64;
+    }
+    let det = sum_w * sum_l2 - sum_l * sum_l;
+    let (scale, signed) = if det > 1e-12 {
+      let mut scale = (sum_w * sum_xl - sum_x * sum_l) / det;
+      let mut signed = (sum_l2 * sum_x - sum_l * sum_xl) / det;
+      if signed > 0.0 {
+        signed = 0.0;
+        scale = if sum_l2 > 0.0 { sum_xl / sum_l2 } else { 0.0 };
+      }
+      (scale.max(0.0), signed)
+    } else {
+      (best_scale as f64, best_min as f64)
+    };
+    let mut err = 0.0;
+    for i in 0..32 {
+      let diff = scale * codes[i] as f64 + signed - x[i] as f64;
+      err += w[i].max(0.0) as f64 * diff * diff;
+    }
+    if err < best_err {
+      best_err = err;
+      best_scale = scale as f32;
+      best_min = signed as f32;
+      best_codes = codes;
+    }
+  };
+  let span = max - min;
+  consider(15.0 / span);
+  for step in 0..=20 {
+    consider((-1.0 + 0.1 * step as f32 + 15.0) / span);
+  }
+  (best_scale, -best_min, best_codes)
+}
+
+/// One Q4_K block from the eight group scales and stored minimums.
+#[cfg(test)]
+fn pack_q4k(group_scale: &[f32; 8], group_min: &[f32; 8], block: &[f32; 256]) -> [u8; 144] {
+  let max_scale = group_scale.iter().copied().fold(0.0, f32::max);
+  let max_min = group_min.iter().copied().fold(0.0, f32::max);
+  let d = f16::from_f32(if max_scale > 0.0 { max_scale / 63.0 } else { 0.0 });
+  let dmin = f16::from_f32(if max_min > 0.0 { max_min / 63.0 } else { 0.0 });
+  let (d_s, m_s) = (d.to_f32(), dmin.to_f32());
+  let q6 = |x: f32| (x + 0.5).trunc().clamp(0.0, 63.0) as u8;
+  let mut scale = [0u8; 8];
+  let mut min = [0u8; 8];
+  for j in 0..8 {
+    scale[j] = if d_s == 0.0 { 0 } else { q6(group_scale[j] / d_s) };
+    min[j] = if m_s == 0.0 { 0 } else { q6(group_min[j] / m_s) };
+  }
+  let mut codes = [0u8; 256];
+  for j in 0..8 {
+    let dq = d_s * scale[j] as f32;
+    if dq == 0.0 {
+      continue;
+    }
+    let dm = m_s * min[j] as f32;
+    let id = 1.0 / dq;
+    for l in 0..32 {
+      let x = block[j * 32 + l];
+      codes[j * 32 + l] = ((x + dm) * id + 0.5).trunc().clamp(0.0, 15.0) as u8;
+    }
+  }
+  let mut out = [0u8; 144];
+  out[..2].copy_from_slice(&d.to_le_bytes());
+  out[2..4].copy_from_slice(&dmin.to_le_bytes());
+  out[4..16].copy_from_slice(&pack_scales_k4(&scale, &min));
+  out[16..].copy_from_slice(&pack_qs_k4(&codes));
   out
 }
 
@@ -759,6 +914,7 @@ pub(crate) fn write_q5_0(src: &Path, dst: &Path) -> Result<Q5Write> {
       let row = row_len(dims);
       (row >= 32 && row.is_multiple_of(32)).then_some(Type::Q5_0)
     },
+    |_, _, w| quantize_q4_k(w),
     Label::Q5,
   )?;
   Ok(Q5Write {
@@ -777,6 +933,19 @@ pub(crate) fn write_q5_0(src: &Path, dst: &Path) -> Result<Q5Write> {
 /// every converted tensor is Q4_K, and 15 when any is Q5_0.
 #[cfg(test)]
 pub(crate) fn write_q4_k(src: &Path, dst: &Path, q5: impl Fn(&str) -> bool) -> Result<Q4Write> {
+  write_q4_k_with(src, dst, q5, |_, _, w| quantize_q4_k(w))
+}
+
+/// [`write_q4_k`], with `quantize` producing the Q4_K bytes of one tensor. `row` is that tensor's
+/// row length. The type choice is unchanged: Q4_K when the tensor holds a multiple of 256 weights
+/// and `q5` returns false, otherwise Q5_0.
+#[cfg(test)]
+pub(crate) fn write_q4_k_with(
+  src: &Path,
+  dst: &Path,
+  q5: impl Fn(&str) -> bool,
+  quantize: impl Fn(&str, usize, &[f32]) -> Vec<u8>,
+) -> Result<Q4Write> {
   let wrote = rewrite(
     src,
     dst,
@@ -788,6 +957,7 @@ pub(crate) fn write_q4_k(src: &Path, dst: &Path, q5: impl Fn(&str) -> bool) -> R
       let n = dims.iter().product::<usize>();
       if q5(name) || !n.is_multiple_of(256) { Some(Type::Q5_0) } else { Some(Type::Q4_K) }
     },
+    quantize,
     Label::Q4,
   )?;
   Ok(Q4Write {
@@ -836,6 +1006,7 @@ fn rewrite(
   src: &Path,
   dst: &Path,
   pick: impl Fn(&str, &[usize]) -> Option<Type>,
+  quantize_q4: impl Fn(&str, usize, &[f32]) -> Vec<u8>,
   label: Label,
 ) -> Result<Rewritten> {
   use std::io::Write;
@@ -899,7 +1070,7 @@ fn rewrite(
         Type::Q4_K if row_ok && n.is_multiple_of(256) => {
           q4 += 1;
           q4_elements += n;
-          quantize_q4_k(&values)
+          quantize_q4(&name, row, &values)
         }
         other => bail!("tensor {name}: {n} weights cannot be stored as {other:?}"),
       };
@@ -1626,6 +1797,32 @@ mod tests {
     assert_eq!(zeros, vec![0u8; 144]);
     let g = Gguf::with_tensors(&[("z", &[256], Type::Q4_K, &zeros)]);
     assert_eq!(g.tensor("z", &[256]).unwrap().to_f32().unwrap(), vec![0.0; 256]);
+  }
+
+  /// A diagonal inverse leaves every weight where it was, so the bytes match round-to-nearest.
+  #[test]
+  fn q4_k_gptq_identity_matches_round_to_nearest() {
+    let row = 64;
+    let w: Vec<f32> = (0..256).map(|i| ((i * 3) % 19) as f32 - 9.0).collect();
+    let mut hinv = vec![0.0; row * row];
+    for i in 0..row {
+      hinv[i * row + i] = 1.0;
+    }
+    assert_eq!(quantize_q4_k_gptq(&w, row, &hinv), quantize_q4_k(&w));
+  }
+
+  /// A non-uniform channel weight changes the packed block. The 6-bit snap can still raise the
+  /// error of one column, so this checks the bytes, not a single-column score.
+  #[test]
+  fn q4_k_weighted_differs_from_round_to_nearest() {
+    let row = 32;
+    let w: Vec<f32> =
+      (0..256).map(|i| if i % row == 0 { 7.0 } else { ((i % 15) as f32 - 7.0) * 0.1 }).collect();
+    let mut channel_w = vec![0.01; row];
+    channel_w[0] = 100.0;
+    let weighted = quantize_q4_k_weighted(&w, row, &channel_w);
+    assert_eq!(weighted.len(), 144);
+    assert_ne!(weighted, quantize_q4_k(&w));
   }
 
   #[test]
