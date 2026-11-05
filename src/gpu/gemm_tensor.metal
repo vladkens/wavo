@@ -43,8 +43,8 @@ static float gelu(float x) {
   return 0.5f * x * (1.0f + sign(x) * e);
 }
 
-// Four Q5_0 weights at index x (a multiple of 4). Same packing as gemm.wgsl's q5_4.
-static float4 q5_4(device const uchar *bytes, device const half *scales, int x) {
+// Four Q5 codes at index x (a multiple of 4). Same packing as gemm.wgsl's q5_word.
+static float4 q5_codes4(device const uchar *bytes, int x) {
   const int block = x >> 5;
   const int group = (x & 31) >> 2;
   const int bit = group * 20;
@@ -57,14 +57,42 @@ static float4 q5_4(device const uchar *bytes, device const half *scales, int x) 
     word = (word >> shift) | (words[i + 1] << (32 - shift));
   }
   word >>= (bit & 7);
-  const float sc = float(scales[block]);
-  const float4 q = float4(float(word & 31u), float((word >> 5) & 31u), float((word >> 10) & 31u),
-                           float((word >> 15) & 31u));
-  return (q - 16.0f) * sc;
+  return float4(float(word & 31u), float((word >> 5) & 31u), float((word >> 10) & 31u),
+                float((word >> 15) & 31u));
 }
 
-// WTYPE 0: F32, 1: F16, 2: Q8_0 (int8 and an f16 scale per 32), 3: Q5_0 (5-bit codes, 24 bytes per
-// 32, and the same scale).
+static float4 q5_4(device const uchar *bytes, device const half *scales, int x) {
+  return (q5_codes4(bytes, x) - 16.0f) * float(scales[x >> 5]);
+}
+
+// Four Q4 codes at index x (a multiple of 4). Nibbles are in weight order, 16 bytes per 32.
+static float4 q4_codes4(device const uchar *bytes, int x) {
+  const int block = x >> 5;
+  const int local = x & 31;
+  device const uint *words = (device const uint *)bytes;
+  const uint word = words[block * 4 + local / 8];
+  const uint bits = (word >> ((local % 8) * 4)) & 0xFFFFu;
+  return float4(float(bits & 15u), float((bits >> 4) & 15u), float((bits >> 8) & 15u),
+                float((bits >> 12) & 15u));
+}
+
+static float4 q4_4(device const uchar *bytes, device const half *scales, int x) {
+  return (q4_codes4(bytes, x) - 8.0f) * float(scales[x >> 5]);
+}
+
+// Q4_1 and Q5_1 store an f16 scale and an f16 minimum per block.
+static float4 q41_4(device const uchar *bytes, device const half *scales, int x) {
+  const int block = x >> 5;
+  return q4_codes4(bytes, x) * float(scales[block * 2]) + float(scales[block * 2 + 1]);
+}
+
+static float4 q51_4(device const uchar *bytes, device const half *scales, int x) {
+  const int block = x >> 5;
+  return q5_codes4(bytes, x) * float(scales[block * 2]) + float(scales[block * 2 + 1]);
+}
+
+// WTYPE 0: F32, 1: F16, 2: Q8_0 (int8 and an f16 scale per 32), 3: Q5_0, 4: Q4_0 (4-bit codes,
+// 16 bytes per 32, and the same scale), 5: Q4_1, 6: Q5_1 (scale and minimum per block).
 template <int WTYPE>
 kernel void gemm(constant Params &p [[buffer(0)]], device half *a [[buffer(1)]],
                  device const float *bias [[buffer(2)]], device float *c [[buffer(3)]],
@@ -99,8 +127,14 @@ kernel void gemm(constant Params &p [[buffer(0)]], device half *a [[buffer(1)]],
         dst[j] = ((device const half4 *)w)[x / 4 + j];
       } else if (WTYPE == 2) {
         dst[j] = half4(float4(((device const char4 *)(w + x))[j]) * float(scales[x / 32]));
-      } else {
+      } else if (WTYPE == 3) {
         dst[j] = half4(q5_4((device const uchar *)w, scales, x + 4 * j));
+      } else if (WTYPE == 4) {
+        dst[j] = half4(q4_4((device const uchar *)w, scales, x + 4 * j));
+      } else if (WTYPE == 5) {
+        dst[j] = half4(q41_4((device const uchar *)w, scales, x + 4 * j));
+      } else {
+        dst[j] = half4(q51_4((device const uchar *)w, scales, x + 4 * j));
       }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -139,4 +173,10 @@ template [[host_name("gemm_f16")]] kernel void gemm<1>(constant Params &, device
 template [[host_name("gemm_q8")]] kernel void gemm<2>(constant Params &, device half *,
   device const float *, device float *, device const char *, device const half *, uint3, ushort);
 template [[host_name("gemm_q5")]] kernel void gemm<3>(constant Params &, device half *,
+  device const float *, device float *, device const char *, device const half *, uint3, ushort);
+template [[host_name("gemm_q4")]] kernel void gemm<4>(constant Params &, device half *,
+  device const float *, device float *, device const char *, device const half *, uint3, ushort);
+template [[host_name("gemm_q4_1")]] kernel void gemm<5>(constant Params &, device half *,
+  device const float *, device float *, device const char *, device const half *, uint3, ushort);
+template [[host_name("gemm_q5_1")]] kernel void gemm<6>(constant Params &, device half *,
   device const float *, device float *, device const char *, device const half *, uint3, ushort);

@@ -2,9 +2,10 @@
 //! TDT greedy decoding on the CPU: a predictor of stacked LSTM layers over the last emitted token,
 //! and a joint `out(relu(enc + pred(h)))` whose outputs are the token logits, then one logit per
 //! duration (how many frames to advance). The encoder side of the joint is projected on the GPU.
-//! Q8_0 weights stay Q8_0, and Q5_0 is stored as signed codes with the block scale, so an LSTM
-//! step and a joint (V3's: 13.5 MB) stay in the performance cores' L2; F32 and F16 ones (some
-//! converted models) are kept as f32.
+//! Q8_0 weights stay Q8_0. Q4_0 and Q5_0 are stored as signed codes with the block scale, so an
+//! LSTM step and a joint (V3's: 13.5 MB) stay in the performance cores' L2. Q4_1 and Q5_1 expand
+//! to f32 because each block has a minimum. F32 and F16 ones (some converted models) are kept as
+//! f32.
 
 use crate::cpu::{Matrix, matvecs};
 use crate::error::{Result, bail};

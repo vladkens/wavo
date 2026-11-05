@@ -15,7 +15,7 @@ Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, 
 ## Code
 
 - Target Metal on Apple Silicon and Vulkan on Linux and Windows; Windows without a Vulkan adapter falls back to DX12, which runs only the portable kernels, so they must compile with FXC. Every kernel has one simple portable version; a fast tier per hardware class, chosen at load from adapter features, stays only with a measured gain on that class.
-- Keep weights on the GPU in their GGUF type (Q5_0/Q8_0/F16/F32) and dequantize inside kernels; convolution rows whose width is not a multiple of 32 expand to padded F32 at load. Otherwise expand to F32 at load only tiny tensors such as norms and biases, and accumulate in F32.
+- Keep weights on the GPU in their GGUF type (Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/F16/F32) and dequantize inside kernels; convolution rows whose width is not a multiple of 32 expand to padded F32 at load. Otherwise expand to F32 at load only tiny tensors such as norms and biases, and accumulate in F32.
 - One module per model family, `src/<family>/`; a variant is config + head, not a copy. No generic graph runtime, plugin layers or disabled experiment code.
 - Validate GGUF metadata and tensor shapes once at load, with clear errors. Model files are trusted: no guards against crafted files, no defensive checks in hot paths.
 - A new model's encoder records its layers through `Pass::layers` (drivers like i915 cancel GPU work over ~20 s).

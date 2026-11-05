@@ -129,8 +129,8 @@ impl Graph<'_> {
   }
 
   /// The linear layer `{name}.weight` (ggml `dims`, `[.., in, out]`) over the last axis of `x`,
-  /// with `{name}.bias` when `bias`. Q8_0 weights become int8 per output row. Q5_0 and the other
-  /// types are dequantized and stored as F16.
+  /// with `{name}.bias` when `bias`. Q8_0 weights become int8 per output row. Q4_0, Q4_1, Q5_0,
+  /// Q5_1 and the float types are dequantized and stored as F16.
   pub fn linear(&mut self, x: &Var, name: &str, dims: &[usize], bias: bool) -> Result<Var> {
     let (n_in, n_out) = (dims[dims.len() - 2], dims[dims.len() - 1]);
     let t = self.g.tensor(&format!("{name}.weight"), dims)?;

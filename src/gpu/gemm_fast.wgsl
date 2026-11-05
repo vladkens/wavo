@@ -11,6 +11,7 @@
 enable f16;
 enable wgpu_cooperative_matrix;
 
+// 0: F32, 1: F16, 2: Q8_0, 3: Q5_0, 4: Q4_0, 5: Q4_1, 6: Q5_1.
 override WTYPE: u32;
 const F: u32 = 8u;
 // 4F or 8F, and the K step.
@@ -39,7 +40,7 @@ var<immediate> p: Params;
 @group(0) @binding(1) var<storage, read> bias: array<f32>;
 @group(0) @binding(2) var<storage, read_write> c: array<f32>;
 @group(0) @binding(3) var<storage, read> w: array<u32>;
-// Q8_0 and Q5_0 block scales as f16 pairs.
+// Q8_0, Q5_0 and Q4_0: one f16 scale per block, two per word. Q4_1 and Q5_1: scale and minimum.
 @group(0) @binding(4) var<storage, read> scales: array<u32>;
 
 alias AM = coop_mat8x8<f16, A>;
@@ -80,10 +81,40 @@ fn q5_word(x: u32) -> u32 {
   return word >> (bit & 7u);
 }
 
-fn q5_4(x: u32) -> vec4<f32> {
+fn q5_codes4(x: u32) -> vec4<f32> {
   let packed = q5_word(x);
-  let q = vec4(f32(packed & 31u), f32((packed >> 5u) & 31u), f32((packed >> 10u) & 31u), f32((packed >> 15u) & 31u));
-  return (q - 16.0) * scale(x / 32u);
+  return vec4(f32(packed & 31u), f32((packed >> 5u) & 31u), f32((packed >> 10u) & 31u), f32((packed >> 15u) & 31u));
+}
+
+fn q5_4(x: u32) -> vec4<f32> {
+  return (q5_codes4(x) - 16.0) * scale(x / 32u);
+}
+
+// Same Q4 load as gemm.wgsl. This module is not concatenated with that one.
+fn q4_codes4(x: u32) -> vec4<f32> {
+  let block = x / 32u;
+  let local = x % 32u;
+  let word = w[block * 4u + local / 8u];
+  let bits = (word >> ((local % 8u) * 4u)) & 0xFFFFu;
+  return vec4(f32(bits & 15u), f32((bits >> 4u) & 15u), f32((bits >> 8u) & 15u), f32((bits >> 12u) & 15u));
+}
+
+fn q4_4(x: u32) -> vec4<f32> {
+  return (q4_codes4(x) - 8.0) * scale(x / 32u);
+}
+
+fn dm(block: u32) -> vec2<f32> {
+  return unpack2x16float(scales[block]);
+}
+
+fn q41_4(x: u32) -> vec4<f32> {
+  let s = dm(x / 32u);
+  return q4_codes4(x) * s.x + s.y;
+}
+
+fn q51_4(x: u32) -> vec4<f32> {
+  let s = dm(x / 32u);
+  return q5_codes4(x) * s.x + s.y;
 }
 
 // Stages a[m0 + i / (KS / 4)][k0 + i % (KS / 4) · 4 ..+4].
@@ -112,6 +143,9 @@ fn stage_w(n0: u32, k0: u32, i: u32) {
       case 0u: { v = bitcast<vec4<f32>>(vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u])); }
       case 1u: { v = vec4(unpack2x16float(w[x / 2u]), unpack2x16float(w[x / 2u + 1u])); }
       case 3u: { v = q5_4(x); }
+      case 4u: { v = q4_4(x); }
+      case 5u: { v = q41_4(x); }
+      case 6u: { v = q51_4(x); }
       default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
     }
   }

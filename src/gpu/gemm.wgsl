@@ -8,7 +8,7 @@
 // the rounding of `a`, the ivrit he-long near-tie does. The module also holds `gemv`, for one row
 // of `a` (not rounded, as `mul_mv`), and `embed`.
 
-// Weight type, one pipeline each: 0: F32, 1: F16, 2: Q8_0, 3: Q5_0.
+// Weight type, one pipeline each: 0: F32, 1: F16, 2: Q8_0, 3: Q5_0, 4: Q4_0, 5: Q4_1, 6: Q5_1.
 override WTYPE: u32;
 // Rows of the GEMM's tile: 64, or 32 (more workgroups).
 override ROWS: u32 = 64u;
@@ -33,9 +33,11 @@ var<immediate> p: Params;
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read> bias: array<f32>;
 @group(0) @binding(2) var<storage, read_write> c: array<f32>;
-// F32 as bits, F16 as pairs, Q8_0 as 4 int8 per word, Q5_0 as 5-bit codes (24 bytes per 32).
+// F32 as bits, F16 as pairs, Q8_0 as 4 int8 per word, Q4 as nibbles (16 bytes per 32), Q5 as
+// 5-bit codes (24 bytes per 32).
 @group(0) @binding(3) var<storage, read> w: array<u32>;
-// Q8_0 and Q5_0 block scales as f16 pairs (any buffer for other types).
+// Q8_0, Q5_0 and Q4_0: one f16 scale per block, two per word. Q4_1 and Q5_1: an f16 scale and an
+// f16 minimum, one pair per word. Any buffer for the other types.
 @group(0) @binding(4) var<storage, read> scales: array<u32>;
 // `a` for the GEMM's 16-byte loads.
 @group(0) @binding(0) var<storage, read> a4: array<vec4<f32>>;
@@ -55,8 +57,8 @@ fn scale(block: u32) -> f32 {
   return select(s.x, s.y, (block & 1u) == 1u);
 }
 
-// Four Q5_0 codes starting at weight x (a multiple of 4). Codes are packed little-endian, five
-// bits each, 24 bytes per 32, and the f16 scale is applied here. gemm_fast.wgsl has the same load.
+// The u32 that holds four Q5 codes starting at weight x (a multiple of 4). Codes are packed
+// little-endian, five bits each, 24 bytes per 32. gemm_fast.wgsl has the same load.
 fn q5_word(x: u32) -> u32 {
   let block = x / 32u;
   let group = (x % 32u) / 4u;
@@ -71,14 +73,44 @@ fn q5_word(x: u32) -> u32 {
   return word >> (bit & 7u);
 }
 
-fn q5_4(x: u32) -> vec4<f32> {
+fn q5_codes4(x: u32) -> vec4<f32> {
   let packed = q5_word(x);
-  let q = vec4(f32(packed & 31u), f32((packed >> 5u) & 31u), f32((packed >> 10u) & 31u), f32((packed >> 15u) & 31u));
-  return (q - 16.0) * scale(x / 32u);
+  return vec4(f32(packed & 31u), f32((packed >> 5u) & 31u), f32((packed >> 10u) & 31u), f32((packed >> 15u) & 31u));
 }
 
-fn q5_1(x: u32) -> f32 {
-  let v = q5_4(x & ~3u);
+fn q5_4(x: u32) -> vec4<f32> {
+  return (q5_codes4(x) - 16.0) * scale(x / 32u);
+}
+
+// Four Q4 codes at weight x (a multiple of 4). Nibbles are in weight order, 16 bytes per 32.
+fn q4_codes4(x: u32) -> vec4<f32> {
+  let block = x / 32u;
+  let local = x % 32u;
+  let word = w[block * 4u + local / 8u];
+  let bits = (word >> ((local % 8u) * 4u)) & 0xFFFFu;
+  return vec4(f32(bits & 15u), f32((bits >> 4u) & 15u), f32((bits >> 8u) & 15u), f32((bits >> 12u) & 15u));
+}
+
+fn q4_4(x: u32) -> vec4<f32> {
+  return (q4_codes4(x) - 8.0) * scale(x / 32u);
+}
+
+// f16 scale and f16 minimum of one Q4_1 or Q5_1 block.
+fn dm(block: u32) -> vec2<f32> {
+  return unpack2x16float(scales[block]);
+}
+
+fn q41_4(x: u32) -> vec4<f32> {
+  let s = dm(x / 32u);
+  return q4_codes4(x) * s.x + s.y;
+}
+
+fn q51_4(x: u32) -> vec4<f32> {
+  let s = dm(x / 32u);
+  return q5_codes4(x) * s.x + s.y;
+}
+
+fn lane(v: vec4<f32>, x: u32) -> f32 {
   switch x & 3u {
     case 0u: { return v.x; }
     case 1u: { return v.y; }
@@ -135,7 +167,7 @@ fn store(m: u32, n0: u32, acc: vec4<f32>) {
 }
 
 // The words of W[n][k..k + 4]; for Q8_0 one, the word of its block's scale and the block's
-// parity. Q5_0 returns the four dequantized weights as bits. Zeros from row p.n on.
+// parity. Q4 and Q5 return the four dequantized weights as bits. Zeros from row p.n on.
 fn w_words(n: u32, k: u32) -> vec4<u32> {
   if (n >= p.n) {
     return vec4(0u);
@@ -145,6 +177,9 @@ fn w_words(n: u32, k: u32) -> vec4<u32> {
     case 0u: { return vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u]); }
     case 1u: { return vec4(w[x / 2u], w[x / 2u + 1u], 0u, 0u); }
     case 3u: { return bitcast<vec4<u32>>(q5_4(x)); }
+    case 4u: { return bitcast<vec4<u32>>(q4_4(x)); }
+    case 5u: { return bitcast<vec4<u32>>(q41_4(x)); }
+    case 6u: { return bitcast<vec4<u32>>(q51_4(x)); }
     default: { return vec4(w[x / 4u], scales[x / 64u], (x / 32u) & 1u, 0u); }
   }
 }
@@ -155,7 +190,7 @@ fn w_floats(v: vec4<u32>) -> vec4<f32> {
   switch WTYPE {
     case 0u: { x = bitcast<vec4<f32>>(v); }
     case 1u: { x = vec4(unpack2x16float(v.x), unpack2x16float(v.y)); }
-    case 3u: { x = bitcast<vec4<f32>>(v); }
+    case 3u, 4u, 5u, 6u: { x = bitcast<vec4<f32>>(v); }
     default: {
       let s = unpack2x16float(v.y);
       x = vec4<f32>(unpack4xI8(v.x)) * select(s.x, s.y, v.z == 1u);
@@ -276,7 +311,7 @@ fn gemm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
 }
 
 // a[8j..8j + 8]·W[row][8j..8j + 8]. Q8_0 scales the int8 sum once per 8 weights, as ggml's
-// `mul_mv` does; Q5_0 dequantizes each code. W is not rounded.
+// `mul_mv` does; Q4 and Q5 dequantize each code. W is not rounded.
 fn dot8(row: u32, j: u32, a0: vec4<f32>, a1: vec4<f32>) -> f32 {
   let x = row * p.k + 8u * j;
   switch WTYPE {
@@ -291,6 +326,9 @@ fn dot8(row: u32, j: u32, a0: vec4<f32>, a1: vec4<f32>) -> f32 {
       return dot(w0, a0) + dot(vec4(unpack2x16float(w[h + 2u]), unpack2x16float(w[h + 3u])), a1);
     }
     case 3u: { return dot(q5_4(x), a0) + dot(q5_4(x + 4u), a1); }
+    case 4u: { return dot(q4_4(x), a0) + dot(q4_4(x + 4u), a1); }
+    case 5u: { return dot(q41_4(x), a0) + dot(q41_4(x + 4u), a1); }
+    case 6u: { return dot(q51_4(x), a0) + dot(q51_4(x + 4u), a1); }
     default: {
       let q = x / 4u;
       let d = dot(vec4<f32>(unpack4xI8(w[q])), a0) + dot(vec4<f32>(unpack4xI8(w[q + 1u])), a1);
@@ -356,7 +394,10 @@ fn embed(@builtin(global_invocation_id) id: vec3<u32>) {
   switch WTYPE {
     case 0u: { v = bitcast<f32>(w[x]); }
     case 1u: { v = unpack2x16float(w[x / 2u])[x % 2u]; }
-    case 3u: { v = q5_1(x); }
+    case 3u: { v = lane(q5_4(x & ~3u), x); }
+    case 4u: { v = lane(q4_4(x & ~3u), x); }
+    case 5u: { v = lane(q41_4(x & ~3u), x); }
+    case 6u: { v = lane(q51_4(x & ~3u), x); }
     default: { v = f32(unpack4xI8(w[x / 4u])[x % 4u]) * scale(x / 32u); }
   }
   c[i] = v + a[p.offset + i] + bias[i];
