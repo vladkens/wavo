@@ -6,19 +6,35 @@ Wrong words per 100 on the FLEURS test set, lower is better. The best model of e
 
 | Language | Best | `parakeet-ultra` | `parakeet-v3` | `whisper-turbo` |
 |---|---|---:|---:|---:|
+| Bulgarian | `parakeet-ultra`, 11.1 | 11.1 | 12.8 | 13.6 |
+| Croatian | `parakeet-ultra`, 11.3 | 11.3 | 12.6 | 12.4 |
+| Czech | `parakeet-ultra`, 11.1 | 11.1 | 12.2 | 11.7 |
+| Danish | `whisper-turbo`, 13.8 | 15.9 | 18.6 | 13.8 |
+| Dutch | `whisper-turbo`, 5.9 | 6.7 | 7.6 | 5.9 |
 | English | `parakeet-v2`, 4.1 | 4.2 | 4.9 | 4.4 |
-| Russian | `gigaam-v3`, 4.5 | 4.7 | 5.5 | 4.5 |
-| German | `parakeet-ultra`, 4.5 | 4.5 | 5.2 | 5.7 |
+| Estonian | `parakeet-ultra`, 14.5 | 14.5 | 18.0 | 18.6 |
+| Finnish | `whisper-turbo`, 8.6 | 11.2 | 13.5 | 8.6 |
 | French | `parakeet-ultra`, 4.6 | 4.6 | 5.2 | 5.5 |
-| Spanish | `parakeet-ultra`, 3.0 | 3.0 | 3.6 | 3.2 |
-| Italian | `parakeet-ultra`, 2.3 | 2.3 | 3.0 | 2.7 |
-| Portuguese | `parakeet-ultra`, 4.1 | 4.1 | 5.0 | 4.3 |
-| Polish | `whisper-turbo`, 5.8 | 6.2 | 7.4 | 5.8 |
-| Ukrainian | `parakeet-ultra`, 5.6 | 5.6 | 6.9 | 7.4 |
+| German | `parakeet-ultra`, 4.5 | 4.5 | 5.2 | 5.7 |
+| Greek | `whisper-turbo`, 13.2 | 32.2 | 35.3 | 13.2 |
 | Hebrew | `whisper-turbo-he`, 18.4 | – | – | – |
+| Hungarian | `parakeet-ultra`, 13.2 | 13.2 | 16.1 | 14.8 |
+| Italian | `parakeet-ultra`, 2.3 | 2.3 | 3.0 | 2.7 |
+| Latvian | `parakeet-ultra`, 17.9 | 17.9 | 23.9 | 19.2 |
+| Lithuanian | `parakeet-ultra`, 17.1 | 17.1 | 22.1 | 25.0 |
+| Maltese | `parakeet-ultra`, 17.0 | 17.0 | 20.6 | 72.8 |
+| Polish | `whisper-turbo`, 5.8 | 6.2 | 7.4 | 5.8 |
+| Portuguese | `parakeet-ultra`, 4.1 | 4.1 | 5.0 | 4.2 |
+| Romanian | `parakeet-ultra`, 10.1 | 10.1 | 12.7 | 10.8 |
+| Russian | `gigaam-v3`, 4.5 | 4.7 | 5.5 | 4.5 |
+| Slovak | `parakeet-ultra`, 7.8 | 7.8 | 10.2 | 10.3 |
+| Slovenian | `parakeet-ultra`, 18.9 | 18.9 | 24.2 | 20.9 |
+| Spanish | `parakeet-ultra`, 3.0 | 3.0 | 3.6 | 3.2 |
+| Swedish | `whisper-turbo`, 8.8 | 12.8 | 15.2 | 8.8 |
+| Ukrainian | `parakeet-ultra`, 5.6 | 5.6 | 6.8 | 7.3 |
 | 1 hour of audio takes | | ~30 s | 22 s | ~4 min |
 
-`gigaam-v3` takes 11 s for an hour of Russian, and `parakeet-he` 23.1 on Hebrew at about Parakeet's speed. On English LibriSpeech test-clean: `parakeet-v2` 1.7, `parakeet-ultra` 1.8, `parakeet-v3` 1.9, `whisper-turbo` 2.0, `moonshine-base` 3.3. Measured with wavo on the GPU by `scripts/wer.py run`; other languages aren't measured yet.
+`gigaam-v3` takes 11 s for an hour of Russian, and `parakeet-he` 23.1 on Hebrew at about Parakeet's speed. On English LibriSpeech test-clean: `parakeet-v2` 1.7, `parakeet-ultra` 1.8, `parakeet-v3` 1.9, `whisper-turbo` 2.0, `moonshine-base` 3.3. Measured with wavo on the GPU by `scripts/wer.py run`; the other languages of Whisper aren't measured yet. The library has these numbers too: `ModelInfo::wer`, `ModelInfo::speed` and `hub::best_for`.
 
 ## All models
 
