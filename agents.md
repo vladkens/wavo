@@ -34,7 +34,7 @@ Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, 
 
 ## Adding a model
 
-1. Add the variant from `3rd/transcribe.cpp/catalog/<variant>.json` to `hub::MODELS`; `make test-unit` then names every other list to update. Run `make models MODELS=<name>`.
+1. Add the variant from `3rd/transcribe.cpp/catalog/<variant>.json` to `hub::MODELS`; add it to `docs/models.md` too; `make test-unit` then names every other list to update. Run `make models MODELS=<name>`.
 2. Read the reference's `scripts/convert-<family>.py`, `src/arch/<family>/` and `docs/models/<variant>.md`.
 3. Generate fixtures with `make fixtures MODEL=<name> SAMPLES="..."`: 2–4 clips in the model's language (short, ~11 s, long, plus silence where relevant). The model's first commit already produces a transcript.
 4. Pass the fixtures of every model in the family exactly, then benchmark against the reference; if wavo is slower, work through `docs/perf.md` or report the gap to the person.
@@ -60,5 +60,4 @@ Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, 
 - Every change reaches `main` through a pull request from a `feat/<name>` branch, one per feature or roadmap phase; never commit or push to `main` directly. The maintainer squash-merges it.
 - A commit, and the PR title as the squash commit, is one short lowercase line with no body; docs change in the same commit. A speed PR's body gives the numbers.
 - A release is a PR with one `release: vX.Y.Z` commit that bumps the version and writes `changelog.md` from the git history; `changelog.md` changes in no other commit. After the squash-merge CI tags it, publishes to crates.io and creates the GitHub release.
-- Before pushing a change to the readme or a doc with tables, run `scripts/render-docs.sh` and look at the pictures it writes.
 - Keep docs to `readme.md` (users), the rustdoc (the library's user guide), `docs/models.md`, `docs/benchmarks.md` with its data in `results/`, `docs/plans/`, and for agents, marked so on their first line, `docs/perf.md` and `docs/roadmap.md`; no progress journals, hand-kept benchmark tables, hash receipts, run logs or disclaimer paragraphs.
