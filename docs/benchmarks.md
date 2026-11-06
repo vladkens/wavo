@@ -28,7 +28,7 @@ Seconds you wait for the text after a recording of that length ends. Lower is be
 | wavo 0.4.0 | Model | 5s | 15s | 30s | 1h |
 |---|---|---:|---:|---:|---:|
 | NVIDIA RTX 4060, Windows 11 | Parakeet v3 | 0.05 | 0.10 | 0.16 | 29 |
-| NVIDIA RTX 4060, Windows 11 | GigaAM v3 | **0.02** | **0.04** | **0.06** | **13** |
+| NVIDIA RTX 4060, Windows 11 | GigaAM v3 | 0.02 | 0.04 | 0.06 | 13 |
 
 ## How it's measured
 
