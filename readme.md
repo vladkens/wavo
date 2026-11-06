@@ -103,25 +103,11 @@ wavo debug                            # your system, GPUs and models, to paste i
 wavo run talk.wav --backend gpu       # the GPU even where the Neural Engine is ready
 ```
 
-When the model isn't downloaded yet, `wavo run` asks before downloading it, in a terminal; `-y`
-downloads without asking, for scripts. Without a terminal and `-y` it fails with the `wavo pull`
-command to run, and `wavo bench` never downloads. Long recordings are split at their quietest
-moments and transcribed piece by piece, so an hour of audio works as well as a minute;
-`--segment SECS` sets the piece length, `--segment 0` runs one pass (up to 37.5 s for
-GigaAM and 45 s for Moonshine). Whisper detects the language of each piece; `--language CODE`
-sets it instead, for speech it mistakes for a close language, such as Hebrew heard as Arabic.
-Audio without recognized speech prints nothing (with `--json`, an empty text) and
-`no speech recognized` on stderr, and still exits with 0, so a batch goes on. Models are stored in
-the Hugging Face cache (`~/.cache/huggingface/hub`), so a model fetched with `hf download` is
-found by `wavo` and the other way round.
-
-On an Apple Silicon Mac with macOS 15 or later, `wavo pull` also prepares Parakeet and GigaAM for
-the Neural Engine: it compiles the model's encoder for Core ML once, which takes 15–30 s and as much
-disk as the model, in `~/Library/Caches/wavo`. From then on `wavo run` uses the Neural Engine for
-them (`wavo list` shows which are ready) and splits audio into pieces of up to 15 s. Its text is
-close to the GPU's, not equal ([numbers](https://docs.rs/wavo/latest/wavo/#neural-engine)).
-`--backend gpu` runs on the GPU anyway, `--backend ane` fails rather than fall back. Whisper and Moonshine always run on the GPU,
-where they are faster.
+- Any length works: long recordings are split at pauses, `--segment SECS` sets the piece length.
+- `wavo run` asks before downloading a model, `-y` skips the question.
+- Whisper detects the language, `--language CODE` sets it.
+- Models live in the Hugging Face cache, shared with `hf download`.
+- On a Mac, `wavo pull` also prepares Parakeet and GigaAM for the Neural Engine, once, in 15–30 s. `wavo run` then uses it; `--backend gpu` stays on the GPU.
 
 <details>
 <summary>Server</summary>
@@ -177,23 +163,23 @@ doesn't translate, nor detect the language of an untagged track (`/detect-langua
 | `whisper-turbo` | 100 | 0.89 GB | 2.0 | 4.5 | ~4 min |
 | `moonshine-base` | English | 0.08 GB | 3.3 | – | ~20 s |
 
-Errors are wrong words per 100, on LibriSpeech test-clean and FLEURS Russian, measured with wavo. Time is on an Apple M5's GPU. [All 24 models](docs/models.md), [all the numbers](docs/benchmarks.md).
+Errors are wrong words per 100, lower is better. [All models and languages](docs/models.md).
 
 ## ⚡ Speed
 
-wavo is among the fastest ways to run these models, and it is one Rust binary on every system. A short phrase takes under 0.2 s in all the engines below, so the time that shows is a long recording. Parakeet v3 on a MacBook Pro with Apple M5, lower is better:
+How long an hour of speech takes to transcribe, and how much energy it uses. Every engine runs the same Parakeet v3 model on the same audio.
 
-| | 1 hour of audio | Energy | Written in | Runs on |
-|---|---:|---:|---|---|
-| wavo, Neural Engine | 18 s | 225 J | Rust | Mac |
-| [FluidAudio](https://github.com/FluidInference/FluidAudio), Neural Engine | 21 s | 164 J | Swift | Mac |
-| wavo, GPU | 22 s | 377 J | Rust | Mac, Windows, Linux |
-| [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp), GPU | 34 s | 565 J | C++ | Mac, Windows, Linux |
-| [parakeet.cpp](https://github.com/mudler/parakeet.cpp), GPU | 40 s | 472 J | C++ | Mac, Windows, Linux |
-| [parakeet-mlx](https://github.com/senstella/parakeet-mlx), GPU | 59 s | 393 J | Python | Mac |
-| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), CPU | 92 s | 1474 J | C++ | Mac, Windows, Linux |
+| Engine | On | 1 hour | Energy | Language | Platforms |
+|---|---|---:|---:|---|---|
+| wavo | ANE | 18 s | 225 J | Rust | Mac |
+| [FluidAudio](https://github.com/FluidInference/FluidAudio) | ANE | 21 s | 164 J | Swift | Mac |
+| wavo | GPU | 22 s | 377 J | Rust | Mac, Windows, Linux |
+| [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) | GPU | 34 s | 565 J | C++ | Mac, Windows, Linux |
+| [parakeet.cpp](https://github.com/mudler/parakeet.cpp) | GPU | 40 s | 472 J | C++ | Mac, Windows, Linux |
+| [parakeet-mlx](https://github.com/senstella/parakeet-mlx) | GPU | 59 s | 393 J | Python | Mac |
+| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | CPU | 92 s | 1474 J | C++ | Mac, Windows, Linux |
 
-GigaAM, phrases, other machines and the method: [docs/benchmarks.md](docs/benchmarks.md).
+Measured on a MacBook Pro with an Apple M5. ANE is Apple's Neural Engine. The full tables and the method are in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## 📚 Library usage
 
