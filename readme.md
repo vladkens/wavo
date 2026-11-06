@@ -202,8 +202,9 @@ cargo add wavo --no-default-features --features hub
 ```
 
 ```rust
-let model = wavo::Model::load(path)?;
-let transcript = model.transcribe(&pcm)?; // pcm: 16 kHz mono f32 in [-1, 1]
+let pcm: Vec<f32> = read_audio(); // 16 kHz mono in [-1, 1]; decoding is up to you
+let model = wavo::Model::load("parakeet-tdt-0.6b-v3-Q8_0.gguf")?;
+let transcript = model.transcribe(&pcm)?;
 println!("{}", transcript.text);
 ```
 

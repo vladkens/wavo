@@ -411,7 +411,7 @@ def build_wavo() -> str:
         sh("1/1 cargo build", [cargo], cwd=REPO)
 
     wavo = subprocess.run([str(WAVO), "--version"], capture_output=True, text=True).stdout
-    cmd = ["git", "-C", str(REPO), "describe", "--always", "--dirty", "--exclude=*"]
+    cmd = ["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"]  # not `--dirty`: results change
     rev = subprocess.run(cmd, capture_output=True, text=True).stdout
     return f"{wavo.split()[-1]} {rev.strip()}"
 
