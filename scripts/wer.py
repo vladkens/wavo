@@ -18,12 +18,14 @@ then writes `results/wer-<chip>.json` and prints the table: the error rate and t
 audio per second of a request, with the model loaded and warm. Every model runs on every language it
 takes that the sets have; both sides pass one normalizer, the rate is all edits over all reference
 words (characters for languages without spaces). Russian also gets a row without the clips whose
-reference has digits, as FLEURS writes numbers as digits where models may spell them out.
+reference has digits, as FLEURS writes numbers as digits where models may spell them out. Saved
+texts aren't tied to a build: after changing wavo or a model, start over with `--clean`.
 """
 
 import argparse
 import csv
 import json
+import os
 import platform
 import re
 import subprocess
@@ -271,7 +273,8 @@ def serve(model: str, backend: str) -> subprocess.Popen:
     """`wavo serve` with the model loaded, once it answers. Its log goes to a file, off the bars."""
     log = open(WORK / "serve.log", "a")
     cmd = [str(WAVO), "serve", model, "--port", str(PORT), "--backend", backend, "-y"]
-    server = subprocess.Popen(cmd, stdout=log, stderr=log)
+    env = {k: v for k, v in os.environ.items() if k != "WAVO_API_KEY"}  # requests send no key
+    server = subprocess.Popen(cmd, stdout=log, stderr=log, env=env)
     for _ in range(1800):
         if server.poll() is not None:
             sys.exit(f"wavo serve {model} stopped with code {server.returncode}: see {log.name}")
@@ -296,8 +299,11 @@ def transcribe(model: str, info: dict, dataset: str, lang: str, name: str, backe
     with open(file, "a", encoding="utf-8") as out:
         todo = [x for x in clips(dataset) if x[0] not in done]
         language = lang if takes_language else None
-        if todo:
-            post(model, todo[0][1], language)  # the first call is slower: out of the times
+        try:
+            if todo:
+                post(model, todo[0][1], language)  # the first call is slower: out of the times
+        except httpx.HTTPStatusError:
+            pass  # its clip fails below, in the count
 
         for id, audio, _ in tqdm(todo, desc=name, leave=False, **CLIP_BAR):
             try:

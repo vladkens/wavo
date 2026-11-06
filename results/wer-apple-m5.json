@@ -4,29 +4,6 @@
   "date": "2026-11-06",
   "rows": [
     {
-      "model": "gigaam-v3",
-      "backend": "gpu",
-      "dataset": "fleurs-ru",
-      "language": "ru",
-      "metric": "wer",
-      "clips": 775,
-      "missing": 0,
-      "audio_s": 8993.8,
-      "time_s": 30.89,
-      "speed": 291.1,
-      "rate": 4.52
-    },
-    {
-      "model": "gigaam-v3",
-      "backend": "gpu",
-      "dataset": "fleurs-ru no digits",
-      "language": "ru",
-      "metric": "wer",
-      "clips": 620,
-      "missing": 0,
-      "rate": 3.27
-    },
-    {
       "model": "parakeet-v3",
       "backend": "gpu",
       "dataset": "test-clean",
@@ -588,6 +565,29 @@
       "time_s": 591.47,
       "speed": 12.5,
       "rate": 18.4
+    },
+    {
+      "model": "gigaam-v3",
+      "backend": "gpu",
+      "dataset": "fleurs-ru",
+      "language": "ru",
+      "metric": "wer",
+      "clips": 775,
+      "missing": 0,
+      "audio_s": 8993.8,
+      "time_s": 30.89,
+      "speed": 291.1,
+      "rate": 4.52
+    },
+    {
+      "model": "gigaam-v3",
+      "backend": "gpu",
+      "dataset": "fleurs-ru no digits",
+      "language": "ru",
+      "metric": "wer",
+      "clips": 620,
+      "missing": 0,
+      "rate": 3.27
     }
   ]
 }
