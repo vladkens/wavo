@@ -1,0 +1,1151 @@
+{
+  "chip": "Apple M5",
+  "macos": "27.0.1",
+  "date": "2026-11-06",
+  "rows": [
+    {
+      "engine": "wavo-gpu",
+      "model": "parakeet-v3",
+      "language": "en",
+      "version": "0.4.0 ",
+      "backend": "Metal",
+      "precision": "Q8_0",
+      "notes": "call: Model::transcribe",
+      "latency": {
+        "1s": {
+          "load_ms": 428.3,
+          "first_ms": 59.1,
+          "warm_ms": 30.2,
+          "calls": [
+            59.1,
+            32.4,
+            30.5,
+            30.2,
+            30.0,
+            29.9
+          ]
+        },
+        "2s": {
+          "load_ms": 105.4,
+          "first_ms": 50.4,
+          "warm_ms": 32.3,
+          "calls": [
+            50.4,
+            34.7,
+            32.4,
+            32.2,
+            32.3,
+            32.2
+          ]
+        },
+        "5s": {
+          "load_ms": 104.4,
+          "first_ms": 62.9,
+          "warm_ms": 42.6,
+          "calls": [
+            62.9,
+            47.3,
+            43.7,
+            42.6,
+            42.5,
+            42.2
+          ]
+        },
+        "10s": {
+          "load_ms": 98.8,
+          "first_ms": 66.3,
+          "warm_ms": 46.2,
+          "calls": [
+            66.3,
+            46.2,
+            48.7,
+            46.1,
+            46.1,
+            46.3
+          ]
+        },
+        "30s": {
+          "load_ms": 100.8,
+          "first_ms": 164.2,
+          "warm_ms": 154.7,
+          "calls": [
+            164.2,
+            154.7,
+            160.3,
+            156.1,
+            154.3,
+            153.4
+          ]
+        }
+      },
+      "hour": {
+        "runs": [
+          {
+            "wall_s": 22.96,
+            "realtime": 156.25,
+            "peak_mb": 845,
+            "words": 9677
+          },
+          {
+            "wall_s": 34.52,
+            "realtime": 103.92,
+            "peak_mb": 845,
+            "words": 9677
+          },
+          {
+            "wall_s": 24.24,
+            "realtime": 148.0,
+            "peak_mb": 846,
+            "words": 9677
+          }
+        ],
+        "audio_s": 3587.4,
+        "pieces": 392,
+        "wall_s": 24.24,
+        "realtime": 148.0,
+        "peak_mb": 845,
+        "words": 9677
+      }
+    },
+    {
+      "engine": "wavo-ane",
+      "model": "parakeet-v3",
+      "language": "en",
+      "version": "0.4.0 ",
+      "backend": "Neural Engine",
+      "precision": "int8 encoder",
+      "notes": "call: Model::transcribe; the weights live in the system's Neural Engine service, outside the peak memory",
+      "latency": {
+        "1s": {
+          "load_ms": 181.4,
+          "first_ms": 40.9,
+          "warm_ms": 29.7,
+          "calls": [
+            40.9,
+            29.7,
+            29.8,
+            29.7,
+            29.6,
+            29.6
+          ]
+        },
+        "2s": {
+          "load_ms": 64.3,
+          "first_ms": 45.1,
+          "warm_ms": 31.7,
+          "calls": [
+            45.1,
+            31.8,
+            31.7,
+            31.6,
+            31.6,
+            31.7
+          ]
+        },
+        "5s": {
+          "load_ms": 63.7,
+          "first_ms": 54.3,
+          "warm_ms": 40.4,
+          "calls": [
+            54.3,
+            40.4,
+            40.4,
+            40.4,
+            40.4,
+            40.4
+          ]
+        },
+        "10s": {
+          "load_ms": 61.5,
+          "first_ms": 50.0,
+          "warm_ms": 39.0,
+          "calls": [
+            50.0,
+            39.1,
+            39.0,
+            39.0,
+            38.9,
+            38.9
+          ]
+        },
+        "30s": {
+          "load_ms": 63.3,
+          "first_ms": 157.8,
+          "warm_ms": 145.1,
+          "calls": [
+            157.8,
+            145.1,
+            144.8,
+            145.1,
+            145.0,
+            145.1
+          ]
+        }
+      },
+      "hour": {
+        "runs": [
+          {
+            "wall_s": 18.26,
+            "realtime": 196.46,
+            "peak_mb": 61,
+            "words": 9675
+          },
+          {
+            "wall_s": 20.88,
+            "realtime": 171.81,
+            "peak_mb": 66,
+            "words": 9675
+          },
+          {
+            "wall_s": 18.19,
+            "realtime": 197.22,
+            "peak_mb": 61,
+            "words": 9675
+          }
+        ],
+        "audio_s": 3587.4,
+        "pieces": 392,
+        "wall_s": 18.26,
+        "realtime": 196.46,
+        "peak_mb": 61,
+        "words": 9675
+      }
+    },
+    {
+      "engine": "transcribe.cpp",
+      "model": "parakeet-v3",
+      "language": "en",
+      "version": "v0.4.1",
+      "backend": "Metal",
+      "precision": "Q8_0",
+      "notes": "call: mel_ms + encode_ms + decode_ms, a few ms below the call's wall time",
+      "latency": {
+        "1s": {
+          "load_ms": 44.5,
+          "first_ms": 34.5,
+          "warm_ms": 21.4,
+          "calls": [
+            34.5,
+            21.4,
+            20.9,
+            21.5,
+            21.9,
+            20.9
+          ]
+        },
+        "2s": {
+          "load_ms": 46.8,
+          "first_ms": 124.8,
+          "warm_ms": 39.3,
+          "calls": [
+            124.8,
+            39.4,
+            38.3,
+            39.3,
+            41.1,
+            39.0
+          ]
+        },
+        "5s": {
+          "load_ms": 52.2,
+          "first_ms": 77.2,
+          "warm_ms": 60.2,
+          "calls": [
+            77.2,
+            59.2,
+            61.1,
+            62.0,
+            59.0,
+            60.2
+          ]
+        },
+        "10s": {
+          "load_ms": 46.6,
+          "first_ms": 90.7,
+          "warm_ms": 76.1,
+          "calls": [
+            90.7,
+            76.1,
+            77.0,
+            72.2,
+            74.8,
+            79.5
+          ]
+        },
+        "30s": {
+          "load_ms": 47.6,
+          "first_ms": 412.1,
+          "warm_ms": 259.6,
+          "calls": [
+            412.1,
+            256.9,
+            264.2,
+            261.7,
+            259.6,
+            258.0
+          ]
+        }
+      },
+      "hour": {
+        "runs": [
+          {
+            "wall_s": 40.98,
+            "realtime": 87.54,
+            "peak_mb": 236,
+            "words": 9677
+          },
+          {
+            "wall_s": 34.98,
+            "realtime": 102.56,
+            "peak_mb": 234,
+            "words": 9677
+          },
+          {
+            "wall_s": 34.24,
+            "realtime": 104.77,
+            "peak_mb": 237,
+            "words": 9677
+          }
+        ],
+        "audio_s": 3587.4,
+        "pieces": 392,
+        "wall_s": 34.98,
+        "realtime": 102.56,
+        "peak_mb": 236,
+        "words": 9677
+      }
+    },
+    {
+      "engine": "fluidaudio",
+      "model": "parakeet-v3",
+      "language": "en",
+      "version": "v0.17.7",
+      "backend": "Neural Engine",
+      "precision": "int8 encoder",
+      "notes": "call: AsrManager.transcribe, audio padded to 15 s; the weights live in the system's Neural Engine service, outside the peak memory",
+      "latency": {
+        "1s": {
+          "load_ms": 218.40298175811768,
+          "first_ms": 40.1,
+          "warm_ms": 31.9,
+          "calls": [
+            40.1,
+            32.3,
+            32.0,
+            31.8,
+            31.8,
+            31.9
+          ]
+        },
+        "2s": {
+          "load_ms": 87.07201480865479,
+          "first_ms": 44.2,
+          "warm_ms": 35.2,
+          "calls": [
+            44.2,
+            35.3,
+            35.3,
+            35.2,
+            34.9,
+            35.0
+          ]
+        },
+        "5s": {
+          "load_ms": 83.64593982696533,
+          "first_ms": 56.3,
+          "warm_ms": 46.8,
+          "calls": [
+            56.3,
+            46.8,
+            46.3,
+            46.8,
+            46.8,
+            47.3
+          ]
+        },
+        "10s": {
+          "load_ms": 83.73403549194336,
+          "first_ms": 93.6,
+          "warm_ms": 87.5,
+          "calls": [
+            93.6,
+            88.3,
+            87.6,
+            87.1,
+            87.5,
+            87.1
+          ]
+        },
+        "30s": {
+          "load_ms": 85.45005321502686,
+          "first_ms": 148.2,
+          "warm_ms": 145.0,
+          "calls": [
+            148.2,
+            145.0,
+            149.1,
+            140.8,
+            145.2,
+            144.5
+          ]
+        }
+      },
+      "hour": {
+        "runs": [
+          {
+            "wall_s": 20.92,
+            "realtime": 171.48,
+            "peak_mb": 48,
+            "words": 9701
+          },
+          {
+            "wall_s": 20.87,
+            "realtime": 171.89,
+            "peak_mb": 47,
+            "words": 9701
+          },
+          {
+            "wall_s": 20.75,
+            "realtime": 172.89,
+            "peak_mb": 47,
+            "words": 9701
+          }
+        ],
+        "audio_s": 3587.4,
+        "pieces": 392,
+        "wall_s": 20.87,
+        "realtime": 171.89,
+        "peak_mb": 47,
+        "words": 9701
+      }
+    },
+    {
+      "engine": "parakeet-mlx",
+      "model": "parakeet-v3",
+      "language": "en",
+      "version": "0.7.0 mlx 0.32.4",
+      "backend": "Metal (MLX)",
+      "precision": "bf16",
+      "notes": "call: logmel + generate; load has the imports; wall and peak leave out uv",
+      "latency": {
+        "1s": {
+          "load_ms": 1637.2,
+          "first_ms": 385.3,
+          "warm_ms": 69.0,
+          "calls": [
+            385.3,
+            69.8,
+            70.0,
+            69.0,
+            68.0,
+            68.1
+          ]
+        },
+        "2s": {
+          "load_ms": 308.9,
+          "first_ms": 425.2,
+          "warm_ms": 81.5,
+          "calls": [
+            425.2,
+            82.3,
+            82.3,
+            81.5,
+            81.0,
+            79.9
+          ]
+        },
+        "5s": {
+          "load_ms": 295.1,
+          "first_ms": 304.4,
+          "warm_ms": 123.4,
+          "calls": [
+            304.4,
+            123.7,
+            123.1,
+            123.8,
+            123.4,
+            123.4
+          ]
+        },
+        "10s": {
+          "load_ms": 299.0,
+          "first_ms": 328.1,
+          "warm_ms": 148.4,
+          "calls": [
+            328.1,
+            149.6,
+            151.1,
+            148.4,
+            146.9,
+            146.5
+          ]
+        },
+        "30s": {
+          "load_ms": 298.6,
+          "first_ms": 573.5,
+          "warm_ms": 394.0,
+          "calls": [
+            573.5,
+            397.1,
+            393.5,
+            393.3,
+            394.0,
+            397.0
+          ]
+        }
+      },
+      "hour": {
+        "runs": [
+          {
+            "wall_s": 64.15,
+            "realtime": 55.92,
+            "peak_mb": 18072,
+            "words": 9689
+          },
+          {
+            "wall_s": 61.18,
+            "realtime": 58.64,
+            "peak_mb": 18044,
+            "words": 9689
+          },
+          {
+            "wall_s": 59.3,
+            "realtime": 60.5,
+            "peak_mb": 18051,
+            "words": 9689
+          }
+        ],
+        "audio_s": 3587.4,
+        "pieces": 392,
+        "wall_s": 61.18,
+        "realtime": 58.64,
+        "peak_mb": 18051,
+        "words": 9689
+      }
+    },
+    {
+      "engine": "sherpa-onnx",
+      "model": "parakeet-v3",
+      "language": "en",
+      "version": "2.0.1 4 threads",
+      "backend": "CPU",
+      "precision": "int8",
+      "notes": "threads: the performance cores; load has the import; wall and peak leave out uv",
+      "latency": {
+        "1s": {
+          "load_ms": 991.3,
+          "first_ms": 43.6,
+          "warm_ms": 35.2,
+          "calls": [
+            43.6,
+            34.0,
+            35.2,
+            35.0,
+            35.7,
+            35.2
+          ]
+        },
+        "2s": {
+          "load_ms": 636.3,
+          "first_ms": 60.6,
+          "warm_ms": 54.2,
+          "calls": [
+            60.6,
+            54.2,
+            54.4,
+            53.8,
+            54.0,
+            54.3
+          ]
+        },
+        "5s": {
+          "load_ms": 637.9,
+          "first_ms": 123.3,
+          "warm_ms": 122.0,
+          "calls": [
+            123.3,
+            119.9,
+            116.4,
+            122.0,
+            124.0,
+            125.6
+          ]
+        },
+        "10s": {
+          "load_ms": 633.6,
+          "first_ms": 215.0,
+          "warm_ms": 224.3,
+          "calls": [
+            215.0,
+            211.6,
+            221.0,
+            224.3,
+            230.9,
+            230.1
+          ]
+        },
+        "30s": {
+          "load_ms": 636.3,
+          "first_ms": 671.0,
+          "warm_ms": 732.9,
+          "calls": [
+            671.0,
+            708.4,
+            724.6,
+            736.5,
+            737.0,
+            732.9
+          ]
+        }
+      },
+      "hour": {
+        "runs": [
+          {
+            "wall_s": 145.99,
+            "realtime": 24.57,
+            "peak_mb": 2089,
+            "words": 9648
+          },
+          {
+            "wall_s": 148.2,
+            "realtime": 24.21,
+            "peak_mb": 2091,
+            "words": 9648
+          },
+          {
+            "wall_s": 144.57,
+            "realtime": 24.81,
+            "peak_mb": 2088,
+            "words": 9648
+          }
+        ],
+        "audio_s": 3587.4,
+        "pieces": 392,
+        "wall_s": 145.99,
+        "realtime": 24.57,
+        "peak_mb": 2089,
+        "words": 9648
+      }
+    },
+    {
+      "engine": "parakeet.cpp",
+      "model": "parakeet-v3",
+      "language": "en",
+      "version": "v0.6.1",
+      "backend": "Metal",
+      "precision": "q8_0",
+      "notes": "call: a parakeet-server request; load: start to /health; wall, peak: the server",
+      "latency": {
+        "1s": {
+          "load_ms": 374.8,
+          "first_ms": 59.8,
+          "warm_ms": 38.1,
+          "calls": [
+            59.8,
+            38.3,
+            38.0,
+            38.1,
+            38.1,
+            37.8
+          ]
+        },
+        "2s": {
+          "load_ms": 218.4,
+          "first_ms": 64.5,
+          "warm_ms": 46.7,
+          "calls": [
+            64.5,
+            46.7,
+            46.8,
+            46.7,
+            46.1,
+            46.4
+          ]
+        },
+        "5s": {
+          "load_ms": 236.2,
+          "first_ms": 170.0,
+          "warm_ms": 73.9,
+          "calls": [
+            170.0,
+            78.2,
+            74.7,
+            73.8,
+            73.9,
+            73.7
+          ]
+        },
+        "10s": {
+          "load_ms": 189.2,
+          "first_ms": 199.5,
+          "warm_ms": 90.8,
+          "calls": [
+            199.5,
+            85.2,
+            87.7,
+            91.3,
+            90.8,
+            91.5
+          ]
+        },
+        "30s": {
+          "load_ms": 192.4,
+          "first_ms": 388.8,
+          "warm_ms": 311.6,
+          "calls": [
+            388.8,
+            311.6,
+            313.0,
+            311.6,
+            310.7,
+            311.7
+          ]
+        }
+      },
+      "hour": {
+        "runs": [
+          {
+            "wall_s": 42.81,
+            "realtime": 83.8,
+            "peak_mb": 1903,
+            "words": 10083
+          },
+          {
+            "wall_s": 39.28,
+            "realtime": 91.33,
+            "peak_mb": 1903,
+            "words": 10083
+          },
+          {
+            "wall_s": 39.43,
+            "realtime": 90.98,
+            "peak_mb": 1904,
+            "words": 10083
+          }
+        ],
+        "audio_s": 3587.4,
+        "pieces": 392,
+        "wall_s": 39.43,
+        "realtime": 90.98,
+        "peak_mb": 1903,
+        "words": 10083
+      }
+    },
+    {
+      "engine": "wavo-gpu",
+      "model": "gigaam-v3",
+      "language": "ru",
+      "version": "0.4.0 ",
+      "backend": "Metal",
+      "precision": "Q8_0",
+      "notes": "call: Model::transcribe",
+      "latency": {
+        "1s": {
+          "load_ms": 156.6,
+          "first_ms": 25.8,
+          "warm_ms": 12.8,
+          "calls": [
+            25.8,
+            12.9,
+            12.9,
+            12.8,
+            12.8,
+            12.7
+          ]
+        },
+        "2s": {
+          "load_ms": 80.3,
+          "first_ms": 26.7,
+          "warm_ms": 13.7,
+          "calls": [
+            26.7,
+            13.9,
+            13.7,
+            13.6,
+            13.7,
+            13.7
+          ]
+        },
+        "5s": {
+          "load_ms": 74.9,
+          "first_ms": 31.1,
+          "warm_ms": 18.5,
+          "calls": [
+            31.1,
+            18.5,
+            18.5,
+            18.5,
+            18.4,
+            18.4
+          ]
+        },
+        "10s": {
+          "load_ms": 72.9,
+          "first_ms": 40.5,
+          "warm_ms": 27.5,
+          "calls": [
+            40.5,
+            27.5,
+            27.5,
+            27.4,
+            27.7,
+            27.5
+          ]
+        },
+        "30s": {
+          "load_ms": 74.0,
+          "first_ms": 93.4,
+          "warm_ms": 80.2,
+          "calls": [
+            93.4,
+            80.5,
+            80.2,
+            80.6,
+            80.2,
+            79.7
+          ]
+        }
+      },
+      "hour": {
+        "runs": [
+          {
+            "wall_s": 11.51,
+            "realtime": 318.63,
+            "peak_mb": 364,
+            "words": 7644
+          },
+          {
+            "wall_s": 11.42,
+            "realtime": 321.14,
+            "peak_mb": 362,
+            "words": 7644
+          },
+          {
+            "wall_s": 11.3,
+            "realtime": 324.55,
+            "peak_mb": 362,
+            "words": 7644
+          }
+        ],
+        "audio_s": 3667.4,
+        "pieces": 392,
+        "wall_s": 11.42,
+        "realtime": 321.14,
+        "peak_mb": 362,
+        "words": 7644
+      }
+    },
+    {
+      "engine": "wavo-ane",
+      "model": "gigaam-v3",
+      "language": "ru",
+      "version": "0.4.0 ",
+      "backend": "Neural Engine",
+      "precision": "int8 encoder",
+      "notes": "call: Model::transcribe; the weights live in the system's Neural Engine service, outside the peak memory",
+      "latency": {
+        "1s": {
+          "load_ms": 180.0,
+          "first_ms": 36.0,
+          "warm_ms": 25.5,
+          "calls": [
+            36.0,
+            25.6,
+            25.6,
+            25.5,
+            25.5,
+            25.5
+          ]
+        },
+        "2s": {
+          "load_ms": 39.4,
+          "first_ms": 30.2,
+          "warm_ms": 26.0,
+          "calls": [
+            30.2,
+            26.1,
+            26.0,
+            26.0,
+            26.0,
+            26.0
+          ]
+        },
+        "5s": {
+          "load_ms": 42.6,
+          "first_ms": 31.6,
+          "warm_ms": 28.2,
+          "calls": [
+            31.6,
+            28.3,
+            28.2,
+            28.2,
+            28.2,
+            28.2
+          ]
+        },
+        "10s": {
+          "load_ms": 40.7,
+          "first_ms": 35.1,
+          "warm_ms": 31.8,
+          "calls": [
+            35.1,
+            31.8,
+            31.8,
+            31.8,
+            31.7,
+            31.7
+          ]
+        },
+        "30s": {
+          "load_ms": 40.9,
+          "first_ms": 99.0,
+          "warm_ms": 96.1,
+          "calls": [
+            99.0,
+            96.1,
+            97.2,
+            96.1,
+            96.0,
+            96.1
+          ]
+        }
+      },
+      "hour": {
+        "runs": [
+          {
+            "wall_s": 13.07,
+            "realtime": 280.6,
+            "peak_mb": 29,
+            "words": 7649
+          },
+          {
+            "wall_s": 12.66,
+            "realtime": 289.69,
+            "peak_mb": 29,
+            "words": 7649
+          },
+          {
+            "wall_s": 12.65,
+            "realtime": 289.92,
+            "peak_mb": 28,
+            "words": 7649
+          }
+        ],
+        "audio_s": 3667.4,
+        "pieces": 392,
+        "wall_s": 12.66,
+        "realtime": 289.69,
+        "peak_mb": 29,
+        "words": 7649
+      }
+    },
+    {
+      "engine": "transcribe.cpp",
+      "model": "gigaam-v3",
+      "language": "ru",
+      "version": "v0.4.1",
+      "backend": "Metal",
+      "precision": "Q8_0",
+      "notes": "call: mel_ms + encode_ms + decode_ms, a few ms below the call's wall time",
+      "latency": {
+        "1s": {
+          "load_ms": 48.9,
+          "first_ms": 24.7,
+          "warm_ms": 13.0,
+          "calls": [
+            24.7,
+            13.1,
+            12.9,
+            12.9,
+            13.0,
+            13.0
+          ]
+        },
+        "2s": {
+          "load_ms": 45.9,
+          "first_ms": 26.4,
+          "warm_ms": 14.5,
+          "calls": [
+            26.4,
+            14.6,
+            14.5,
+            14.5,
+            14.5,
+            14.6
+          ]
+        },
+        "5s": {
+          "load_ms": 35.0,
+          "first_ms": 31.3,
+          "warm_ms": 20.0,
+          "calls": [
+            31.3,
+            20.2,
+            19.9,
+            19.9,
+            20.0,
+            20.0
+          ]
+        },
+        "10s": {
+          "load_ms": 53.7,
+          "first_ms": 45.8,
+          "warm_ms": 33.4,
+          "calls": [
+            45.8,
+            33.4,
+            33.5,
+            33.4,
+            33.1,
+            33.2
+          ]
+        },
+        "30s": {
+          "load_ms": 32.8,
+          "first_ms": 116.7,
+          "warm_ms": 115.3,
+          "calls": [
+            116.7,
+            115.4,
+            115.8,
+            115.1,
+            114.9,
+            115.3
+          ]
+        }
+      },
+      "hour": {
+        "runs": [
+          {
+            "wall_s": 14.39,
+            "realtime": 254.86,
+            "peak_mb": 102,
+            "words": 7645
+          },
+          {
+            "wall_s": 14.34,
+            "realtime": 255.75,
+            "peak_mb": 107,
+            "words": 7645
+          },
+          {
+            "wall_s": 14.52,
+            "realtime": 252.58,
+            "peak_mb": 111,
+            "words": 7645
+          }
+        ],
+        "audio_s": 3667.4,
+        "pieces": 392,
+        "wall_s": 14.39,
+        "realtime": 254.86,
+        "peak_mb": 107,
+        "words": 7645
+      }
+    },
+    {
+      "engine": "sherpa-onnx",
+      "model": "gigaam-v3",
+      "language": "ru",
+      "version": "2.0.1 4 threads",
+      "backend": "CPU",
+      "precision": "int8 encoder",
+      "notes": "threads: the performance cores; load has the import; wall and peak leave out uv",
+      "latency": {
+        "1s": {
+          "load_ms": 334.4,
+          "first_ms": 20.5,
+          "warm_ms": 19.8,
+          "calls": [
+            20.5,
+            19.9,
+            19.8,
+            19.8,
+            19.8,
+            19.7
+          ]
+        },
+        "2s": {
+          "load_ms": 303.8,
+          "first_ms": 38.7,
+          "warm_ms": 34.8,
+          "calls": [
+            38.7,
+            36.0,
+            35.4,
+            34.7,
+            34.8,
+            34.8
+          ]
+        },
+        "5s": {
+          "load_ms": 307.0,
+          "first_ms": 75.6,
+          "warm_ms": 74.2,
+          "calls": [
+            75.6,
+            73.4,
+            74.2,
+            75.0,
+            74.0,
+            77.4
+          ]
+        },
+        "10s": {
+          "load_ms": 320.2,
+          "first_ms": 163.5,
+          "warm_ms": 195.9,
+          "calls": [
+            163.5,
+            177.6,
+            183.4,
+            195.9,
+            203.3,
+            213.0
+          ]
+        },
+        "30s": {
+          "load_ms": 384.9,
+          "first_ms": 617.7,
+          "warm_ms": 730.4,
+          "calls": [
+            617.7,
+            658.5,
+            730.4,
+            729.0,
+            740.0,
+            749.0
+          ]
+        }
+      },
+      "hour": {
+        "runs": [
+          {
+            "wall_s": 107.94,
+            "realtime": 33.98,
+            "peak_mb": 779,
+            "words": 7652
+          },
+          {
+            "wall_s": 92.39,
+            "realtime": 39.7,
+            "peak_mb": 772,
+            "words": 7652
+          },
+          {
+            "wall_s": 94.91,
+            "realtime": 38.64,
+            "peak_mb": 773,
+            "words": 7652
+          }
+        ],
+        "audio_s": 3667.4,
+        "pieces": 392,
+        "wall_s": 94.91,
+        "realtime": 38.64,
+        "peak_mb": 773,
+        "words": 7652
+      }
+    }
+  ]
+}
