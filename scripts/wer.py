@@ -13,11 +13,12 @@ By default the main models on the main languages (`MODELS`, `LANGUAGES`); `all` 
 and every language a model takes. `download` puts LibriSpeech test-clean and test-other (English)
 and the FLEURS test split of each language into `.cache/data/`, shared with scripts/speed.py. `run`
 sends each clip to `wavo serve --backend gpu` (or `ane`, Parakeet and GigaAM only), one model at a
-time, keeps the texts and times in `.cache/wer/texts/<backend>/` and continues where it stopped, then writes `results/wer-<chip>.json` and prints the table: the
-error rate and the speed, seconds of audio per second of a request, with the model loaded and warm.
-Every model runs on every language it takes that the sets have; both sides pass one normalizer, the rate is all edits over all
-reference words (characters for languages without spaces). Russian also gets a row without the clips
-whose reference has digits, as FLEURS writes numbers as digits where models may spell them out.
+time, keeps the texts and times in `.cache/wer/texts/<backend>/` and continues where it stopped,
+then writes `results/wer-<chip>.json` and prints the table: the error rate and the speed, seconds of
+audio per second of a request, with the model loaded and warm. Every model runs on every language it
+takes that the sets have; both sides pass one normalizer, the rate is all edits over all reference
+words (characters for languages without spaces). Russian also gets a row without the clips whose
+reference has digits, as FLEURS writes numbers as digits where models may spell them out.
 """
 
 import argparse
@@ -44,7 +45,11 @@ REPO = Path(__file__).resolve().parents[1]
 DATA = REPO / ".cache" / "data"
 WORK = REPO / ".cache" / "wer"
 WAVO = REPO / "target" / "release" / "wavo"
-CLIP_BAR = {"ncols": 80, "bar_format": "{desc} |{bar}| {n:>4} / {total:>4} {rate_fmt:>9}", "unit": "clip"}
+CLIP_BAR = {
+    "ncols": 80,
+    "bar_format": "{desc} |{bar}| {n:>4} / {total:>4} {rate_fmt:>9}",
+    "unit": "clip",
+}
 PORT = 8123
 ON_ANE = ("Parakeet", "GigaAM")
 BAR = {
@@ -59,7 +64,14 @@ SPLITS = ["test-clean", "test-other"]
 FLEURS_REV = "70bb2e84b976b7e960aa89f1c648e09c59f894dd"
 FLEURS = f"https://huggingface.co/datasets/google/fleurs/resolve/{FLEURS_REV}/data"
 # wavo's language codes that FLEURS has, and its folder for each.
-FOLDERS = "af_za am_et ar_eg as_in az_az be_by bg_bg bn_in bs_ba ca_es cs_cz cy_gb da_dk de_de el_gr en_us es_419 et_ee fa_ir fi_fi fr_fr gl_es gu_in ha_ng he_il hi_in hr_hr hu_hu hy_am id_id is_is it_it ja_jp ka_ge kk_kz km_kh kn_in ko_kr lb_lu ln_cd lo_la lt_lt lv_lv mi_nz mk_mk ml_in mn_mn mr_in ms_my mt_mt my_mm ne_np nl_nl oc_fr pa_in pl_pl ps_af pt_br ro_ro ru_ru sd_in sk_sk sl_si sn_zw so_so sr_rs sv_se sw_ke ta_in te_in tg_tj th_th tr_tr uk_ua ur_pk uz_uz vi_vn yo_ng"
+FOLDERS = (
+    "af_za am_et ar_eg as_in az_az be_by bg_bg bn_in bs_ba ca_es cs_cz cy_gb da_dk de_de "
+    "el_gr en_us es_419 et_ee fa_ir fi_fi fr_fr gl_es gu_in ha_ng he_il hi_in hr_hr hu_hu "
+    "hy_am id_id is_is it_it ja_jp ka_ge kk_kz km_kh kn_in ko_kr lb_lu ln_cd lo_la lt_lt "
+    "lv_lv mi_nz mk_mk ml_in mn_mn mr_in ms_my mt_mt my_mm ne_np nl_nl oc_fr pa_in pl_pl "
+    "ps_af pt_br ro_ro ru_ru sd_in sk_sk sl_si sn_zw so_so sr_rs sv_se sw_ke ta_in te_in "
+    "tg_tj th_th tr_tr uk_ua ur_pk uz_uz vi_vn yo_ng "
+)
 FLEURS_DIR = {x.split("_")[0]: x for x in FOLDERS.split()} | {
     "jw": "jv_id",
     "no": "nb_no",
@@ -70,7 +82,6 @@ FLEURS_DIR = {x.split("_")[0]: x for x in FOLDERS.split()} | {
 BY_CHARACTER = {"zh", "yue", "ja", "th", "lo", "my", "km"}
 
 english = EnglishTextNormalizer()
-
 
 
 def models() -> dict[str, dict]:
@@ -322,7 +333,11 @@ def score(model: str, dataset: str, lang: str, backend: str) -> list[dict]:
     rows = [row | {"rate": rate(pairs, lang)}]
     if lang == "ru":
         plain = [x for x in pairs if not re.search(r"\d", x[0])]
-        no_digits = {"dataset": f"{dataset} no digits", "clips": len(plain), "rate": rate(plain, lang)}
+        no_digits = {
+            "dataset": f"{dataset} no digits",
+            "clips": len(plain),
+            "rate": rate(plain, lang),
+        }
         rows.append({k: v for k, v in row.items() if "_s" not in k and k != "speed"} | no_digits)
 
     return rows
@@ -364,7 +379,9 @@ def run(args):
         if input("Type yes to go on: ") != "yes":
             sys.exit("--clean not confirmed: run without it to continue, or type yes")
 
-    subprocess.run(["cargo", "build", "--release", "--locked", "--bin", "wavo"], cwd=REPO, check=True)
+    subprocess.run(
+        ["cargo", "build", "--release", "--locked", "--bin", "wavo"], cwd=REPO, check=True
+    )
     rows, failed, plan = [], 0, {}
     backend = args.backend
     if backend == "ane":
@@ -404,7 +421,9 @@ def run(args):
     if not rows:
         sys.exit("these models take none of these languages")
 
-    version = subprocess.run([str(WAVO), "--version"], capture_output=True, text=True).stdout.strip()
+    version = subprocess.run(
+        [str(WAVO), "--version"], capture_output=True, text=True
+    ).stdout.strip()
     name = re.sub(r"[^a-z0-9]+", "-", chip().lower()).strip("-")
     date = datetime.now(UTC).date().isoformat()
     report = {"wavo": version, "chip": chip(), "date": date}

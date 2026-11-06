@@ -121,7 +121,9 @@ MLX_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 PACKAGES = {"parakeet-mlx": "parakeet-mlx>=0.5.3", "sherpa-onnx": "sherpa-onnx>=1.13.8"}
 
 FLUID_TAG = "v0.17.7"
-FLUID_DIR = ENGINES_DIR / "fluid-batch"  # not `fluidaudio`: SwiftPM takes the package for its own dependency
+FLUID_DIR = (
+    ENGINES_DIR / "fluid-batch"
+)  # not `fluidaudio`: SwiftPM takes the package for its own dependency
 FLUID_BIN = FLUID_DIR / ".build" / "release" / "fluid-batch"
 FLUID_PACKAGE = f"""// swift-tools-version: 6.0
 import PackageDescription
