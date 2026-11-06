@@ -771,7 +771,8 @@ pub(crate) fn write_q5_0(src: &Path, dst: &Path) -> Result<Q5Write> {
 
 /// Writes `src` to `dst`. A Q8_0 tensor whose row length is a multiple of 32 becomes Q4_K when
 /// it holds a multiple of 256 weights and `q5` returns false. It becomes Q5_0 when `q5` returns
-/// true, and when the count is not a multiple of 256. The codes are round-to-nearest on the
+/// true, and when the count is not a multiple of 256. Blocks cover the flat tensor. The
+/// contiguous axis does not have to be a multiple of 256. The codes are round-to-nearest on the
 /// dequantized Q8_0 values. Other tensors are copied. A `general.file_type` of 7 becomes 14 when
 /// every converted tensor is Q4_K, and 15 when any is Q5_0.
 #[cfg(test)]

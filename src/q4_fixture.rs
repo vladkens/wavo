@@ -37,6 +37,23 @@ fn keep_q5(name: &str) -> bool {
   name.contains(".attn.") || name.ends_with(".ffn.fc1.weight")
 }
 
+/// Q8_0 fixture text. `jobs-silence` is the mixed-model line, which is not that fixture.
+fn expect_text(name: &str) -> String {
+  if name == "jobs-silence" {
+    return "I'm going to put it on the top of".to_string();
+  }
+  let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/moonshine-tiny.txt");
+  let fixture = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+  let header = format!("## {name}");
+  let mut lines = fixture.lines().skip_while(|l| *l != header);
+  assert!(lines.next().is_some(), "{path:?}: no {header}");
+  lines
+    .next()
+    .and_then(|l| l.strip_prefix("text: "))
+    .unwrap_or_else(|| panic!("{path:?}: {name} text"))
+    .to_string()
+}
+
 fn wav(sample: &str) -> Option<Vec<f32>> {
   let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("3rd");
   let mut path = root.join(format!("samples/{sample}.wav"));
@@ -110,6 +127,6 @@ fn moonshine_tiny_q4_k() {
 
   for (name, pcm) in clips.iter().zip(pcm) {
     let got = model.transcribe(&pcm.unwrap()).unwrap();
-    assert!(!got.text.is_empty(), "{name}: empty transcript");
+    assert_eq!(got.text, expect_text(name), "{name}");
   }
 }
