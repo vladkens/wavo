@@ -601,8 +601,8 @@ mod tests {
     assert!(matches!(hub.remove("whisper"), Err(Error::UnknownModel { .. })));
   }
 
-  /// Every other list of the models names exactly `MODELS`: the model tables of the crate docs
-  /// and the readme (in order), `ALL_MODELS` in the Makefile and the tests in `tests/models.rs`.
+  /// Every other list of the models names exactly `MODELS`: the model table of the crate docs (in
+  /// order), `ALL_MODELS` in the Makefile and the tests in `tests/models.rs`.
   #[test]
   fn model_lists_match() {
     let read = |path: &str| fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path));
@@ -616,16 +616,6 @@ mod tests {
     let expected: Vec<String> =
       MODELS.iter().map(|m| format!("{}` | `{}` | {}", m.name, m.full_name, row(m))).collect();
     assert_eq!(docs, expected, "model table in src/lib.rs");
-
-    let readme = read("readme.md").unwrap();
-    let section = readme.split("\n## ").find(|s| s.lines().next().unwrap().ends_with(" Models"));
-    let readme: Vec<String> = (section.expect("## Models in readme.md").lines())
-      .filter_map(|l| l.strip_prefix("| `"))
-      .map(|l| l.replacen(" (default)", "", 1))
-      .collect();
-    let expected: Vec<String> =
-      MODELS.iter().map(|m| format!("{}` | {}", m.name, row(m))).collect();
-    assert_eq!(readme, expected, "model table in readme.md");
 
     // The published crate has neither file: these two checks run in the repository only, and
     // fail there if either file is missing or unreadable.

@@ -1,3 +1,5 @@
+<!-- For agents, not for people. -->
+
 # Performance
 
 The log of every optimization attempt, kept or rejected, so that no idea is tried twice without

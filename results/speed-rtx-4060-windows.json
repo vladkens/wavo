@@ -1,0 +1,76 @@
+{
+  "gpu": "NVIDIA GeForce RTX 4060",
+  "cpu": "AMD Ryzen 9 7945HX",
+  "os": "Windows 11",
+  "date": "2026-11-06",
+  "rows": [
+    {
+      "engine": "wavo-gpu",
+      "model": "parakeet-v3",
+      "language": "en",
+      "backend": "Vulkan",
+      "precision": "Q8_0",
+      "latency": {
+        "5s": {
+          "load_ms": 333.3,
+          "first_ms": 53.7,
+          "warm_ms": 51.9
+        },
+        "15s": {
+          "load_ms": 333.8,
+          "first_ms": 104.2,
+          "warm_ms": 100.7
+        },
+        "30s": {
+          "load_ms": 280.9,
+          "first_ms": 160.9,
+          "warm_ms": 156.2
+        }
+      },
+      "hour": {
+        "wall_s": 29.008,
+        "realtime": 123.7,
+        "runs": [
+          29.008,
+          30.765,
+          28.185
+        ],
+        "words": 9677
+      }
+    },
+    {
+      "engine": "wavo-gpu",
+      "model": "gigaam-v3",
+      "language": "ru",
+      "backend": "Vulkan",
+      "precision": "Q8_0",
+      "latency": {
+        "5s": {
+          "load_ms": 224.3,
+          "first_ms": 18.3,
+          "warm_ms": 17.6
+        },
+        "15s": {
+          "load_ms": 223.6,
+          "first_ms": 36.5,
+          "warm_ms": 35.3
+        },
+        "30s": {
+          "load_ms": 261.1,
+          "first_ms": 57.7,
+          "warm_ms": 56.3
+        }
+      },
+      "hour": {
+        "wall_s": 12.582,
+        "realtime": 291.5,
+        "runs": [
+          13.506,
+          12.539,
+          12.582
+        ],
+        "words": 7644
+      }
+    }
+  ]
+}

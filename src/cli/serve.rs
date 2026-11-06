@@ -60,6 +60,8 @@ struct Server {
   models: Vec<Arc<Loaded>>,
   /// The other models requests asked for; locked while one loads.
   extra: Mutex<Extra<Loaded>>,
+  /// Where every model runs.
+  backend: Backend,
   key: Option<String>,
   /// Open connections.
   open: AtomicUsize,
@@ -74,6 +76,7 @@ struct Reply {
 
 pub fn serve(args: &[&str]) -> Result<()> {
   let (mut host, mut port, mut key, mut download) = ("127.0.0.1", 8000, None, Download::Ask);
+  let mut on = Backend::Auto;
   let mut names = Vec::new();
   let mut args = args.iter().copied();
   while let Some(arg) = args.next() {
@@ -81,6 +84,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
       "--host" => host = args.next().context("--host takes an address, such as 0.0.0.0")?,
       "--port" => port = args.next().and_then(|p| p.parse().ok()).context("--port takes a port")?,
       "--api-key" => key = Some(args.next().context("--api-key takes a key")?.to_string()),
+      "--backend" => on = crate::backend(args.next().as_ref())?,
       "-y" | "--yes" => download = Download::Yes,
       _ if arg.starts_with('-') => bail!("unknown option {arg}\n{USAGE}"),
       _ => names.push(crate::named(arg)?),
@@ -97,7 +101,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
   // Before the models load: a port in use fails at once.
   let listener =
     TcpListener::bind((host, port)).with_context(|| format!("listening on {host}:{port}"))?;
-  let models = names.iter().map(|m| load(m, &crate::model_path(m.name, download, Backend::Auto)?));
+  let models = names.iter().map(|m| load(m, &crate::model_path(m.name, download, on)?, on));
   let models = models.collect::<Result<Vec<_>>>()?;
   let device = models[0].model.device();
   if let Some(warning) = device.warning() {
@@ -112,7 +116,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
   let names: Vec<&str> = models.iter().map(|m| m.info.name).collect();
   eprintln!("{} on {device}\nlistening on http://{addr}", names.join(", "));
   let extra = Mutex::new(Extra { last: None, used: Vec::new() });
-  let server = Server { models, extra, key, open: AtomicUsize::new(0) };
+  let server = Server { models, extra, backend: on, key, open: AtomicUsize::new(0) };
   std::thread::scope(|s| {
     for stream in listener.incoming() {
       let Ok(stream) = stream else {
@@ -134,12 +138,8 @@ pub fn serve(args: &[&str]) -> Result<()> {
   Ok(())
 }
 
-fn load(info: &'static ModelInfo, path: &Path) -> Result<Arc<Loaded>> {
-  Ok(Arc::new(Loaded {
-    info,
-    model: crate::load(path, Backend::Auto)?,
-    timed: models::timed(path),
-  }))
+fn load(info: &'static ModelInfo, path: &Path, on: Backend) -> Result<Arc<Loaded>> {
+  Ok(Arc::new(Loaded { info, model: crate::load(path, on)?, timed: models::timed(path) }))
 }
 
 /// A client's socket whose reads and writes wait up to `TIMEOUT` each and fail past `until`, also
@@ -331,7 +331,7 @@ impl Server {
     let not_found = || fail(404, format!("{0} is not downloaded; run: wavo pull {0}", m.name));
     let fetch = || {
       let path = Hub::new().find(m.name).ok_or_else(not_found)?;
-      load(m, &path).map_err(|e| fail(500, format!("{e:#}")))
+      load(m, &path, self.backend).map_err(|e| fail(500, format!("{e:#}")))
     };
     let mut extra = self.extra.lock().unwrap_or_else(PoisonError::into_inner);
     extra.get(|x| x.info.name == m.name, fetch)

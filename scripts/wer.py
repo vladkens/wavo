@@ -1,0 +1,478 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["httpx>=0.28.1", "tqdm>=4.67.1", "whisper-normalizer>=0.1.15"]
+# ///
+"""Word error rate of wavo's models on public test sets, the same way on every machine.
+
+    scripts/wer.py download [--languages en,ru|all]
+    scripts/wer.py run [--models gigaam-v3,parakeet-v3|all] [--languages en,ru|all]
+                       [--backend gpu|ane] [--clean]
+
+By default the main models on the main languages (`MODELS`, `LANGUAGES`); `all` takes every model
+and every language a model takes. `download` puts LibriSpeech test-clean and test-other (English)
+and the FLEURS test split of each language into `.cache/data/`, shared with scripts/speed.py. `run`
+sends each clip to `wavo serve --backend gpu` (or `ane`, Parakeet and GigaAM only), one model at a
+time, keeps the texts and times in `.cache/wer/texts/<backend>/` and continues where it stopped,
+then writes `results/wer-<chip>.json` and prints the table: the error rate and the speed, seconds of
+audio per second of a request, with the model loaded and warm. Every model runs on every language it
+takes that the sets have; both sides pass one normalizer, the rate is all edits over all reference
+words (characters for languages without spaces). Russian also gets a row without the clips whose
+reference has digits, as FLEURS writes numbers as digits where models may spell them out. Saved
+texts aren't tied to a build: after changing wavo or a model, start over with `--clean`.
+"""
+
+import argparse
+import csv
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+import tarfile
+import time
+import unicodedata
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from pathlib import Path
+
+import httpx
+from tqdm import tqdm
+from whisper_normalizer.english import EnglishTextNormalizer
+
+MODELS = "gigaam-v3,parakeet-v3,parakeet-ultra,parakeet-v2,whisper-turbo,moonshine-base"
+LANGUAGES = "en,ru,de,fr,es,it,pt,pl,uk"
+REPO = Path(__file__).resolve().parents[1]
+DATA = REPO / ".cache" / "data"
+WORK = REPO / ".cache" / "wer"
+WAVO = REPO / "target" / "release" / "wavo"
+CLIP_BAR = {
+    "ncols": 80,
+    "bar_format": "{desc} |{bar}| {n:>4} / {total:>4} {rate_fmt:>9}",
+    "unit": "clip",
+}
+PORT = 8123
+ON_ANE = ("Parakeet", "GigaAM")
+BAR = {
+    "unit": "B",
+    "unit_scale": True,
+    "ncols": 80,
+    "bar_format": "{desc} |{bar}| {n_fmt:>6} / {total_fmt:>6} {rate_fmt:>10}",
+}
+
+LIBRISPEECH = "https://www.openslr.org/resources/12/{}.tar.gz"
+SPLITS = ["test-clean", "test-other"]
+FLEURS_REV = "70bb2e84b976b7e960aa89f1c648e09c59f894dd"
+FLEURS = f"https://huggingface.co/datasets/google/fleurs/resolve/{FLEURS_REV}/data"
+# wavo's language codes that FLEURS has, and its folder for each.
+FOLDERS = (
+    "af_za am_et ar_eg as_in az_az be_by bg_bg bn_in bs_ba ca_es cs_cz cy_gb da_dk de_de "
+    "el_gr en_us es_419 et_ee fa_ir fi_fi fr_fr gl_es gu_in ha_ng he_il hi_in hr_hr hu_hu "
+    "hy_am id_id is_is it_it ja_jp ka_ge kk_kz km_kh kn_in ko_kr lb_lu ln_cd lo_la lt_lt "
+    "lv_lv mi_nz mk_mk ml_in mn_mn mr_in ms_my mt_mt my_mm ne_np nl_nl oc_fr pa_in pl_pl "
+    "ps_af pt_br ro_ro ru_ru sd_in sk_sk sl_si sn_zw so_so sr_rs sv_se sw_ke ta_in te_in "
+    "tg_tj th_th tr_tr uk_ua ur_pk uz_uz vi_vn yo_ng "
+)
+FLEURS_DIR = {x.split("_")[0]: x for x in FOLDERS.split()} | {
+    "jw": "jv_id",
+    "no": "nb_no",
+    "yue": "yue_hant_hk",
+    "zh": "cmn_hans_cn",
+}
+# Written without spaces between words: the rate counts characters.
+BY_CHARACTER = {"zh", "yue", "ja", "th", "lo", "my", "km"}
+
+english = EnglishTextNormalizer()
+
+
+def models() -> dict[str, dict]:
+    """`hub::MODELS`: each model's languages and family, so this list can't drift from wavo's."""
+    source = (REPO / "src" / "hub" / "mod.rs").read_text()
+    lists = {
+        name: re.findall(r'"([^"]+)"', body)
+        for name, body in re.findall(r"static (\w+): &\[&str\] = &\[(.*?)\];", source, re.S)
+    }
+    found = re.findall(r'ModelInfo \{ name: "([^"]+)".*?langs: (\w+),.*?family: "(\w+)"', source)
+    return {name: {"langs": lists[langs], "family": family} for name, langs, family in found}
+
+
+def sets_of(lang: str) -> list[str]:
+    """The test sets of a language."""
+    fleurs = [f"fleurs-{lang}"] if lang in FLEURS_DIR else []
+    return [*SPLITS, *fleurs] if lang == "en" else fleurs
+
+
+def fetch(client: httpx.Client, url: str, to: Path, bar: tqdm):
+    """`url` into `to`, continuing what an earlier try left there."""
+    for attempt in range(5):
+        have = to.stat().st_size if to.exists() else 0
+        headers = {"Accept-Encoding": "identity", **({"Range": f"bytes={have}-"} if have else {})}
+        try:
+            with client.stream("GET", url, headers=headers) as r:
+                if r.status_code == 416:  # nothing past `have`: it is all there
+                    return
+
+                r.raise_for_status()
+                with open(to, "ab" if r.status_code == 206 else "wb") as f:
+                    for chunk in r.iter_raw(1 << 20):
+                        f.write(chunk)
+                        bar.update(len(chunk))
+
+            return
+        except httpx.TransportError:
+            if attempt == 4:
+                raise
+
+            time.sleep(5)
+
+
+def archive_url(job: str) -> str:
+    if job in SPLITS:
+        return LIBRISPEECH.format(job)
+
+    return f"{FLEURS}/{FLEURS_DIR[job]}/audio/test.tar.gz"
+
+
+def size_of(client: httpx.Client, job: str) -> int:
+    r = client.head(archive_url(job), headers={"Accept-Encoding": "identity"})
+    r.raise_for_status()
+    return int(r.headers.get("content-length", 0))
+
+
+def get_set(client: httpx.Client, job: str, bar: tqdm):
+    """A set into its folder; `.done` comes last, after its text."""
+    folder = set_folder(job)
+    folder.mkdir(parents=True, exist_ok=True)
+    tsv = folder / "test.tsv"
+    if job not in SPLITS and not tsv.exists():
+        r = client.get(f"{FLEURS}/{FLEURS_DIR[job]}/test.tsv")
+        r.raise_for_status()
+        write_atomic(tsv, r.content)
+
+    archive = folder / "archive.tar.gz"
+    fetch(client, archive_url(job), archive, bar)
+    with tarfile.open(archive) as tar:
+        tar.extractall(folder, filter="data")
+
+    archive.unlink()
+    (folder / ".done").touch()
+
+
+def download(args):
+    langs = chosen_languages(args)
+    get_sets([x for x in SPLITS if "en" in langs] + [x for x in langs if x in FLEURS_DIR])
+
+
+def get_sets(jobs: list[str]):
+    """What is missing of these sets; `run` calls it too, so a language needs no separate step."""
+    todo = [x for x in jobs if not (set_folder(x) / ".done").exists()]
+    if not todo:
+        return
+
+    with httpx.Client(follow_redirects=True, timeout=60) as client:
+        with ThreadPoolExecutor(16) as pool:
+            size = sum(pool.map(lambda x: size_of(client, x), todo))
+
+        parts = [set_folder(x) / "archive.tar.gz" for x in todo]
+        have = sum(x.stat().st_size for x in parts if x.exists())
+        with tqdm(total=size, initial=have, **BAR) as bar:
+            for n, job in enumerate(todo, len(jobs) - len(todo) + 1):
+                bar.set_description_str(f"{n:>2}/{len(jobs)} {job:<10}")
+                get_set(client, job, bar)
+
+    print(f"data in {DATA}")
+
+
+def write_atomic(to: Path, data: bytes):
+    part = to.with_suffix(".part")
+    part.write_bytes(data)
+    part.rename(to)
+
+
+def set_folder(job: str) -> Path:
+    return DATA / job if job in SPLITS else DATA / "fleurs" / job
+
+
+def clips(dataset: str) -> list[tuple[str, Path, str]]:
+    """Each clip of a set: its id, audio file and reference text."""
+    if dataset in SPLITS:
+        rows = []
+        for file in sorted((DATA / dataset).rglob("*.trans.txt")):
+            for line in file.read_text().splitlines():
+                id, text = line.split(" ", 1)
+                rows.append((id, file.parent / f"{id}.flac", text))
+
+        return rows
+
+    folder = DATA / "fleurs" / dataset.removeprefix("fleurs-")
+    with open(folder / "test.tsv", newline="", encoding="utf-8") as f:
+        # Its `transcription`: the raw one has spoken words in parentheses, gone after normalizing.
+        rows = list(csv.reader(f, delimiter="\t", quoting=csv.QUOTE_NONE))
+
+    seen = {}
+    for row in rows:
+        seen.setdefault(row[1], (row[1], folder / "test" / row[1], row[3]))
+
+    return list(seen.values())
+
+
+def normalize(text: str, lang: str) -> str:
+    if lang == "en":
+        return english(text)
+
+    text = unicodedata.normalize("NFKC", text).casefold().replace("ё", "е")
+    kept = (c if unicodedata.category(c)[0] not in "PS" else " " for c in text)
+    return " ".join("".join(kept).split())
+
+
+def tokens(text: str, lang: str) -> list[str]:
+    text = normalize(text, lang)
+    return list(text.replace(" ", "")) if lang in BY_CHARACTER else text.split()
+
+
+def edits(a: list[str], b: list[str]) -> int:
+    row = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        last, row[0] = row[0], i
+        for j, y in enumerate(b, 1):
+            last, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, last + (x != y))
+
+    return row[-1]
+
+
+def rate(pairs: list[tuple[str, str]], lang: str) -> float | None:
+    """Errors in percent, over all (reference, text) pairs at once."""
+    pairs = [(tokens(ref, lang), tokens(text, lang)) for ref, text in pairs]
+    words = sum(len(ref) for ref, _ in pairs)
+    return round(100 * sum(edits(ref, x) for ref, x in pairs) / words, 2) if words else None
+
+
+def post(model: str, file: Path, language: str | None) -> dict:
+    """One clip through `wavo serve`: its text, seconds of audio and seconds of work."""
+    audio = file.read_bytes()
+    fields = {"model": model, "response_format": "verbose_json"}
+    start = time.perf_counter()
+    r = httpx.post(
+        f"http://127.0.0.1:{PORT}/v1/audio/transcriptions",
+        data=fields | ({"language": language} if language else {}),
+        files={"file": (file.name, audio)},
+        timeout=600,
+    )
+    spent = time.perf_counter() - start
+    r.raise_for_status()
+    x = r.json()
+    return {"text": x["text"], "audio_s": x["duration"], "time_s": round(spent, 4)}
+
+
+def texts_of(backend: str, model: str, dataset: str) -> Path:
+    return WORK / "texts" / backend / model / f"{dataset}.jsonl"
+
+
+def serve(model: str, backend: str) -> subprocess.Popen:
+    """`wavo serve` with the model loaded, once it answers. Its log goes to a file, off the bars."""
+    log = open(WORK / "serve.log", "a")
+    cmd = [str(WAVO), "serve", model, "--port", str(PORT), "--backend", backend, "-y"]
+    env = {k: v for k, v in os.environ.items() if k != "WAVO_API_KEY"}  # requests send no key
+    server = subprocess.Popen(cmd, stdout=log, stderr=log, env=env)
+    for _ in range(1800):
+        if server.poll() is not None:
+            sys.exit(f"wavo serve {model} stopped with code {server.returncode}: see {log.name}")
+
+        try:
+            httpx.get(f"http://127.0.0.1:{PORT}/health", timeout=2)
+            return server
+        except httpx.TransportError:
+            time.sleep(1)
+
+    server.terminate()
+    sys.exit(f"wavo serve {model} didn't start: see {log.name}")
+
+
+def transcribe(model: str, info: dict, dataset: str, lang: str, name: str, backend: str) -> int:
+    """Every clip of a set not done yet, each saved as it comes; how many failed."""
+    file = texts_of(backend, model, dataset)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    done = {json.loads(x)["id"] for x in file.read_text().splitlines()} if file.exists() else set()
+    takes_language = info["family"] == "Whisper" and not model.endswith(".en")
+    failed = 0
+    with open(file, "a", encoding="utf-8") as out:
+        todo = [x for x in clips(dataset) if x[0] not in done]
+        language = lang if takes_language else None
+        try:
+            if todo:
+                post(model, todo[0][1], language)  # the first call is slower: out of the times
+        except httpx.HTTPStatusError:
+            pass  # its clip fails below, in the count
+
+        for id, audio, _ in tqdm(todo, desc=name, leave=False, **CLIP_BAR):
+            try:
+                row = post(model, audio, language)
+            except (httpx.HTTPStatusError, KeyError, ValueError) as e:  # this clip, not the server
+                tqdm.write(f"{model} {id}: {e}")
+                failed += 1
+                continue
+
+            out.write(json.dumps({"id": id} | row, ensure_ascii=False) + "\n")
+            out.flush()
+
+    return failed
+
+
+def score(model: str, dataset: str, lang: str, backend: str) -> list[dict]:
+    """The rows of a set: all clips, and for Russian those without digits in the reference."""
+    file = texts_of(backend, model, dataset)
+    texts, audio_s, time_s = {}, 0.0, 0.0
+    for line in file.read_text().splitlines():
+        row = json.loads(line)
+        texts[row["id"]] = row["text"]
+        audio_s += row["audio_s"]
+        time_s += row["time_s"]
+
+    refs = clips(dataset)
+    pairs = [(ref, texts[id]) for id, _, ref in refs if id in texts]
+    row = {"model": model, "backend": backend, "dataset": dataset, "language": lang}
+    row |= {"metric": "cer" if lang in BY_CHARACTER else "wer", "clips": len(pairs)}
+    row["missing"] = len(refs) - len(pairs)
+    row |= {"audio_s": round(audio_s, 1), "time_s": round(time_s, 2)}
+    row["speed"] = round(audio_s / time_s, 1) if time_s else None
+    rows = [row | {"rate": rate(pairs, lang)}]
+    if lang == "ru":
+        plain = [x for x in pairs if not re.search(r"\d", x[0])]
+        no_digits = {
+            "dataset": f"{dataset} no digits",
+            "clips": len(plain),
+            "rate": rate(plain, lang),
+        }
+        rows.append({k: v for k, v in row.items() if "_s" not in k and k != "speed"} | no_digits)
+
+    return rows
+
+
+def chip() -> str:
+    if sys.platform == "darwin":
+        cmd = ["sysctl", "-n", "machdep.cpu.brand_string"]
+        return subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
+
+    return platform.processor() or platform.machine()
+
+
+def chosen_models(args) -> dict[str, dict]:
+    known = models()
+    names = list(known) if args.models == "all" else args.models.split(",")
+    bad = [x for x in names if x not in known]
+    if bad:
+        sys.exit(f"unknown model {', '.join(bad)}")
+
+    return {x: known[x] for x in names}
+
+
+def chosen_languages(args) -> list[str]:
+    every = {x for m in models().values() for x in m["langs"]}
+    names = every if args.languages == "all" else set(args.languages.split(","))
+    if bad := sorted(names - every):
+        sys.exit(f"no model takes {', '.join(bad)}")
+
+    return sorted(names)
+
+
+def run(args):
+    models_chosen = chosen_models(args)
+    langs = chosen_languages(args)
+    if args.clean:
+        print("--clean deletes the saved texts of these models and starts over:")
+        print("".join(f"  {x}\n" for x in models_chosen), end="")
+        if input("Type yes to go on: ") != "yes":
+            sys.exit("--clean not confirmed: run without it to continue, or type yes")
+
+    subprocess.run(
+        ["cargo", "build", "--release", "--locked", "--bin", "wavo"], cwd=REPO, check=True
+    )
+    rows, failed, plan = [], 0, {}
+    backend = args.backend
+    if backend == "ane":
+        models_chosen = {k: v for k, v in models_chosen.items() if v["family"] in ON_ANE}
+
+    chosen = models_chosen.items()
+    for model, info in chosen:
+        plan[model] = [(d, x) for x in info["langs"] if x in langs for d in sets_of(x)]
+
+    get_sets(list(dict.fromkeys(d.removeprefix("fleurs-") for w in plan.values() for d, _ in w)))
+    total, n = sum(len(x) for x in plan.values()), 0
+    width = max((len(f"{m} {d}") for m, work in plan.items() for d, _ in work), default=0)
+    for model, info in chosen:
+        if not plan[model]:
+            continue
+
+        if backend == "ane":  # prepares it: the Neural Engine won't load a model that isn't
+            subprocess.run([str(WAVO), "pull", model], check=True, capture_output=True)
+
+        server = serve(model, backend)
+        try:
+            for dataset, lang in plan[model]:
+                if args.clean:
+                    texts_of(backend, model, dataset).unlink(missing_ok=True)
+
+                n += 1
+                name = f"{n:>2}/{total} {f'{model} {dataset}':<{width}}"
+                failed += transcribe(model, info, dataset, lang, name, backend)
+                rows += score(model, dataset, lang, backend)
+                x = next(r for r in reversed(rows) if r["dataset"] == dataset)
+                rate, speed = x["rate"] or 0, x["speed"] or 0
+                print(f"{name}  {x['metric']} {rate:>5.2f}  {speed:>6.1f}x  {x['clips']:>4} clips")
+        finally:
+            server.terminate()
+            server.wait()
+
+    if not rows:
+        sys.exit("these models take none of these languages")
+
+    version = subprocess.run(
+        [str(WAVO), "--version"], capture_output=True, text=True
+    ).stdout.strip()
+    name = re.sub(r"[^a-z0-9]+", "-", chip().lower()).strip("-")
+    date = datetime.now(UTC).date().isoformat()
+    report = {"wavo": version, "chip": chip(), "date": date}
+    out = REPO / "results" / f"wer-{name}.json"
+    out.parent.mkdir(exist_ok=True)
+    measured = {(x["model"], x["backend"], x["dataset"]) for x in rows}
+    old = json.loads(out.read_text())["rows"] if out.exists() else []
+    kept = [x for x in old if (x["model"], x.get("backend"), x["dataset"]) not in measured]
+    kept = [x for x in kept if "backend" in x]
+    out.write_text(json.dumps(report | {"rows": kept + rows}, ensure_ascii=False, indent=2) + "\n")
+    print(out)
+    if failed:
+        sys.exit(f"{failed} clips failed: run it again to retry them")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    x = sub.add_parser("download")
+    x.add_argument("--languages", default=LANGUAGES, help="comma-separated codes, or all")
+    x.set_defaults(fn=download)
+
+    x = sub.add_parser("run")
+    x.add_argument("--models", default=MODELS, help="comma-separated wavo names, or all")
+    x.add_argument("--languages", default=LANGUAGES, help="comma-separated codes, or all")
+    x.add_argument("--backend", choices=["gpu", "ane"], default="gpu")
+    x.add_argument(
+        "--clean", action="store_true", help="start these models and sets over: old texts go"
+    )
+    x.set_defaults(fn=run)
+
+    args = parser.parse_args()
+    DATA.mkdir(parents=True, exist_ok=True)
+    WORK.mkdir(parents=True, exist_ok=True)
+    try:
+        args.fn(args)
+    except KeyboardInterrupt:
+        sys.exit("\nstopped: run it again to continue")
+    except Exception as e:
+        sys.exit(f"error: {e}")
+
+
+if __name__ == "__main__":
+    main()
