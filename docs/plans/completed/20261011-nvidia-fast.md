@@ -1,3 +1,5 @@
+<!-- For agents, not for people. -->
+
 # Fast GEMM on 16×16 cooperative matrices
 
 Done: 2026-10-11, PR #28

@@ -1,5 +1,27 @@
 # Models
 
+## Which model for your language
+
+Wrong words per 100 on the FLEURS test set, lower is better. The best model of each language is in the second column.
+
+| Language | Best | `parakeet-ultra` | `parakeet-v3` | `whisper-turbo` |
+|---|---|---:|---:|---:|
+| English | `parakeet-v2`, 4.1 | 4.2 | 4.9 | 4.4 |
+| Russian | `gigaam-v3`, 4.5 | 4.7 | 5.5 | 4.5 |
+| German | `parakeet-ultra`, 4.5 | 4.5 | 5.2 | 5.7 |
+| French | `parakeet-ultra`, 4.6 | 4.6 | 5.2 | 5.5 |
+| Spanish | `parakeet-ultra`, 3.0 | 3.0 | 3.6 | 3.2 |
+| Italian | `parakeet-ultra`, 2.3 | 2.3 | 3.0 | 2.7 |
+| Portuguese | `parakeet-ultra`, 4.1 | 4.1 | 5.0 | 4.3 |
+| Polish | `whisper-turbo`, 5.8 | 6.2 | 7.4 | 5.8 |
+| Ukrainian | `parakeet-ultra`, 5.6 | 5.6 | 6.9 | 7.4 |
+| Hebrew | `whisper-turbo-he`, 18.4 | – | – | – |
+| 1 hour of audio takes | | ~30 s | 24 s | ~4 min |
+
+`gigaam-v3` takes 11 s for an hour of Russian, and `parakeet-he` 23.1 on Hebrew at about Parakeet's speed. On English LibriSpeech test-clean: `parakeet-v2` 1.7, `parakeet-ultra` 1.8, `parakeet-v3` 1.9, `whisper-turbo` 2.0, `moonshine-base` 3.3. Measured with wavo on the GPU by `scripts/wer.py run`; other languages aren't measured yet.
+
+## All models
+
 | Name | Size | Languages | Output |
 |---|---|---|---|
 | `parakeet-v3` | 0.74 GB | 25 European languages | cased, punctuated |

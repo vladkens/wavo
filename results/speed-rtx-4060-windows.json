@@ -11,30 +11,20 @@
       "backend": "Vulkan",
       "precision": "Q8_0",
       "latency": {
-        "1s": {
-          "load_ms": 1746.8,
-          "first_ms": 43.0,
-          "warm_ms": 36.9
-        },
-        "2s": {
-          "load_ms": 298.6,
-          "first_ms": 34.5,
-          "warm_ms": 33.4
-        },
         "5s": {
-          "load_ms": 325.8,
-          "first_ms": 45.9,
-          "warm_ms": 44.6
+          "load_ms": 333.3,
+          "first_ms": 53.7,
+          "warm_ms": 51.9
         },
-        "10s": {
-          "load_ms": 322.1,
-          "first_ms": 77.3,
-          "warm_ms": 76.7
+        "15s": {
+          "load_ms": 333.8,
+          "first_ms": 104.2,
+          "warm_ms": 100.7
         },
         "30s": {
-          "load_ms": 304.1,
-          "first_ms": 172.3,
-          "warm_ms": 170.4
+          "load_ms": 280.9,
+          "first_ms": 160.9,
+          "warm_ms": 156.2
         }
       },
       "hour": {
@@ -55,30 +45,20 @@
       "backend": "Vulkan",
       "precision": "Q8_0",
       "latency": {
-        "1s": {
-          "load_ms": 459.6,
-          "first_ms": 15.6,
-          "warm_ms": 14.9
-        },
-        "2s": {
-          "load_ms": 260.5,
-          "first_ms": 17.0,
-          "warm_ms": 15.7
-        },
         "5s": {
-          "load_ms": 233.0,
-          "first_ms": 20.1,
-          "warm_ms": 19.2
+          "load_ms": 224.3,
+          "first_ms": 18.3,
+          "warm_ms": 17.6
         },
-        "10s": {
-          "load_ms": 234.6,
-          "first_ms": 34.6,
-          "warm_ms": 33.6
+        "15s": {
+          "load_ms": 223.6,
+          "first_ms": 36.5,
+          "warm_ms": 35.3
         },
         "30s": {
-          "load_ms": 222.6,
-          "first_ms": 52.5,
-          "warm_ms": 51.0
+          "load_ms": 261.1,
+          "first_ms": 57.7,
+          "warm_ms": 56.3
         }
       },
       "hour": {

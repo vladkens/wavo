@@ -10,7 +10,7 @@
                          [--cooldown 30] [--clean]
 
 `download` is optional: it caches the audio, a public-domain LibriVox recording of about an hour per
-language in `.cache/data/`, cut once at pauses into 2-15 s pieces and clips of 1, 2, 5, 10 and 30 s
+language in `.cache/data/`, cut once at pauses into 2-15 s pieces and clips of 5, 15 and 30 s
 in `.cache/speed/`. `run` does that too when it is missing, fetches and builds each engine into
 `.cache/engines/` (cmake, ninja and the Python engines through uv, nothing on the system), then
 measures, keeps each result in `results/speed-<chip>.json` as it comes and continues where it
@@ -62,7 +62,7 @@ BATCH = REPO / "target" / "release" / "examples" / "batch"
 TIME = "/usr/bin/time"
 RUNS = 3
 CALLS = 6
-SECONDS = [1, 2, 5, 10, 30]
+SECONDS = (5, 15, 30)
 PIECE = (2, 15)
 RATE = 16000
 PORT = 8124

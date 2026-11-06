@@ -1,3 +1,5 @@
+<!-- For agents, not for people. -->
+
 # Fast build
 
 After the models are in. Keep the fixtures exact; log each attempt in `docs/perf.md`, the numbers

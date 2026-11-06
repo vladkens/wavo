@@ -1,3 +1,5 @@
+<!-- For agents, not for people. -->
+
 # Parakeet TDT V2, fast
 
 Done: 2026-10-10, commit 5c15289

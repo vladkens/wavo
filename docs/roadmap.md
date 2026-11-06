@@ -1,3 +1,5 @@
+<!-- For agents, not for people. -->
+
 # Roadmap
 
 Priority models: GigaAM v3 e2e-rnnt (Russian) and Parakeet TDT V2 (English). Work on one model
