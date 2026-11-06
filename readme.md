@@ -181,19 +181,19 @@ Errors are wrong words per 100, on LibriSpeech test-clean and FLEURS Russian, me
 
 ## ⚡ Speed
 
-Seconds you wait for the text after a recording of that length ends. Lower is better, the best in bold. Parakeet v3 on a MacBook Pro with Apple M5.
+wavo is among the fastest ways to run these models, and it is one Rust binary on every system. A short phrase takes under 0.2 s in all the engines below, so the time that shows is a long recording. Parakeet v3 on a MacBook Pro with Apple M5, lower is better:
 
-| | 5s | 15s | 30s | 1h |
-|---|---:|---:|---:|---:|
-| wavo, Neural Engine | **0.04** | **0.06** | 0.15 | **18** |
-| FluidAudio, Neural Engine | 0.05 | 0.08 | **0.14** | 21 |
-| wavo, GPU | **0.04** | 0.09 | 0.15 | 24 |
-| transcribe.cpp, GPU | 0.06 | 0.14 | 0.26 | 35 |
-| parakeet.cpp, GPU | 0.07 | 0.17 | 0.31 | 39 |
-| parakeet-mlx, GPU | 0.12 | 0.25 | 0.39 | 61 |
-| sherpa-onnx, CPU | 0.12 | 0.34 | 0.73 | 146 |
+| | 1 hour of audio | Written in | Runs on |
+|---|---:|---|---|
+| wavo, Neural Engine | 18 s | Rust | Mac |
+| [FluidAudio](https://github.com/FluidInference/FluidAudio), Neural Engine | 21 s | Swift | Mac |
+| wavo, GPU | 24 s | Rust | Mac, Windows, Linux |
+| [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp), GPU | 35 s | C++ | Mac, Windows, Linux |
+| [parakeet.cpp](https://github.com/mudler/parakeet.cpp), GPU | 39 s | C++ | Mac, Windows, Linux |
+| [parakeet-mlx](https://github.com/senstella/parakeet-mlx), GPU | 61 s | Python | Mac |
+| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), CPU | 146 s | C++ | Mac, Windows, Linux |
 
-GigaAM, other machines and how it's measured: [docs/benchmarks.md](docs/benchmarks.md).
+GigaAM, phrases, other machines and the method: [docs/benchmarks.md](docs/benchmarks.md).
 
 ## 📚 Library usage
 

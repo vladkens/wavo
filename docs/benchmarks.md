@@ -1,6 +1,8 @@
 # Benchmarks
 
-Seconds you wait for the text after a recording of that length ends. Lower is better, the best in bold. MacBook Pro with Apple M5 and 32 GB, macOS 27.
+What these numbers answer: how long you wait for the text from each engine, on the same model and the same audio. A recording of an hour shows real differences; a phrase of a few seconds is instant everywhere, and its numbers are only here for completeness.
+
+Seconds, lower is better, the best in bold. MacBook Pro with Apple M5 and 32 GB, macOS 27.
 
 ## Parakeet v3, English
 
