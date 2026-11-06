@@ -475,7 +475,7 @@ def write_scores(args):
     rates, spent = {}, {}
     for report in sorted(reports, key=lambda x: x["date"]):
         for row in report["rows"]:
-            if row["backend"] != "gpu":
+            if row["backend"] != "gpu" or row["missing"]:  # a part of a set says nothing yet
                 continue
 
             if row["dataset"] == f"fleurs-{row['language']}" and row["rate"] is not None:
