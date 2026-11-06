@@ -358,7 +358,8 @@ def get_audio():
         if not hour_file(lang).exists():
             get_file(label, HOUR[lang]["url"], hour_file(lang), HOUR[lang]["sha256"])
 
-        if not hour_list(lang).exists():
+        lists = [hour_list(lang), *(clip_list(lang, x) for x in SECONDS)]
+        if not all(x.exists() for x in lists):
             write_audio(lang, label)
 
 
