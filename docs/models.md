@@ -16,7 +16,7 @@ Wrong words per 100 on the FLEURS test set, lower is better. The best model of e
 | Polish | `whisper-turbo`, 5.8 | 6.2 | 7.4 | 5.8 |
 | Ukrainian | `parakeet-ultra`, 5.6 | 5.6 | 6.9 | 7.4 |
 | Hebrew | `whisper-turbo-he`, 18.4 | – | – | – |
-| 1 hour of audio takes | | ~30 s | 24 s | ~4 min |
+| 1 hour of audio takes | | ~30 s | 22 s | ~4 min |
 
 `gigaam-v3` takes 11 s for an hour of Russian, and `parakeet-he` 23.1 on Hebrew at about Parakeet's speed. On English LibriSpeech test-clean: `parakeet-v2` 1.7, `parakeet-ultra` 1.8, `parakeet-v3` 1.9, `whisper-turbo` 2.0, `moonshine-base` 3.3. Measured with wavo on the GPU by `scripts/wer.py run`; other languages aren't measured yet.
 
@@ -49,27 +49,9 @@ Wrong words per 100 on the FLEURS test set, lower is better. The best model of e
 | `moonshine-tiny` | 0.04 GB | English | cased, punctuated |
 | `moonshine-base` | 0.08 GB | English | cased, punctuated |
 
-Parakeet is NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
-[Parakeet Ultra](https://huggingface.co/moondream/parakeet-ultra) is Moondream's retraining of v3
-with fewer errors in each of its 25 languages,
-GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM), Whisper is OpenAI's
-[Whisper](https://huggingface.co/openai/whisper-large-v3-turbo), Breeze-ASR-25 is MediaTek
-Research's [Whisper large-v2 fine-tune](https://huggingface.co/MediaTek-Research/Breeze-ASR-25)
-and Moonshine is Useful Sensors' [Moonshine](https://huggingface.co/UsefulSensors/moonshine-tiny),
-small and fast. Moonshine has no timestamps: its tokens all start at 0, and `--srt` gives one cue
-per piece of the split audio. The Hebrew models are ivrit.ai's
-[Whisper turbo fine-tune](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo) and Yakov
-Kolani's [Parakeet v3 fine-tune](https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he).
-Short names stand for the published ones: `parakeet-v3` is `parakeet-tdt-0.6b-v3`, `parakeet-v2`
-is `parakeet-tdt-0.6b-v2`, `parakeet-he` is `parakeet-tdt-0.6b-v3-he`, `gigaam-v3` is
-`gigaam-v3-e2e-rnnt`, `whisper-turbo` is `whisper-large-v3-turbo`, `whisper-turbo-he` is
-`ivrit-whisper-large-v3-turbo` and `breeze-asr-25` is `Breeze-ASR-25`; full names and a path to a
-`.gguf` work too.
+Parakeet is NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), [Parakeet Ultra](https://huggingface.co/moondream/parakeet-ultra) is Moondream's retraining of v3 with fewer errors in each of its 25 languages, GigaAM is Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM), Whisper is OpenAI's [Whisper](https://huggingface.co/openai/whisper-large-v3-turbo), Breeze-ASR-25 is MediaTek Research's [Whisper large-v2 fine-tune](https://huggingface.co/MediaTek-Research/Breeze-ASR-25) and Moonshine is Useful Sensors' [Moonshine](https://huggingface.co/UsefulSensors/moonshine-tiny), small and fast. Moonshine has no timestamps: its tokens all start at 0, and `--srt` gives one cue per piece of the split audio. The Hebrew models are ivrit.ai's [Whisper turbo fine-tune](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo) and Yakov Kolani's [Parakeet v3 fine-tune](https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he). Short names stand for the published ones: `parakeet-v3` is `parakeet-tdt-0.6b-v3`, `parakeet-v2` is `parakeet-tdt-0.6b-v2`, `parakeet-he` is `parakeet-tdt-0.6b-v3-he`, `gigaam-v3` is `gigaam-v3-e2e-rnnt`, `whisper-turbo` is `whisper-large-v3-turbo`, `whisper-turbo-he` is `ivrit-whisper-large-v3-turbo` and `breeze-asr-25` is `Breeze-ASR-25`; full names and a path to a `.gguf` work too.
 
-`parakeet-ultra` is the default: it makes fewer errors than `parakeet-v3` on every benchmark
-group of [Moondream's model card](https://huggingface.co/moondream/parakeet-ultra#benchmarks),
-which also lists each language. Word error rate, %, lower is better, measured by Moondream on an
-NVIDIA GPU, not with wavo:
+`parakeet-ultra` is the default: it makes fewer errors than `parakeet-v3` on every benchmark group of [Moondream's model card](https://huggingface.co/moondream/parakeet-ultra#benchmarks), which also lists each language. Word error rate, %, lower is better, measured by Moondream on an NVIDIA GPU, not with wavo:
 
 | Benchmark | `parakeet-v3` | `parakeet-ultra` |
 |---|---:|---:|
@@ -84,28 +66,20 @@ NVIDIA GPU, not with wavo:
 wavo's kernels and algorithms are built from the ideas and code of these projects:
 
 - [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) (MIT): the reference wavo
-  matches, its GGUF format and converters, the published models and the test clips. wavo's FFT,
-  mel frontends, TDT and Whisper decoding, repetition guard and SentencePiece decoding follow its
-  code.
+  matches, its GGUF format and converters, the published models and the test clips. wavo's FFT,   mel frontends, TDT and Whisper decoding, repetition guard and SentencePiece decoding follow its   code.
 - [ggml](https://github.com/ggml-org/ggml) (MIT): kernels adapted from it. Flash attention after
-  Vulkan's `flash_attn_cm1.comp`, the Q8_0 matrix multiplication after ggml-metal's
-  `kernel_mul_mm`, and GELU's erf.
+  Vulkan's `flash_attn_cm1.comp`, the Q8_0 matrix multiplication after ggml-metal's   `kernel_mul_mm`, and GELU's erf.
 - [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT),
-  [Hugging Face transformers](https://github.com/huggingface/transformers) and
-  [NVIDIA NeMo](https://github.com/NVIDIA/NeMo) (Apache-2.0): algorithms that reached wavo through
-  transcribe.cpp's ports.
+  [Hugging Face transformers](https://github.com/huggingface/transformers) and   [NVIDIA NeMo](https://github.com/NVIDIA/NeMo) (Apache-2.0): algorithms that reached wavo through   transcribe.cpp's ports.
 
-**Models.** wavo ships no weights: `wavo pull` downloads the GGUF conversions that
-[handy-computer](https://huggingface.co/handy-computer) publishes on Hugging Face, and
-[vladkens](https://huggingface.co/vladkens) for the Hebrew models, under the original licenses:
+**Models.** wavo ships no weights: `wavo pull` downloads the GGUF conversions that [handy-computer](https://huggingface.co/handy-computer) publishes on Hugging Face, and [vladkens](https://huggingface.co/vladkens) for the Hebrew models, under the original licenses:
 
 - Parakeet TDT ([v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2),
   [v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)) © NVIDIA, CC-BY-4.0
 - [Parakeet Ultra](https://huggingface.co/moondream/parakeet-ultra) © Moondream, CC-BY-4.0
 - [GigaAM v3](https://huggingface.co/ai-sage/GigaAM-v3) © Sber, MIT
 - Whisper © OpenAI, MIT for [large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo)
-  and Apache-2.0 for the other sizes (such as
-  [large-v3](https://huggingface.co/openai/whisper-large-v3)), as their model cards state
+  and Apache-2.0 for the other sizes (such as   [large-v3](https://huggingface.co/openai/whisper-large-v3)), as their model cards state
 - Moonshine ([tiny](https://huggingface.co/UsefulSensors/moonshine-tiny),
   [base](https://huggingface.co/UsefulSensors/moonshine-base)) © Useful Sensors, MIT
 - [Breeze-ASR-25](https://huggingface.co/MediaTek-Research/Breeze-ASR-25) © MediaTek Research,

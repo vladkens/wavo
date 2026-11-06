@@ -94,30 +94,54 @@
       "hour": {
         "runs": [
           {
-            "wall_s": 22.96,
-            "realtime": 156.25,
-            "peak_mb": 845,
-            "words": 9677
+            "wall_s": 22.2,
+            "realtime": 161.6,
+            "peak_mb": 847,
+            "words": 9677,
+            "cpu_j": 158.2,
+            "gpu_j": 204.9,
+            "ane_j": 0.0,
+            "sys_j": 552.3,
+            "j_per_hour": 364.4,
+            "idle_w": 0.03
           },
           {
-            "wall_s": 34.52,
-            "realtime": 103.92,
-            "peak_mb": 845,
-            "words": 9677
+            "wall_s": 22.39,
+            "realtime": 160.23,
+            "peak_mb": 844,
+            "words": 9677,
+            "cpu_j": 164.6,
+            "gpu_j": 211.3,
+            "ane_j": 0.0,
+            "sys_j": 575.9,
+            "j_per_hour": 377.2,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 24.24,
-            "realtime": 148.0,
-            "peak_mb": 846,
-            "words": 9677
+            "wall_s": 22.36,
+            "realtime": 160.44,
+            "peak_mb": 844,
+            "words": 9677,
+            "cpu_j": 166.5,
+            "gpu_j": 211.8,
+            "ane_j": 0.0,
+            "sys_j": 584.9,
+            "j_per_hour": 379.6,
+            "idle_w": 0.01
           }
         ],
         "audio_s": 3587.4,
         "pieces": 392,
-        "wall_s": 24.24,
-        "realtime": 148.0,
-        "peak_mb": 845,
-        "words": 9677
+        "wall_s": 22.36,
+        "realtime": 160.44,
+        "peak_mb": 844,
+        "words": 9677,
+        "cpu_j": 164.6,
+        "gpu_j": 211.3,
+        "ane_j": 0.0,
+        "sys_j": 575.9,
+        "j_per_hour": 377.2,
+        "idle_w": 0.01
       }
     },
     {
@@ -211,30 +235,54 @@
       "hour": {
         "runs": [
           {
-            "wall_s": 18.26,
-            "realtime": 196.46,
-            "peak_mb": 61,
-            "words": 9675
+            "wall_s": 18.0,
+            "realtime": 199.3,
+            "peak_mb": 63,
+            "words": 9675,
+            "cpu_j": 158.4,
+            "gpu_j": 0.0,
+            "ane_j": 67.5,
+            "sys_j": 372.1,
+            "j_per_hour": 226.7,
+            "idle_w": 0.04
           },
           {
-            "wall_s": 20.88,
-            "realtime": 171.81,
-            "peak_mb": 66,
-            "words": 9675
+            "wall_s": 17.94,
+            "realtime": 199.97,
+            "peak_mb": 63,
+            "words": 9675,
+            "cpu_j": 156.8,
+            "gpu_j": 0.0,
+            "ane_j": 67.7,
+            "sys_j": 358.5,
+            "j_per_hour": 225.3,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 18.19,
-            "realtime": 197.22,
-            "peak_mb": 61,
-            "words": 9675
+            "wall_s": 17.98,
+            "realtime": 199.52,
+            "peak_mb": 63,
+            "words": 9675,
+            "cpu_j": 156.8,
+            "gpu_j": 0.0,
+            "ane_j": 67.7,
+            "sys_j": 363.7,
+            "j_per_hour": 225.3,
+            "idle_w": 0.01
           }
         ],
         "audio_s": 3587.4,
         "pieces": 392,
-        "wall_s": 18.26,
-        "realtime": 196.46,
-        "peak_mb": 61,
-        "words": 9675
+        "wall_s": 17.98,
+        "realtime": 199.52,
+        "peak_mb": 63,
+        "words": 9675,
+        "cpu_j": 156.8,
+        "gpu_j": 0.0,
+        "ane_j": 67.7,
+        "sys_j": 363.7,
+        "j_per_hour": 225.3,
+        "idle_w": 0.01
       }
     },
     {
@@ -328,30 +376,54 @@
       "hour": {
         "runs": [
           {
-            "wall_s": 40.98,
-            "realtime": 87.54,
-            "peak_mb": 236,
-            "words": 9677
-          },
-          {
-            "wall_s": 34.98,
-            "realtime": 102.56,
-            "peak_mb": 234,
-            "words": 9677
-          },
-          {
-            "wall_s": 34.24,
-            "realtime": 104.77,
+            "wall_s": 33.84,
+            "realtime": 106.01,
             "peak_mb": 237,
-            "words": 9677
+            "words": 9677,
+            "cpu_j": 237.7,
+            "gpu_j": 318.9,
+            "ane_j": 0.0,
+            "sys_j": 852.7,
+            "j_per_hour": 558.5,
+            "idle_w": 0.03
+          },
+          {
+            "wall_s": 33.59,
+            "realtime": 106.8,
+            "peak_mb": 236,
+            "words": 9677,
+            "cpu_j": 239.0,
+            "gpu_j": 324.7,
+            "ane_j": 0.0,
+            "sys_j": 859.6,
+            "j_per_hour": 565.7,
+            "idle_w": 0.01
+          },
+          {
+            "wall_s": 33.68,
+            "realtime": 106.52,
+            "peak_mb": 243,
+            "words": 9677,
+            "cpu_j": 239.7,
+            "gpu_j": 323.6,
+            "ane_j": 0.0,
+            "sys_j": 857.2,
+            "j_per_hour": 565.3,
+            "idle_w": 0.01
           }
         ],
         "audio_s": 3587.4,
         "pieces": 392,
-        "wall_s": 34.98,
-        "realtime": 102.56,
-        "peak_mb": 236,
-        "words": 9677
+        "wall_s": 33.68,
+        "realtime": 106.52,
+        "peak_mb": 237,
+        "words": 9677,
+        "cpu_j": 239.0,
+        "gpu_j": 323.6,
+        "ane_j": 0.0,
+        "sys_j": 857.2,
+        "j_per_hour": 565.3,
+        "idle_w": 0.01
       }
     },
     {
@@ -445,30 +517,54 @@
       "hour": {
         "runs": [
           {
-            "wall_s": 20.92,
-            "realtime": 171.48,
-            "peak_mb": 48,
-            "words": 9701
+            "wall_s": 20.56,
+            "realtime": 174.49,
+            "peak_mb": 47,
+            "words": 9701,
+            "cpu_j": 96.6,
+            "gpu_j": 0.0,
+            "ane_j": 67.0,
+            "sys_j": 297.7,
+            "j_per_hour": 164.2,
+            "idle_w": 0.04
           },
           {
-            "wall_s": 20.87,
-            "realtime": 171.89,
+            "wall_s": 19.97,
+            "realtime": 179.64,
             "peak_mb": 47,
-            "words": 9701
+            "words": 9701,
+            "cpu_j": 95.8,
+            "gpu_j": 0.0,
+            "ane_j": 67.1,
+            "sys_j": 300.8,
+            "j_per_hour": 163.5,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 20.75,
-            "realtime": 172.89,
+            "wall_s": 20.53,
+            "realtime": 174.74,
             "peak_mb": 47,
-            "words": 9701
+            "words": 9701,
+            "cpu_j": 98.5,
+            "gpu_j": 0.0,
+            "ane_j": 67.1,
+            "sys_j": 306.8,
+            "j_per_hour": 166.2,
+            "idle_w": 0.01
           }
         ],
         "audio_s": 3587.4,
         "pieces": 392,
-        "wall_s": 20.87,
-        "realtime": 171.89,
+        "wall_s": 20.53,
+        "realtime": 174.74,
         "peak_mb": 47,
-        "words": 9701
+        "words": 9701,
+        "cpu_j": 96.6,
+        "gpu_j": 0.0,
+        "ane_j": 67.1,
+        "sys_j": 300.8,
+        "j_per_hour": 164.2,
+        "idle_w": 0.01
       }
     },
     {
@@ -562,30 +658,54 @@
       "hour": {
         "runs": [
           {
-            "wall_s": 64.15,
-            "realtime": 55.92,
-            "peak_mb": 18072,
-            "words": 9689
+            "wall_s": 58.58,
+            "realtime": 61.24,
+            "peak_mb": 18713,
+            "words": 9689,
+            "cpu_j": 115.6,
+            "gpu_j": 273.5,
+            "ane_j": 0.0,
+            "sys_j": 964.3,
+            "j_per_hour": 390.5,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 61.18,
-            "realtime": 58.64,
-            "peak_mb": 18044,
-            "words": 9689
+            "wall_s": 58.81,
+            "realtime": 61.0,
+            "peak_mb": 18047,
+            "words": 9689,
+            "cpu_j": 112.7,
+            "gpu_j": 279.1,
+            "ane_j": 0.0,
+            "sys_j": 973.0,
+            "j_per_hour": 393.2,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 59.3,
-            "realtime": 60.5,
-            "peak_mb": 18051,
-            "words": 9689
+            "wall_s": 58.68,
+            "realtime": 61.14,
+            "peak_mb": 18065,
+            "words": 9689,
+            "cpu_j": 112.8,
+            "gpu_j": 278.6,
+            "ane_j": 0.0,
+            "sys_j": 970.6,
+            "j_per_hour": 392.8,
+            "idle_w": 0.01
           }
         ],
         "audio_s": 3587.4,
         "pieces": 392,
-        "wall_s": 61.18,
-        "realtime": 58.64,
-        "peak_mb": 18051,
-        "words": 9689
+        "wall_s": 58.68,
+        "realtime": 61.14,
+        "peak_mb": 18065,
+        "words": 9689,
+        "cpu_j": 112.8,
+        "gpu_j": 278.6,
+        "ane_j": 0.0,
+        "sys_j": 970.6,
+        "j_per_hour": 392.8,
+        "idle_w": 0.01
       }
     },
     {
@@ -679,30 +799,54 @@
       "hour": {
         "runs": [
           {
-            "wall_s": 145.99,
-            "realtime": 24.57,
-            "peak_mb": 2089,
-            "words": 9648
+            "wall_s": 91.59,
+            "realtime": 39.17,
+            "peak_mb": 2099,
+            "words": 9648,
+            "cpu_j": 1458.9,
+            "gpu_j": 0.0,
+            "ane_j": 0.0,
+            "sys_j": 2070.8,
+            "j_per_hour": 1464.0,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 148.2,
-            "realtime": 24.21,
-            "peak_mb": 2091,
-            "words": 9648
+            "wall_s": 93.78,
+            "realtime": 38.25,
+            "peak_mb": 2099,
+            "words": 9648,
+            "cpu_j": 1477.0,
+            "gpu_j": 0.0,
+            "ane_j": 0.0,
+            "sys_j": 2098.9,
+            "j_per_hour": 1482.2,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 144.57,
-            "realtime": 24.81,
-            "peak_mb": 2088,
-            "words": 9648
+            "wall_s": 91.99,
+            "realtime": 39.0,
+            "peak_mb": 2099,
+            "words": 9648,
+            "cpu_j": 1466.6,
+            "gpu_j": 2.8,
+            "ane_j": 0.0,
+            "sys_j": 2113.6,
+            "j_per_hour": 1474.5,
+            "idle_w": 0.01
           }
         ],
         "audio_s": 3587.4,
         "pieces": 392,
-        "wall_s": 145.99,
-        "realtime": 24.57,
-        "peak_mb": 2089,
-        "words": 9648
+        "wall_s": 91.99,
+        "realtime": 39.0,
+        "peak_mb": 2099,
+        "words": 9648,
+        "cpu_j": 1466.6,
+        "gpu_j": 0.0,
+        "ane_j": 0.0,
+        "sys_j": 2098.9,
+        "j_per_hour": 1474.5,
+        "idle_w": 0.01
       }
     },
     {
@@ -796,30 +940,54 @@
       "hour": {
         "runs": [
           {
-            "wall_s": 42.81,
-            "realtime": 83.8,
+            "wall_s": 39.58,
+            "realtime": 90.64,
             "peak_mb": 1903,
-            "words": 10083
+            "words": 10083,
+            "cpu_j": 57.7,
+            "gpu_j": 413.0,
+            "ane_j": 0.0,
+            "sys_j": 783.8,
+            "j_per_hour": 472.3,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 39.28,
-            "realtime": 91.33,
+            "wall_s": 39.99,
+            "realtime": 89.71,
             "peak_mb": 1903,
-            "words": 10083
+            "words": 10083,
+            "cpu_j": 51.5,
+            "gpu_j": 401.0,
+            "ane_j": 0.0,
+            "sys_j": 676.6,
+            "j_per_hour": 454.1,
+            "idle_w": 0.43
           },
           {
-            "wall_s": 39.43,
-            "realtime": 90.98,
-            "peak_mb": 1904,
-            "words": 10083
+            "wall_s": 39.66,
+            "realtime": 90.46,
+            "peak_mb": 1903,
+            "words": 10083,
+            "cpu_j": 59.2,
+            "gpu_j": 412.3,
+            "ane_j": 0.0,
+            "sys_j": 783.7,
+            "j_per_hour": 473.1,
+            "idle_w": 0.01
           }
         ],
         "audio_s": 3587.4,
         "pieces": 392,
-        "wall_s": 39.43,
-        "realtime": 90.98,
+        "wall_s": 39.66,
+        "realtime": 90.46,
         "peak_mb": 1903,
-        "words": 10083
+        "words": 10083,
+        "cpu_j": 57.7,
+        "gpu_j": 412.3,
+        "ane_j": 0.0,
+        "sys_j": 783.7,
+        "j_per_hour": 472.3,
+        "idle_w": 0.01
       }
     },
     {
@@ -913,30 +1081,54 @@
       "hour": {
         "runs": [
           {
-            "wall_s": 11.51,
-            "realtime": 318.63,
-            "peak_mb": 364,
-            "words": 7644
+            "wall_s": 11.13,
+            "realtime": 329.51,
+            "peak_mb": 360,
+            "words": 7644,
+            "cpu_j": 32.3,
+            "gpu_j": 126.8,
+            "ane_j": 0.0,
+            "sys_j": 254.3,
+            "j_per_hour": 156.2,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 11.42,
-            "realtime": 321.14,
+            "wall_s": 11.11,
+            "realtime": 330.1,
             "peak_mb": 362,
-            "words": 7644
+            "words": 7644,
+            "cpu_j": 32.6,
+            "gpu_j": 126.0,
+            "ane_j": 0.0,
+            "sys_j": 253.4,
+            "j_per_hour": 155.7,
+            "idle_w": 0.03
           },
           {
-            "wall_s": 11.3,
-            "realtime": 324.55,
-            "peak_mb": 362,
-            "words": 7644
+            "wall_s": 11.11,
+            "realtime": 330.1,
+            "peak_mb": 360,
+            "words": 7644,
+            "cpu_j": 32.6,
+            "gpu_j": 126.5,
+            "ane_j": 0.0,
+            "sys_j": 249.0,
+            "j_per_hour": 156.2,
+            "idle_w": 0.01
           }
         ],
         "audio_s": 3667.4,
         "pieces": 392,
-        "wall_s": 11.42,
-        "realtime": 321.14,
-        "peak_mb": 362,
-        "words": 7644
+        "wall_s": 11.11,
+        "realtime": 330.1,
+        "peak_mb": 360,
+        "words": 7644,
+        "cpu_j": 32.6,
+        "gpu_j": 126.5,
+        "ane_j": 0.0,
+        "sys_j": 253.4,
+        "j_per_hour": 156.2,
+        "idle_w": 0.01
       }
     },
     {
@@ -1030,30 +1222,54 @@
       "hour": {
         "runs": [
           {
-            "wall_s": 13.07,
-            "realtime": 280.6,
-            "peak_mb": 29,
-            "words": 7649
+            "wall_s": 12.77,
+            "realtime": 287.19,
+            "peak_mb": 31,
+            "words": 7649,
+            "cpu_j": 29.0,
+            "gpu_j": 0.0,
+            "ane_j": 55.2,
+            "sys_j": 132.0,
+            "j_per_hour": 82.7,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 12.66,
-            "realtime": 289.69,
-            "peak_mb": 29,
-            "words": 7649
+            "wall_s": 12.74,
+            "realtime": 287.87,
+            "peak_mb": 31,
+            "words": 7649,
+            "cpu_j": 29.5,
+            "gpu_j": 0.0,
+            "ane_j": 55.2,
+            "sys_j": 130.5,
+            "j_per_hour": 83.1,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 12.65,
-            "realtime": 289.92,
-            "peak_mb": 28,
-            "words": 7649
+            "wall_s": 12.77,
+            "realtime": 287.19,
+            "peak_mb": 31,
+            "words": 7649,
+            "cpu_j": 28.9,
+            "gpu_j": 0.0,
+            "ane_j": 55.2,
+            "sys_j": 130.7,
+            "j_per_hour": 82.6,
+            "idle_w": 0.01
           }
         ],
         "audio_s": 3667.4,
         "pieces": 392,
-        "wall_s": 12.66,
-        "realtime": 289.69,
-        "peak_mb": 29,
-        "words": 7649
+        "wall_s": 12.77,
+        "realtime": 287.19,
+        "peak_mb": 31,
+        "words": 7649,
+        "cpu_j": 29.0,
+        "gpu_j": 0.0,
+        "ane_j": 55.2,
+        "sys_j": 130.7,
+        "j_per_hour": 82.7,
+        "idle_w": 0.01
       }
     },
     {
@@ -1147,30 +1363,54 @@
       "hour": {
         "runs": [
           {
-            "wall_s": 14.39,
-            "realtime": 254.86,
-            "peak_mb": 102,
-            "words": 7645
+            "wall_s": 14.0,
+            "realtime": 261.96,
+            "peak_mb": 110,
+            "words": 7645,
+            "cpu_j": 44.7,
+            "gpu_j": 180.2,
+            "ane_j": 0.0,
+            "sys_j": 334.6,
+            "j_per_hour": 220.8,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 14.34,
-            "realtime": 255.75,
+            "wall_s": 14.07,
+            "realtime": 260.66,
+            "peak_mb": 105,
+            "words": 7645,
+            "cpu_j": 46.2,
+            "gpu_j": 181.2,
+            "ane_j": 0.0,
+            "sys_j": 339.6,
+            "j_per_hour": 223.2,
+            "idle_w": 0.01
+          },
+          {
+            "wall_s": 13.94,
+            "realtime": 263.09,
             "peak_mb": 107,
-            "words": 7645
-          },
-          {
-            "wall_s": 14.52,
-            "realtime": 252.58,
-            "peak_mb": 111,
-            "words": 7645
+            "words": 7645,
+            "cpu_j": 44.0,
+            "gpu_j": 179.1,
+            "ane_j": 0.0,
+            "sys_j": 331.3,
+            "j_per_hour": 219.0,
+            "idle_w": 0.01
           }
         ],
         "audio_s": 3667.4,
         "pieces": 392,
-        "wall_s": 14.39,
-        "realtime": 254.86,
+        "wall_s": 14.0,
+        "realtime": 261.96,
         "peak_mb": 107,
-        "words": 7645
+        "words": 7645,
+        "cpu_j": 44.7,
+        "gpu_j": 180.2,
+        "ane_j": 0.0,
+        "sys_j": 334.6,
+        "j_per_hour": 220.8,
+        "idle_w": 0.01
       }
     },
     {
@@ -1264,30 +1504,54 @@
       "hour": {
         "runs": [
           {
-            "wall_s": 107.94,
-            "realtime": 33.98,
-            "peak_mb": 779,
-            "words": 7652
+            "wall_s": 62.22,
+            "realtime": 58.94,
+            "peak_mb": 783,
+            "words": 7652,
+            "cpu_j": 1004.2,
+            "gpu_j": 0.0,
+            "ane_j": 0.0,
+            "sys_j": 1413.9,
+            "j_per_hour": 985.7,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 92.39,
-            "realtime": 39.7,
-            "peak_mb": 772,
-            "words": 7652
+            "wall_s": 62.52,
+            "realtime": 58.66,
+            "peak_mb": 785,
+            "words": 7652,
+            "cpu_j": 1010.2,
+            "gpu_j": 0.0,
+            "ane_j": 0.0,
+            "sys_j": 1426.2,
+            "j_per_hour": 991.6,
+            "idle_w": 0.01
           },
           {
-            "wall_s": 94.91,
-            "realtime": 38.64,
-            "peak_mb": 773,
-            "words": 7652
+            "wall_s": 62.78,
+            "realtime": 58.42,
+            "peak_mb": 784,
+            "words": 7652,
+            "cpu_j": 1015.7,
+            "gpu_j": 0.0,
+            "ane_j": 0.0,
+            "sys_j": 1435.5,
+            "j_per_hour": 997.0,
+            "idle_w": 0.01
           }
         ],
         "audio_s": 3667.4,
         "pieces": 392,
-        "wall_s": 94.91,
-        "realtime": 38.64,
-        "peak_mb": 773,
-        "words": 7652
+        "wall_s": 62.52,
+        "realtime": 58.66,
+        "peak_mb": 784,
+        "words": 7652,
+        "cpu_j": 1010.2,
+        "gpu_j": 0.0,
+        "ane_j": 0.0,
+        "sys_j": 1426.2,
+        "j_per_hour": 991.6,
+        "idle_w": 0.01
       }
     }
   ]

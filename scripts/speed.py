@@ -63,6 +63,7 @@ TIME = "/usr/bin/time"
 RUNS = 3
 CALLS = 6
 SECONDS = (5, 15, 30)
+IDLE_S, TAIL_S = 15, 3  # the idle power before an hour's run, and what is left of it after
 PIECE = (2, 15)
 RATE = 16000
 PORT = 8124
@@ -693,6 +694,28 @@ def latency(row: dict, seconds: int, label: str) -> str:
     return f"load {r['load_ms']:>5.0f} first {first:>5.0f} warm {warm:>5.0f} ms"
 
 
+def energy(power: Path, start: float, end: float, audio_s: float) -> dict:
+    """Joules of the CPU, GPU and Neural Engine over a run and its tail, above the idle power of
+    the seconds before it; each sample is the average since the one before. macmon can't tell
+    processes apart, so nothing else may run, and it reads no memory power on M2 and M5."""
+    rows = [json.loads(x) for x in power.read_text().splitlines() if x.endswith("}")]
+    for x in rows:
+        x["t"] = datetime.fromisoformat(x["timestamp"].replace("Z", "+00:00")).timestamp()
+
+    idle = [x for x in rows if x["t"] < start]
+    busy = [x for x in rows if start <= x["t"] <= end + TAIL_S]
+    steps = [b["t"] - a["t"] for a, b in zip(busy, busy[1:])]
+    found = {}
+    for block in ("cpu", "gpu", "ane", "sys"):
+        key = f"{block}_power"
+        base = median(x[key] for x in idle)
+        found[f"{block}_j"] = round(sum((x[key] - base) * dt for x, dt in zip(busy[1:], steps)), 1)
+
+    net = found["cpu_j"] + found["gpu_j"] + found["ane_j"]
+    idle_w = sum(median(x[f"{b}_power"] for x in idle) for b in ("cpu", "gpu", "ane"))
+    return found | {"j_per_hour": round(net / audio_s * 3600, 1), "idle_w": round(idle_w, 2)}
+
+
 def hour(row: dict, label: str) -> str:
     listed = hour_list(row["language"])
     files = listed.read_text().splitlines()
@@ -700,15 +723,31 @@ def hour(row: dict, label: str) -> str:
     for file in files:  # into the page cache, so no run reads disk
         Path(file).read_bytes()
 
-    r = batch(row, listed, label)
+    power = WORK / "power.jsonl"
+    with open(power, "w") as out:
+        meter = subprocess.Popen(["macmon", "pipe", "-i", "200"], stdout=out)
+
+    try:
+        time.sleep(IDLE_S)
+        start = time.time()
+        r = batch(row, listed, label)
+        end = time.time()
+        time.sleep(TAIL_S)
+    finally:
+        meter.terminate()
+        meter.wait()
+
     wall_s, peak_mb, words = r["wall_s"], r["peak_mb"], r["words"]
     run = {"wall_s": wall_s, "realtime": round(audio_s / wall_s, 2)}
-    run |= {"peak_mb": peak_mb, "words": words}
+    run |= {"peak_mb": peak_mb, "words": words} | energy(power, start, end, audio_s)
     found = row["hour"]
     found["runs"].append(run)
     found |= {"audio_s": round(audio_s, 1), "pieces": len(files)}
     found |= {k: round(median(x[k] for x in found["runs"]), 2) for k in run}
-    return f"{wall_s:>7.1f} s {run['realtime']:>6.1f}x {peak_mb:>5} MB {words:>6} w"
+    joules = run["j_per_hour"]
+    return (
+        f"{wall_s:>7.1f} s {run['realtime']:>6.1f}x {peak_mb:>5} MB {words:>6} w {joules:>6.0f} J"
+    )
 
 
 def cooldown(label: str, seconds: int):
@@ -728,8 +767,7 @@ def table(rows: list[dict]):
 
         print(f"\n{model}, {lang}: hour, median of {RUNS} runs")
         who = f"{'engine':<14} {'version':<24} {'backend':<13} {'precision':<12}"
-        print(f"{who} {'wall s':>8} {'realtime':>8} {'peak MB':>7} {'words':>6} {'/wavo-gpu':>9}")
-        base = next((x["hour"].get("wall_s") for x in mine if x["engine"] == "wavo-gpu"), None)
+        print(f"{who} {'wall s':>8} {'realtime':>8} {'peak MB':>7} {'words':>6} {'J/hour':>7}")
         for x in mine:
             h = x["hour"]
             wall = h.get("wall_s")
@@ -737,7 +775,7 @@ def table(rows: list[dict]):
             print(
                 f"{who} {x['precision']:<12} {cell(wall, 8, 1)} {cell(h.get('realtime'), 8, 1)}",
                 f"{cell(h.get('peak_mb'), 7)} {cell(h.get('words'), 6)}",
-                cell(wall / base if wall and base else None, 9, 2),
+                cell(h.get("j_per_hour"), 7),
             )
 
         print(f"\n{model}, {lang}: latency in ms, {CALLS} calls of each clip in one process")
