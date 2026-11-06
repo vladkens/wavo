@@ -34,7 +34,7 @@ Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, 
 
 ## Adding a model
 
-1. Add the variant from `3rd/transcribe.cpp/catalog/<variant>.json` to `hub::MODELS`; `make test-unit` then names every other list to update. Run `make models MODELS=<name>`.
+1. Add the variant from `3rd/transcribe.cpp/catalog/<variant>.json` to `hub::MODELS`; add it to `docs/models.md` too; `make test-unit` then names every other list to update. Run `make models MODELS=<name>`.
 2. Read the reference's `scripts/convert-<family>.py`, `src/arch/<family>/` and `docs/models/<variant>.md`.
 3. Generate fixtures with `make fixtures MODEL=<name> SAMPLES="..."`: 2–4 clips in the model's language (short, ~11 s, long, plus silence where relevant). The model's first commit already produces a transcript.
 4. Pass the fixtures of every model in the family exactly, then benchmark against the reference; if wavo is slower, work through `docs/perf.md` or report the gap to the person.

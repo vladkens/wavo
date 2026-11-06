@@ -601,9 +601,8 @@ mod tests {
     assert!(matches!(hub.remove("whisper"), Err(Error::UnknownModel { .. })));
   }
 
-  /// Every other list of the models names exactly `MODELS`: the model tables of the crate docs
-  /// and docs/models.md (in order), `ALL_MODELS` in the Makefile and the tests in
-  /// `tests/models.rs`.
+  /// Every other list of the models names exactly `MODELS`: the model table of the crate docs (in
+  /// order), `ALL_MODELS` in the Makefile and the tests in `tests/models.rs`.
   #[test]
   fn model_lists_match() {
     let read = |path: &str| fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path));
@@ -618,8 +617,8 @@ mod tests {
       MODELS.iter().map(|m| format!("{}` | `{}` | {}", m.name, m.full_name, row(m))).collect();
     assert_eq!(docs, expected, "model table in src/lib.rs");
 
-    // The published crate has none of these files: these checks run in the repository only, and
-    // fail there if a file is missing or unreadable.
+    // The published crate has neither file: these two checks run in the repository only, and
+    // fail there if either file is missing or unreadable.
     let (makefile, tests) = match (read("Makefile"), read("tests/models.rs")) {
       (Ok(makefile), Ok(tests)) => (makefile, tests),
       (Err(a), Err(b)) if [&a, &b].iter().all(|e| e.kind() == std::io::ErrorKind::NotFound) => {
@@ -629,15 +628,6 @@ mod tests {
         panic!("Makefile: {:?}, tests/models.rs: {:?}", makefile.err(), tests.err())
       }
     };
-
-    let table = read("docs/models.md").unwrap();
-    let table: Vec<String> = (table.lines())
-      .filter_map(|l| l.strip_prefix("| `"))
-      .map(|l| l.replacen(" (default)", "", 1))
-      .collect();
-    let expected: Vec<String> =
-      MODELS.iter().map(|m| format!("{}` | {}", m.name, row(m))).collect();
-    assert_eq!(table, expected, "model table in docs/models.md");
     let mut full: Vec<&str> = MODELS.iter().map(|m| m.full_name).collect();
     full.sort();
     let mut make = Vec::new();
