@@ -2,11 +2,11 @@
 // Linear layer c = epilogue(a·Wᵀ + bias): `a` is row-major [m][k] F32, W is [n][k] in its GGUF
 // type. A workgroup computes a ROWS×128 tile of c. K advances 32 per step (one Q8_0 block). W
 // has a multiple of 64 rows and k % 32 == 0; c's rows are n + dual
-// wide, and outputs from n on (W's zero rows) are not written. W is rounded to f16 after
-// dequantization, as ggml-metal's `kernel_mul_mm` (`ggml/src/ggml-metal/kernels/mul_mm.metal`)
-// does; without it, near-ties (one CTC frame of e2e-ctc on ru-short) fall on the other side. The
-// reference also rounds `a`, which costs ~2% here and no fixture needs. The module also holds
-// `gemv`, for one row of `a`, and `embed`.
+// wide, and outputs from n on (W's zero rows) are not written. W and `a` are rounded to f16, as
+// ggml-metal's `kernel_mul_mm` (`ggml/src/ggml-metal/kernels/mul_mm.metal`) does. Without the
+// rounding of W, near-ties (one CTC frame of e2e-ctc on ru-short) fall on the other side; without
+// the rounding of `a`, the ivrit he-long near-tie does. The module also holds `gemv`, for one row
+// of `a` (not rounded, as `mul_mv`), and `embed`.
 
 // Weight type, one pipeline each: 0: F32, 1: F16, 2: Q8_0.
 override WTYPE: u32;
@@ -129,6 +129,10 @@ fn w_floats(v: vec4<u32>) -> vec4<f32> {
   return vec4(to_half(x.x), to_half(x.y), to_half(x.z), to_half(x.w));
 }
 
+fn half4(v: vec4<f32>) -> vec4<f32> {
+  return vec4(to_half(v.x), to_half(v.y), to_half(v.z), to_half(v.w));
+}
+
 // What a thread stages per K step: a quads of rows r and r + 32, and W words of 4 rows.
 struct Fetch {
   a0: vec4<f32>,
@@ -146,10 +150,10 @@ fn fetch(m0: u32, n0: u32, k0: u32, lid: u32) -> Fetch {
   let r = m0 + lid / 8u;
   let k = k0 + 4u * (lid % 8u);
   if (r < p.m) {
-    f.a0 = a4[(r * p.k + k) / 4u];
+    f.a0 = half4(a4[(r * p.k + k) / 4u]);
   }
   if (ROWS == 64u && r + 32u < p.m) {
-    f.a1 = a4[((r + 32u) * p.k + k) / 4u];
+    f.a1 = half4(a4[((r + 32u) * p.k + k) / 4u]);
   }
   let n = n0 + 4u * (lid / 8u);
   f.w0 = w_words(n, k);

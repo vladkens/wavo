@@ -1753,9 +1753,8 @@ mod tests {
             // 2100 rows take the fast path's 8F-row tiles.
             for m in [1, 37, 70, 2100] {
               let a = random(m * k, 3);
-              // The fast GEMM rounds a to f16 as well.
-              let fast = gpu.tile_rows(n.next_multiple_of(64), m).is_some();
-              let ar: Vec<f32> = if fast { a.iter().map(half).collect() } else { a.clone() };
+              // Every GEMM rounds a to f16, as kernel_mul_mm does. gemv does not.
+              let ar: Vec<f32> = a.iter().map(half).collect();
               // One row more than written: it must stay as it was.
               let c = random(m * width + 1, 4);
               let ab = up(gpu, &a);
@@ -1853,8 +1852,7 @@ mod tests {
       for gpu in gpus() {
         assert!(gpu.linear(std::slice::from_ref(&t), &[]).is_err());
         let l = gpu.conv(file.tensor("w", &[k, n]).unwrap(), &[]).unwrap();
-        let fast = gpu.tile_rows(n, m).is_some();
-        let ar: Vec<f32> = if fast { a.iter().map(half).collect() } else { a.clone() };
+        let ar: Vec<f32> = a.iter().map(half).collect();
         let want: Vec<f32> = (0..m * n)
           .map(|i| (0..k).map(|x| ar[i / n * 64 + x] * wf[i % n * k + x]).sum())
           .collect();
