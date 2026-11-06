@@ -1,5 +1,3 @@
-<!-- For agents, not for people. -->
-
 # GigaAM v3 e2e-rnnt, fast
 
 Done: 2026-10-09, commit 7b02350

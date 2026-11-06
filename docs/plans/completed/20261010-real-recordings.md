@@ -1,5 +1,3 @@
-<!-- For agents, not for people. -->
-
 # Real recordings vs transcribe.cpp
 
 Done: 2026-10-10, PR #6

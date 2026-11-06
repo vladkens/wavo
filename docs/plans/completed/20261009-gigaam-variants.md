@@ -1,5 +1,3 @@
-<!-- For agents, not for people. -->
-
 # GigaAM v3 variants
 
 Done: 2026-10-09, commit 7720de8

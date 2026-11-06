@@ -1,5 +1,3 @@
-<!-- For agents, not for people. -->
-
 # Long audio
 
 Done: 2026-10-10, PR #3

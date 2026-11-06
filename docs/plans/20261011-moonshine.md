@@ -1,5 +1,3 @@
-<!-- For agents, not for people. -->
-
 # Moonshine
 
 A fourth family, on the person's request, after the Whisper variants and model downloads (roadmap

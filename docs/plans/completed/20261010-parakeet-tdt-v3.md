@@ -1,5 +1,3 @@
-<!-- For agents, not for people. -->
-
 # Parakeet TDT V3
 
 Done: 2026-10-10, commit 31bfebf

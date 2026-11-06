@@ -1,5 +1,3 @@
-<!-- For agents, not for people. -->
-
 # Flash attention on every GPU
 
 Done: 2026-10-12, PR #36
