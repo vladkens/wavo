@@ -1,15 +1,15 @@
 # Benchmarks
 
-What these numbers answer: how long you wait for the text from each engine, on the same model and the same audio. A recording of an hour shows real differences; a phrase of a few seconds is instant everywhere, and its numbers are only here for completeness.
+How long each engine takes to give you the text, and how much energy that uses. Every engine runs the same model on the same audio. Times are in seconds, energy in joules, lower is better, the best in bold.
 
-Seconds, and joules for the energy of a 1-hour recording: lower is better, the best in bold. MacBook Pro with Apple M5 and 32 GB, macOS 27.
+A short phrase is instant everywhere, so the 1-hour column is the one that shows a difference.
 
 ## Parakeet v3, English
 
-| Engine | Runs on | 5s | 15s | 30s | 1h | Energy, 1h |
+| Engine | On | 5s | 15s | 30s | 1h | Energy |
 |---|---|---:|---:|---:|---:|---:|
-| wavo 0.4.0 | Neural Engine | **0.04** | **0.06** | 0.15 | **18** | 225 |
-| FluidAudio 0.17.7 | Neural Engine | 0.05 | 0.08 | **0.14** | 21 | **164** |
+| wavo 0.4.0 | ANE | **0.04** | **0.06** | 0.15 | **18** | 225 |
+| FluidAudio 0.17.7 | ANE | 0.05 | 0.08 | **0.14** | 21 | **164** |
 | wavo 0.4.0 | GPU | **0.04** | 0.09 | 0.15 | 22 | 377 |
 | transcribe.cpp 0.4.1 | GPU | 0.06 | 0.14 | 0.26 | 34 | 565 |
 | parakeet.cpp 0.6.1 | GPU | 0.07 | 0.17 | 0.31 | 40 | 472 |
@@ -18,10 +18,10 @@ Seconds, and joules for the energy of a 1-hour recording: lower is better, the b
 
 ## GigaAM v3, Russian
 
-| Engine | Runs on | 5s | 15s | 30s | 1h | Energy, 1h |
+| Engine | On | 5s | 15s | 30s | 1h | Energy |
 |---|---|---:|---:|---:|---:|---:|
 | wavo 0.4.0 | GPU | **0.02** | **0.04** | **0.08** | **11** | 156 |
-| wavo 0.4.0 | Neural Engine | 0.03 | **0.04** | 0.10 | 13 | **83** |
+| wavo 0.4.0 | ANE | 0.03 | **0.04** | 0.10 | 13 | **83** |
 | transcribe.cpp 0.4.1 | GPU | **0.02** | 0.05 | 0.12 | 14 | 221 |
 | sherpa-onnx 2.0.1 | CPU | 0.07 | 0.22 | 0.73 | 63 | 992 |
 
@@ -40,4 +40,4 @@ Seconds, and joules for the energy of a 1-hour recording: lower is better, the b
 - Energy: the CPU, GPU and Neural Engine power from [macmon](https://github.com/vladkens/macmon) over the 1-hour run, minus the idle power of the 15 s before it, nothing else running, the median of 3 rounds. Good for comparing engines on one Mac, not as an absolute number; memory isn't counted, macmon has no reading for it on this chip.
 - Engines store weights differently: wavo and transcribe.cpp 8-bit (Q8_0), FluidAudio and sherpa-onnx int8, parakeet-mlx bf16. transcribe.cpp's time is the sum of its own stage timers.
 
-Rerun it with `scripts/speed.py run`. The raw numbers are in [results/](../results).
+Measured on a MacBook Pro with an Apple M5 and 32 GB, macOS 27. ANE is Apple's Neural Engine. Rerun it with `scripts/speed.py run`. The raw numbers are in [results/](../results).
