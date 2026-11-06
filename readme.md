@@ -181,17 +181,17 @@ Errors are wrong words per 100, on LibriSpeech test-clean and FLEURS Russian, me
 
 ## ⚡ Speed
 
-How long you wait for the text after a recording of that length ends. Lower is better. Parakeet v3 on a MacBook Pro with Apple M5.
+Seconds you wait for the text after a recording of that length ends. Lower is better, the best in bold. Parakeet v3 on a MacBook Pro with Apple M5.
 
-| | 5 s | 15 s | 30 s | 1 hour |
+| | 5s | 15s | 30s | 1h |
 |---|---:|---:|---:|---:|
-| wavo, Neural Engine | 0.04 s | 0.06 s | 0.15 s | 18 s |
-| FluidAudio, Neural Engine | 0.05 s | 0.08 s | 0.14 s | 21 s |
-| wavo, GPU | 0.04 s | 0.09 s | 0.15 s | 24 s |
-| transcribe.cpp, GPU | 0.06 s | 0.14 s | 0.26 s | 35 s |
-| parakeet.cpp, GPU | 0.07 s | 0.17 s | 0.31 s | 39 s |
-| parakeet-mlx, GPU | 0.12 s | 0.25 s | 0.39 s | 61 s |
-| sherpa-onnx, CPU | 0.12 s | 0.34 s | 0.73 s | 146 s |
+| wavo, Neural Engine | **0.04** | **0.06** | 0.15 | **18** |
+| FluidAudio, Neural Engine | 0.05 | 0.08 | **0.14** | 21 |
+| wavo, GPU | **0.04** | 0.09 | 0.15 | 24 |
+| transcribe.cpp, GPU | 0.06 | 0.14 | 0.26 | 35 |
+| parakeet.cpp, GPU | 0.07 | 0.17 | 0.31 | 39 |
+| parakeet-mlx, GPU | 0.12 | 0.25 | 0.39 | 61 |
+| sherpa-onnx, CPU | 0.12 | 0.34 | 0.73 | 146 |
 
 GigaAM, other machines and how it's measured: [docs/benchmarks.md](docs/benchmarks.md).
 
