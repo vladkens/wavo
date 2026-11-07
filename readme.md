@@ -28,7 +28,13 @@
 
 ## 📥 Installation
 
-Download the binary for macOS (Apple Silicon), Linux or Windows from the [latest release](https://github.com/vladkens/wavo/releases/latest) and put it into a folder on your `PATH`. Or build it with Rust, which takes a few minutes:
+Install it with [Homebrew](https://brew.sh/) on macOS (Apple Silicon) and Linux:
+
+```sh
+brew install vladkens/tap/wavo
+```
+
+Or download the binary for macOS (Apple Silicon), Linux or Windows from the [latest release](https://github.com/vladkens/wavo/releases/latest) and put it into a folder on your `PATH`. Or build it with Rust, which takes a few minutes:
 
 ```sh
 cargo install wavo
