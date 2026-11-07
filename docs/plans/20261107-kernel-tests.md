@@ -16,6 +16,7 @@ This tests correctness only. Speed stays as `docs/perf.md` says: A/B on the hard
 - The tiers to run come from an explicit list, not from which `Gpu::new` calls succeed, which would hide a failed probe. The script maps the `kernels` line of `target/release/wavo debug`, leaving out the default tier: Tensor → `matrix8` and the three portable values; Matrix8 or Matrix16 → the three portable values; Portable → `portable-32`, `portable-cpu`.
 - All tiers run on every kernel change, with no map from files to tests: a spike took 72–169 s per tier on an M5, about 11 minutes for all five, all 24 tests passing on each.
 - `make test` adds the smoke models on `portable` where that isn't already the default and the adapter allows it, so CI needs no workflow change (about a minute more). `make test-all` stays the real guard: ivrit isn't a smoke model.
+- `make test-all KERNELS=portable` is the quick mode for work on a kernel: only the named tiers, without the plain `cargo test`; `TESTS=` passes test names through.
 - A tier that misses a fixture is a finding: report it, never change the fixture.
 
 Out of reach on one Mac, so left to the checks before a release:
@@ -29,5 +30,5 @@ Before a release, without a GPU: smoke models in `~/Code/vm` on Linux with llvmp
 ## Checklist
 
 - [x] `src/gpu/mod.rs`: `WAVO_KERNELS` in `Gpu::new` as decided above. Parsing takes a plain `Option<&str>`, unit-tested with no `set_var`. `make check`, `make test-unit`.
-- [ ] `scripts/test-kernels.sh` and the Makefile: `make test-all` runs `cargo test $(CARGO_FLAGS)` as today, then `cargo test --release --locked --test models -- --skip _ane` per listed tier, naming the tier on a failure. `make test` adds the smoke models as decided. Needs `make samples` and `make samples-he`. `make test-all` passes on the M5 on all five tiers.
+- [x] `scripts/test-kernels.sh` and the Makefile: `make test-all` runs `cargo test $(CARGO_FLAGS)` as today, then `cargo test --release --locked --test models -- --skip _ane` per listed tier, naming the tier on a failure. `make test` adds the smoke models as decided. Needs `make samples` and `make samples-he`. `make test-all` passes on the M5 on all five tiers.
 - [ ] `src/gpu/gemm.wgsl`: the `to_half` comment covers activations, which can exceed the f16 range. `docs/perf.md`: a GEMM Log entry for #88 (portable, M5 on Metal, main → PR: `ru` 53.2 → 54.4, `ru-long` 303.8 → 308.5, Parakeet V3 `jfk` 211.1 → 216.0, whisper-tiny `jfk` 56.3 → 56.9 ms). `AGENTS.md`: `WAVO_KERNELS`, what `make test` and `make test-all` cover, and the checks before a release.
