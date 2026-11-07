@@ -139,9 +139,10 @@ impl ModelInfo {
   }
 
   /// How many times faster than `whisper-turbo`, which is `1.0`: seconds of audio over seconds of
-  /// work, divided by `whisper-turbo`'s. A ratio, so it doesn't depend much on the machine; only
-  /// the order of models and the rough size mean anything. Measured on the GPU of an Apple M5, the
-  /// model loaded and warm, on clips of some seconds.
+  /// work, divided by `whisper-turbo`'s on the same clips of the same machine. A ratio, so it
+  /// doesn't depend much on the machine, and machines may differ between models; only the order of
+  /// models and the rough size mean anything. Measured on a GPU, the model loaded and warm, on
+  /// clips of some seconds.
   ///
   /// `None` when this model wasn't measured.
   ///

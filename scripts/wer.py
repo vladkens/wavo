@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["httpx>=0.28.1", "tqdm>=4.67.1", "whisper-normalizer>=0.1.15"]
+# dependencies = ["httpx>=0.28.1", "tqdm>=4.67.1", "whisper-normalizer>=0.1.15", "zhconv>=1.4.3"]
 # ///
 """Word error rate of wavo's models on public test sets, the same way on every machine.
 
@@ -15,7 +15,8 @@ and every language a model takes. `download` puts LibriSpeech test-clean and tes
 and the FLEURS test split of each language into `.cache/data/`, shared with scripts/speed.py. `run`
 sends each clip to `wavo serve --backend gpu` (or `ane`, Parakeet and GigaAM only), one model at a
 time, keeps the texts and times in `.cache/wer/texts/<backend>/` and continues where it stopped,
-then writes `results/wer-<machine>.json` and prints the table: the error rate and the speed, seconds of
+then writes `results/wer-<machine>.json` and prints the table: the error rate and the speed, seconds
+of
 audio per second of a request, with the model loaded and warm. Every model runs on every language it
 takes that the sets have; both sides pass one normalizer, the rate is all edits over all reference
 words (characters for languages without spaces). Russian also gets a row without the clips whose
@@ -41,6 +42,7 @@ from pathlib import Path
 
 import httpx
 from tqdm import tqdm
+import zhconv
 from whisper_normalizer.english import EnglishTextNormalizer
 
 MODELS = "gigaam-v3,parakeet-v3,parakeet-ultra,parakeet-v2,whisper-turbo,moonshine-base"
@@ -56,7 +58,6 @@ CLIP_BAR = {
 }
 PORT = 8123
 # `ModelInfo::speed` compares models on one machine, relative to one model; its doc names both.
-SPEED_MACHINE = "mac-air-m5"  # the only one with every main model
 SPEED_BASE = "whisper-turbo"
 ON_ANE = ("Parakeet", "GigaAM")
 BAR = {
@@ -85,6 +86,8 @@ FLEURS_DIR = {x.split("_")[0]: x for x in FOLDERS.split()} | {
     "yue": "yue_hant_hk",
     "zh": "cmn_hans_cn",
 }
+# FLEURS clips cut short in the archive itself: their WAV header promises more than is there.
+BROKEN = {"4248701110553593570.wav"}  # ar
 # Written without spaces between words: the rate counts characters.
 BY_CHARACTER = {"zh", "yue", "ja", "th", "lo", "my", "km"}
 
@@ -235,7 +238,8 @@ def clips(dataset: str) -> list[tuple[str, Path, str]]:
 
     seen = {}
     for row in rows:
-        seen.setdefault(row[1], (row[1], folder / "test" / row[1], row[3]))
+        if row[1] not in BROKEN:
+            seen.setdefault(row[1], (row[1], folder / "test" / row[1], row[3]))
 
     return list(seen.values())
 
@@ -243,6 +247,9 @@ def clips(dataset: str) -> list[tuple[str, Path, str]]:
 def normalize(text: str, lang: str) -> str:
     if lang == "en":
         return english(text)
+
+    if lang in ("zh", "yue"):  # one script for both sides: models write traditional or simplified
+        text = zhconv.convert(text, "zh-cn")
 
     text = unicodedata.normalize("NFKC", text).casefold().replace("ё", "е")
     kept = (c if unicodedata.category(c)[0] not in "PS" else " " for c in text)
@@ -431,7 +438,8 @@ def run(args):
 
     chosen = models_chosen.items()
     for model, info in chosen:
-        plan[model] = [(d, x) for x in info["langs"] if x in langs for d in sets_of(x)]
+        work = [(d, x) for x in info["langs"] if x in langs for d in sets_of(x)]
+        plan[model] = [(d, x) for d, x in work if d.startswith("fleurs") or not args.fleurs]
 
     get_sets(list(dict.fromkeys(d.removeprefix("fleurs-") for w in plan.values() for d, _ in w)))
     total, n = sum(len(x) for x in plan.values()), 0
@@ -483,27 +491,31 @@ def run(args):
 
 def write_scores(args):
     """`src/hub/scores.rs`: FLEURS rates from every machine, the newest report winning a clash, and
-    each model's audio over work on `SPEED_MACHINE` alone, as a multiple of `SPEED_BASE`'s."""
+    each model's speed as a multiple of `SPEED_BASE`'s, from the sets both ran on the same machine.
+    So a new machine fits in once it has run `SPEED_BASE` on a set of the models it adds."""
     reports = [json.loads(x.read_text()) for x in (REPO / "results").glob("wer-*.json")]
-    rates, spent = {}, {}
+    rates, ratios = {}, {}
     for report in sorted(reports, key=lambda x: x["date"]):
-        for row in report["rows"]:
-            if row["backend"] != "gpu" or row["missing"]:  # a part of a set says nothing yet
-                continue
-
+        rows = [x for x in report["rows"] if x["backend"] == "gpu" and not x["missing"]]
+        for row in rows:
             if row["dataset"] == f"fleurs-{row['language']}" and row["rate"] is not None:
                 rates[row["model"], row["language"]] = row["rate"]
 
-            if report["machine"] == SPEED_MACHINE and row.get("time_s"):
-                audio, work = spent.get(row["model"], (0, 0))
-                spent[row["model"]] = (audio + row["audio_s"], work + row["time_s"])
+        timed = [x for x in rows if x.get("time_s")]
+        base = {x["dataset"]: x for x in timed if x["model"] == SPEED_BASE}
+        for model in {x["model"] for x in timed}:
+            same = [x for x in timed if x["model"] == model and x["dataset"] in base]
+            own = sum(x["audio_s"] for x in same) / (sum(x["time_s"] for x in same) or 1)
+            theirs = [base[x["dataset"]] for x in same]
+            other = sum(x["audio_s"] for x in theirs) / (sum(x["time_s"] for x in theirs) or 1)
+            if same:
+                ratios[model] = own / other
 
-    if SPEED_BASE not in spent:
-        sys.exit(f"no {SPEED_BASE} rows from {SPEED_MACHINE}: speed has nothing to compare with")
+    if SPEED_BASE not in ratios:
+        sys.exit(f"no {SPEED_BASE} rows: speed has nothing to compare with")
 
-    base = spent[SPEED_BASE][0] / spent[SPEED_BASE][1]
     rate_rows = [f'  ("{m}", "{lang}", {x}),' for (m, lang), x in sorted(rates.items())]
-    speed_rows = [f'  ("{m}", {round(x / y / base, 1)}),' for m, (x, y) in sorted(spent.items())]
+    speed_rows = [f'  ("{m}", {round(x, 1)}),' for m, x in sorted(ratios.items())]
     out = REPO / "src" / "hub" / "scores.rs"
     out.write_text(SCORES.format(rates="\n".join(rate_rows), speeds="\n".join(speed_rows)))
     print(f"{out}: {len(rate_rows)} rates, {len(speed_rows)} speeds")
@@ -522,6 +534,7 @@ def main():
     x.add_argument("--models", default=MODELS, help="comma-separated wavo names, or all")
     x.add_argument("--languages", default=LANGUAGES, help="comma-separated codes, or all")
     x.add_argument("--backend", choices=["gpu", "ane"], default="gpu")
+    x.add_argument("--fleurs", action="store_true", help="FLEURS only, without LibriSpeech")
     x.add_argument(
         "--clean", action="store_true", help="start these models and sets over: old texts go"
     )
