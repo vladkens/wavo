@@ -23,6 +23,7 @@ model load and a list of WAV files, printing JSON lines shaped like `transcribe-
 
 - `latency`: each clip listed 6 times in a process of its own: load time, the first call and the
   median of the other 5.
+- `cold`: a new process on a 5s clip, start to exit: 5 runs, the median.
 - `hour`: the pieces of the recording in one process, 3 rounds with the engines alternating inside a
   round, `--cooldown` seconds between runs: wall time, seconds of audio per second of wall time,
   peak memory and words. The row has the medians and all three runs.
@@ -61,6 +62,7 @@ WAVO = REPO / "target" / "release" / "wavo"
 BATCH = REPO / "target" / "release" / "examples" / "batch"
 TIME = "/usr/bin/time"
 RUNS = 3
+COLD_RUNS, COLD_CLIP = 5, 5  # new processes on a clip of that many seconds
 CALLS = 6
 SECONDS = (5, 15, 30)
 IDLE_S, TAIL_S = 15, 3  # the idle power before an hour's run, and what is left of it after
@@ -694,6 +696,17 @@ def latency(row: dict, seconds: int, label: str) -> str:
     return f"load {r['load_ms']:>5.0f} first {first:>5.0f} warm {warm:>5.0f} ms"
 
 
+def cold(row: dict, label: str) -> str:
+    """The whole cycle of a short recording: a new process, the model load, one call, the exit."""
+    listed = WORK / row["language"] / "cold.txt"
+    listed.write_text(clip_list(row["language"], COLD_CLIP).read_text().splitlines()[0] + "\n")
+    wall_s = batch(row, listed, label)["wall_s"]
+    found = row.setdefault("cold", {"runs": []})
+    found["runs"].append(wall_s)
+    found["wall_s"] = median(found["runs"])
+    return f"{wall_s:>7.2f} s"
+
+
 def energy(power: Path, start: float, end: float, audio_s: float) -> dict:
     """Joules of the CPU, GPU and Neural Engine over a run and its tail, above the idle power of
     the seconds before it; each sample is the average since the one before. macmon can't tell
@@ -858,7 +871,7 @@ def run(args):
     rows = {key(x): x for x in old}
     for row in chosen:
         kept = {} if args.clean else rows.get(key(row), {})
-        names = ("version", "latency", "hour")
+        names = ("version", "latency", "hour", "cold")
         rows[key(row)] = row | {k: v for k, v in kept.items() if k in names}
 
     work = [rows[key(x)] for x in chosen]
@@ -876,6 +889,9 @@ def run(args):
 
     good = [x for x in work if "error" not in x]
     plan = [(x, f"{s}s", s) for x in good for s in SECONDS if f"{s}s" not in x["latency"]]
+    tries = range(1, COLD_RUNS + 1)
+    runs = lambda x: len(x.get("cold", {}).get("runs", []))
+    plan += [(x, f"cold {r}", "cold") for r in tries for x in good if runs(x) < r]
     rounds = range(1, RUNS + 1)
     plan += [(x, f"hour {r}", None) for r in rounds for x in good if len(x["hour"]["runs"]) < r]
     rest = False
@@ -884,7 +900,9 @@ def run(args):
             continue
 
         label = f"{n:>3}/{len(plan):>3} {row['model']:<11} {row['engine']:<14} {name:<6}"
-        if seconds:
+        if seconds == "cold":
+            print(f"{label}  {attempt(row, lambda: cold(row, label))}")
+        elif seconds:
             print(f"{label}  {attempt(row, lambda: latency(row, seconds, label))}")
         else:
             if rest:

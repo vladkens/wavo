@@ -131,19 +131,21 @@ Errors are wrong words per 100, lower is better. Times are from a MacBook Air wi
 
 ## ⚡ Speed
 
-How long an hour of speech takes to transcribe, and how much energy it uses. Every engine runs the same model (Parakeet v3) on the same audio.
+How fast each engine gives you the text. Every engine runs the same model (Parakeet v3) on the same audio.
 
-| Engine | On | 1 hour | Energy | Language | Platforms |
-|---|---|---:|---:|---|---|
-| wavo | ANE | 18s | 225J | Rust | Mac |
-| [FluidAudio](https://github.com/FluidInference/FluidAudio) | ANE | 21s | 164J | Swift | Mac |
-| wavo | GPU | 22s | 377J | Rust | Mac, Windows, Linux |
-| [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) | GPU | 34s | 565J | C++ | Mac, Windows, Linux |
-| [parakeet.cpp](https://github.com/mudler/parakeet.cpp) | GPU | 40s | 472J | C++ | Mac, Windows, Linux |
-| [parakeet-mlx](https://github.com/senstella/parakeet-mlx) | GPU | 59s | 393J | Python | Mac |
-| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | CPU | 92s | 1474J | C++ | Mac, Windows, Linux |
+| Engine | On | 5s phrase | Long audio | Energy |
+|---|---|---:|---:|---:|
+| wavo | ANE | 0.12s | 200× | 225J |
+| [FluidAudio](https://github.com/FluidInference/FluidAudio) | ANE | 0.13s | 175× | 164J |
+| wavo | GPU | 0.14s | 160× | 377J |
+| [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) | GPU | 0.12s | 107× | 565J |
+| [parakeet.cpp](https://github.com/mudler/parakeet.cpp) | GPU | 0.77s | 90× | 472J |
+| [parakeet-mlx](https://github.com/senstella/parakeet-mlx) | GPU | 0.63s | 61× | 393J |
+| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | CPU | 0.83s | 39× | 1474J |
 
-ANE is Apple's Neural Engine. Measured on a MacBook Pro with an Apple M5. The full tables and the method are in [docs/benchmarks.md](docs/benchmarks.md).
+*5s phrase* is the whole cycle of a short recording: start the program, load the model, transcribe, exit. *Long audio* is how many times faster than real time an hour-long recording goes. *Energy* is what that hour costs on the CPU, GPU and Neural Engine, measured with [macmon](https://github.com/vladkens/macmon). ANE is Apple's Neural Engine. Measured on a MacBook Pro with an Apple M5.
+
+GigaAM, Windows and the method are in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## 📚 Library usage
 
