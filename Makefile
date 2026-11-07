@@ -16,18 +16,14 @@ check:
 	RUSTDOCFLAGS="-D warnings" cargo doc $(CARGO_FLAGS) --no-deps --no-default-features
 	RUSTDOCFLAGS="-D warnings" cargo doc $(CARGO_FLAGS) --no-deps --no-default-features --features hub
 
-# The smoke run: unit tests, the smoke models below, also on the portable kernels, and `wavo serve`
-# end to end.
+# The smoke run: unit tests, the smoke models below and `wavo serve` end to end.
 test: test-unit
 	cargo test $(CARGO_FLAGS) --test models -- --exact $(SMOKE_TESTS)
 	cargo test $(CARGO_FLAGS) --test serve
-	scripts/test-kernels.sh --smoke -- --exact $(SMOKE_TESTS)
 
-# Every model on every kernel tier this machine can run (see the script). For work on a kernel,
-# `make test-all KERNELS=portable [TESTS=whisper_tiny]` runs only those tiers and tests.
 test-all:
-	$(if $(KERNELS),,cargo test $(CARGO_FLAGS))
-	scripts/test-kernels.sh $(KERNELS) -- $(TESTS)
+	cargo test $(CARGO_FLAGS)
+	$(MAKE) test-kernels
 
 build:
 	cargo build $(CARGO_FLAGS)
@@ -41,7 +37,7 @@ clean:
 	cargo clean
 
 # wavo
-.PHONY: test-unit models models-all samples samples-he reference fixtures compare bench-compare
+.PHONY: test-unit test-kernels test-portable models models-all samples samples-he reference fixtures compare bench-compare
 
 ALL_MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
 	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 parakeet-tdt-0.6b-v3-he parakeet-ultra \
@@ -56,7 +52,12 @@ SMOKE_TESTS := gigaam_v3_e2e_rnnt parakeet_tdt_v3 parakeet_tdt_v2 whisper_tiny m
 REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
 # Whisper has segment timestamps only: TIMESTAMPS=segment; Moonshine none: TIMESTAMPS=none.
 TIMESTAMPS := token
-KERNELS :=
+# Kernel tiers for `make test-kernels`, next to the default one. A tier the adapter lacks fails: on
+# a CPU adapter pass KERNELS=portable-cpu.
+KERNELS := portable portable-32 portable-cpu
+ifeq ($(shell uname),Darwin)
+KERNELS += matrix8
+endif
 TESTS :=
 
 # Unit tests and doc examples only: no models or 3rd/ needed.
@@ -64,6 +65,14 @@ test-unit:
 	cargo test $(CARGO_FLAGS) --lib --bins
 	cargo test $(CARGO_FLAGS) --doc --no-default-features
 	cargo test $(CARGO_FLAGS) --doc --no-default-features --features hub
+
+# make test-kernels [KERNELS=portable] [TESTS=whisper_tiny]: the fixtures on each tier, in turn.
+test-kernels:
+	for k in $(KERNELS); do echo "kernels: $$k"; WAVO_KERNELS=$$k cargo test $(CARGO_FLAGS) --test models -- --skip _ane $(TESTS) || exit 1; done
+
+# The smoke models on the portable kernels, for CI.
+test-portable:
+	WAVO_KERNELS=portable cargo test $(CARGO_FLAGS) --test models -- --exact $(SMOKE_TESTS)
 
 # All at once with our own `wavo pull`. A second run waits on the first one's locks.
 models: build

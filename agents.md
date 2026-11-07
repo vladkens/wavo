@@ -42,10 +42,8 @@ Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, 
 
 ## Correctness
 
-- Every model has fixtures in `tests/fixtures/<model>.txt`, one block per clip, written from the reference CLI by `make fixtures` (`scripts/fixtures.sh` is the format's spec). `make test-all` must reproduce text, tokens and start times exactly, and fail (not skip) when a model, sample or block is missing; `make test` does the same for the smoke models (the Makefile's `MODELS`), also on `portable`.
+- Every model has fixtures in `tests/fixtures/<model>.txt`, one block per clip, written from the reference CLI by `make fixtures` (`scripts/fixtures.sh` is the format's spec). `make test-all` must reproduce text, tokens and start times exactly, and fail (not skip) when a model, sample or block is missing; `make test` does the same for the smoke models (the Makefile's `MODELS`).
 - Treat any fixture change as a bug: arithmetic may change (e.g. F16 operands) while the fixtures stay exact. A PR may add blocks, but changes an existing one only with the person's approval, asked before committing, with the fixture diff and the gain it buys.
-- `make test-all` runs the fixtures on every kernel tier the machine can run; a tier that misses a fixture is a bug in that tier, never a reason to change the fixture. `WAVO_KERNELS` (values in `Forced`) forces one: a test switch, outside `--help` and the rustdoc. `make test-all KERNELS=<tier> [TESTS=<test>]` is the quick loop while working on a kernel; the full run is what counts before a merge.
-- Before a release, also run the smoke models in VMs on Linux with llvmpipe and Windows with WARP, and on real adapters: Metal doesn't show driver behaviour, and one Mac can't reach 16×16 matrices, Vulkan and DX12 drivers or FXC.
 - The Neural Engine is close to the GPU, not exact: its `*_ane` tests (macOS, `make test-all`) hold each clip within `check_ane`'s tolerances in `tests/models.rs`, while the GPU's fixtures stay exact. When ANE code or a model changes, run `make compare BACKEND=ane` and `BACKEND=gpu` on an hour of speech cut at pauses; `target/release/examples/batch compare` of their two `wavo.jsonl` must give a WER ≤ 0.2% and the same text on ≥ 95% of the 2–15 s pieces.
 - Debug mismatches against the reference's own dumps (`TRANSCRIBE_DUMP_DIR`); don't commit dumps or tensor-level oracle tests, and don't chase bit-exact intermediates.
 - Unit-test only logic that can break silently; unit tests run in CI without models or `3rd/`, so synthesize their inputs.
@@ -57,7 +55,7 @@ Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, 
 
 ## Workflow
 
-- `make check` and `make test` (the smoke run) pass before every commit. `make test-all` (after `make models-all`, `make samples` and `make samples-he`) also passes before a release and before merging speed work or a change to GPU kernels, `src/gpu/`, the GGUF reader, or shared frontend or decoder numerics.
+- `make check` and `make test` (the smoke run) pass before every commit. `make test-all` (after `make models-all`, `make samples` and `make samples-he`) also passes before a release and before merging speed work or a change to GPU kernels, `src/gpu/`, the GGUF reader, or shared frontend or decoder numerics. `make test-kernels KERNELS=<tier> [TESTS=<test>]` runs one kernel tier (`WAVO_KERNELS`).
 - Agree a multi-step change's plan first; it keeps a checklist in `docs/plans/yyyymmdd-<name>.md`, and during the work only tick its checkboxes, with no progress prose. The PR that finishes its last item adds a `Done: yyyy-mm-dd, PR #N` line under the title and a short final `## Result` section with the key numbers, and moves it to `docs/plans/completed/`, fixing links to it. Never delete plans.
 - Every change reaches `main` through a pull request from a `feat/<name>` branch, one per feature or roadmap phase; never commit or push to `main` directly. The maintainer squash-merges it.
 - A commit, and the PR title as the squash commit, is one short lowercase line with no body; docs change in the same commit. A speed PR's body gives the numbers.
