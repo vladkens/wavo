@@ -1,4 +1,5 @@
 {
+  "machine": "windows-rtx-4060",
   "gpu": "NVIDIA GeForce RTX 4060",
   "cpu": "AMD Ryzen 9 7945HX",
   "os": "Windows 11",

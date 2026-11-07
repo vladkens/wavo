@@ -90,12 +90,12 @@ pub(super) static WER: &[(&str, &str, f32)] = &[
 /// Model and `ModelInfo::speed`.
 #[rustfmt::skip]
 pub(super) static SPEED: &[(&str, f32)] = &[
-  ("gigaam-v3", 16.8),
-  ("moonshine-base", 9.6),
-  ("parakeet-he", 6.3),
-  ("parakeet-ultra", 7.8),
-  ("parakeet-v2", 5.7),
-  ("parakeet-v3", 8.5),
+  ("gigaam-v3", 22.1),
+  ("moonshine-base", 12.6),
+  ("parakeet-he", 8.3),
+  ("parakeet-ultra", 8.5),
+  ("parakeet-v2", 7.5),
+  ("parakeet-v3", 9.7),
   ("whisper-turbo", 1.0),
-  ("whisper-turbo-he", 0.7),
+  ("whisper-turbo-he", 0.9),
 ];

@@ -37,16 +37,16 @@ Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. T
 
 | Name | Size | Languages | Output | Speed |
 |---|---|---|---|---:|
-| `parakeet-v3` | 0.74GB | 25 European languages | cased, punctuated | 8.5× |
-| `parakeet-v2` | 0.73GB | English | cased, punctuated | 5.7× |
-| `parakeet-ultra` (default) | 0.74GB | 25 European languages | cased, punctuated | 7.8× |
-| `parakeet-he` | 0.74GB | Hebrew | cased, punctuated | 6.3× |
-| `gigaam-v3` | 0.27GB | Russian | cased, punctuated | 16.8× |
+| `parakeet-v3` | 0.74GB | 25 European languages | cased, punctuated | 9.7× |
+| `parakeet-v2` | 0.73GB | English | cased, punctuated | 7.5× |
+| `parakeet-ultra` (default) | 0.74GB | 25 European languages | cased, punctuated | 8.5× |
+| `parakeet-he` | 0.74GB | Hebrew | cased, punctuated | 8.3× |
+| `gigaam-v3` | 0.27GB | Russian | cased, punctuated | 22.1× |
 | `gigaam-v3-e2e-ctc` | 0.27GB | Russian | cased, punctuated | – |
 | `gigaam-v3-rnnt` | 0.27GB | Russian | lowercase, no punctuation | – |
 | `gigaam-v3-ctc` | 0.27GB | Russian | lowercase, no punctuation | – |
 | `whisper-turbo` | 0.89GB | 100 languages | cased, punctuated | 1× |
-| `whisper-turbo-he` | 0.89GB | Hebrew | cased, punctuated | 0.7× |
+| `whisper-turbo-he` | 0.89GB | Hebrew | cased, punctuated | 0.9× |
 | `whisper-tiny` | 0.05GB | 99 languages | cased, punctuated | – |
 | `whisper-base` | 0.08GB | 99 languages | cased, punctuated | – |
 | `whisper-small` | 0.27GB | 99 languages | cased, punctuated | – |
@@ -60,9 +60,9 @@ Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. T
 | `whisper-large-v2` | 1.67GB | 99 languages | cased, punctuated | – |
 | `breeze-asr-25` | 1.67GB | Taiwanese Mandarin and English | cased, punctuated | – |
 | `moonshine-tiny` | 0.04GB | English | cased, punctuated | – |
-| `moonshine-base` | 0.08GB | English | cased, punctuated | 9.6× |
+| `moonshine-base` | 0.08GB | English | cased, punctuated | 12.6× |
 
-Speed is how many times faster than `whisper-turbo`. Trust the order, not the digits.
+Speed is how many times faster than `whisper-turbo`, on a MacBook Air with an Apple M5. Trust the order, not the digits.
 
 Moonshine gives no timestamps. Full names, such as `parakeet-tdt-0.6b-v3`, and a path to a `.gguf` work too.
 

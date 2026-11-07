@@ -1,4 +1,5 @@
 {
+  "machine": "mac-pro-m5",
   "chip": "Apple M5",
   "macos": "27.2",
   "date": "2026-11-06",

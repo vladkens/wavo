@@ -121,13 +121,13 @@ It also works as [Bazarr](https://www.bazarr.media)'s Whisper provider, for subt
 
 | Model | Languages | Size | Errors, English | Errors, Russian | 1 hour of audio |
 |---|---|---:|---:|---:|---:|
-| `parakeet-ultra` (default) | 25 European | 0.74GB | 1.8 | 4.7 | ~30s |
-| `gigaam-v3` | Russian | 0.27GB | – | 4.5 | 11s |
-| `parakeet-v2` | English | 0.73GB | 1.7 | – | ~35s |
-| `whisper-turbo` | 100 | 0.89GB | 2.0 | 4.5 | ~4min |
-| `moonshine-base` | English | 0.08GB | 3.3 | – | ~20s |
+| `parakeet-ultra` (default) | 25 European | 0.74GB | 1.8 | 4.7 | 32s |
+| `gigaam-v3` | Russian | 0.27GB | – | 4.5 | 12s |
+| `parakeet-v2` | English | 0.73GB | 1.7 | – | 36s |
+| `whisper-turbo` | 100 | 0.89GB | 2.0 | 4.5 | 4.5min |
+| `moonshine-base` | English | 0.08GB | 3.3 | – | 22s |
 
-Errors are wrong words per 100, lower is better. [All models and languages](docs/models.md).
+Errors are wrong words per 100, lower is better. Times are from a MacBook Air with an Apple M5. [All models and languages](docs/models.md).
 
 ## ⚡ Speed
 

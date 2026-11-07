@@ -15,7 +15,7 @@ and every language a model takes. `download` puts LibriSpeech test-clean and tes
 and the FLEURS test split of each language into `.cache/data/`, shared with scripts/speed.py. `run`
 sends each clip to `wavo serve --backend gpu` (or `ane`, Parakeet and GigaAM only), one model at a
 time, keeps the texts and times in `.cache/wer/texts/<backend>/` and continues where it stopped,
-then writes `results/wer-<chip>.json` and prints the table: the error rate and the speed, seconds of
+then writes `results/wer-<machine>.json` and prints the table: the error rate and the speed, seconds of
 audio per second of a request, with the model loaded and warm. Every model runs on every language it
 takes that the sets have; both sides pass one normalizer, the rate is all edits over all reference
 words (characters for languages without spaces). Russian also gets a row without the clips whose
@@ -56,7 +56,7 @@ CLIP_BAR = {
 }
 PORT = 8123
 # `ModelInfo::speed` compares models on one machine, relative to one model; its doc names both.
-SPEED_CHIP = "Apple M5"
+SPEED_MACHINE = "mac-air-m5"  # the only one with every main model
 SPEED_BASE = "whisper-turbo"
 ON_ANE = ("Parakeet", "GigaAM")
 BAR = {
@@ -372,6 +372,19 @@ def score(model: str, dataset: str, lang: str, backend: str) -> list[dict]:
     return rows
 
 
+def machine() -> str:
+    """What a results file is named after: `mac-air-m5`, `mac-pro-m5-pro`, `linux-x86-64`."""
+    if sys.platform != "darwin":
+        name = f"{platform.system()} {platform.machine()}"
+    else:
+        cmd = ["system_profiler", "SPHardwareDataType"]
+        info = subprocess.run(cmd, capture_output=True, text=True).stdout
+        model, chip = re.search(r"Model Name: (.+)", info)[1], re.search(r"Chip: (.+)", info)[1]
+        name = f"{model} {chip}".replace("MacBook", "Mac").replace("Apple ", "")
+
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
 def chip() -> str:
     if sys.platform == "darwin":
         cmd = ["sysctl", "-n", "machdep.cpu.brand_string"]
@@ -453,9 +466,9 @@ def run(args):
     version = subprocess.run(
         [str(WAVO), "--version"], capture_output=True, text=True
     ).stdout.strip()
-    name = re.sub(r"[^a-z0-9]+", "-", chip().lower()).strip("-")
+    name = machine()
     date = datetime.now(UTC).date().isoformat()
-    report = {"wavo": version, "chip": chip(), "date": date}
+    report = {"wavo": version, "machine": name, "chip": chip(), "date": date}
     out = REPO / "results" / f"wer-{name}.json"
     out.parent.mkdir(exist_ok=True)
     measured = {(x["model"], x["backend"], x["dataset"]) for x in rows}
@@ -470,7 +483,7 @@ def run(args):
 
 def write_scores(args):
     """`src/hub/scores.rs`: FLEURS rates from every machine, the newest report winning a clash, and
-    each model's audio over work on `SPEED_CHIP` alone, as a multiple of `SPEED_BASE`'s."""
+    each model's audio over work on `SPEED_MACHINE` alone, as a multiple of `SPEED_BASE`'s."""
     reports = [json.loads(x.read_text()) for x in (REPO / "results").glob("wer-*.json")]
     rates, spent = {}, {}
     for report in sorted(reports, key=lambda x: x["date"]):
@@ -481,12 +494,12 @@ def write_scores(args):
             if row["dataset"] == f"fleurs-{row['language']}" and row["rate"] is not None:
                 rates[row["model"], row["language"]] = row["rate"]
 
-            if report["chip"] == SPEED_CHIP and row.get("time_s"):
+            if report["machine"] == SPEED_MACHINE and row.get("time_s"):
                 audio, work = spent.get(row["model"], (0, 0))
                 spent[row["model"]] = (audio + row["audio_s"], work + row["time_s"])
 
     if SPEED_BASE not in spent:
-        sys.exit(f"no {SPEED_BASE} rows from {SPEED_CHIP}: speed has nothing to compare with")
+        sys.exit(f"no {SPEED_BASE} rows from {SPEED_MACHINE}: speed has nothing to compare with")
 
     base = spent[SPEED_BASE][0] / spent[SPEED_BASE][1]
     rate_rows = [f'  ("{m}", "{lang}", {x}),' for (m, lang), x in sorted(rates.items())]

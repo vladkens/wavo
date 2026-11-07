@@ -13,7 +13,7 @@
 language in `.cache/data/`, cut once at pauses into 2-15 s pieces and clips of 5, 15 and 30 s
 in `.cache/speed/`. `run` does that too when it is missing, fetches and builds each engine into
 `.cache/engines/` (cmake, ninja and the Python engines through uv, nothing on the system), then
-measures, keeps each result in `results/speed-<chip>.json` as it comes and continues where it
+measures, keeps each result in `results/speed-<machine>.json` as it comes and continues where it
 stopped. A row whose engine changed version starts over; `--clean` starts the chosen rows over. An
 engine that fails stays in its row with the reason, and the others go on.
 
@@ -794,6 +794,19 @@ def table(rows: list[dict]):
         print(f"{engine:<14} {ENGINES[engine]['notes']}")
 
 
+def machine() -> str:
+    """What a results file is named after: `mac-air-m5`, `mac-pro-m5-pro`, `linux-x86-64`."""
+    if sys.platform != "darwin":
+        name = f"{platform.system()} {platform.machine()}"
+    else:
+        cmd = ["system_profiler", "SPHardwareDataType"]
+        info = subprocess.run(cmd, capture_output=True, text=True).stdout
+        model, chip = re.search(r"Model Name: (.+)", info)[1], re.search(r"Chip: (.+)", info)[1]
+        name = f"{model} {chip}".replace("MacBook", "Mac").replace("Apple ", "")
+
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
 def chip() -> str:
     cmd = ["sysctl", "-n", "machdep.cpu.brand_string"]
     return subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
@@ -838,7 +851,7 @@ def run(args):
             sys.exit("--clean not confirmed: run without it to continue, or type yes")
 
     get_audio()
-    name = re.sub(r"[^a-z0-9]+", "-", chip().lower()).strip("-")
+    name = machine()
     out = REPO / "results" / f"speed-{name}.json"
     out.parent.mkdir(exist_ok=True)
     old = json.loads(out.read_text())["rows"] if out.exists() else []
@@ -850,7 +863,7 @@ def run(args):
 
     work = [rows[key(x)] for x in chosen]
     date = datetime.now(UTC).date().isoformat()
-    report = {"chip": chip(), "macos": platform.mac_ver()[0], "date": date}
+    report = {"machine": name, "chip": chip(), "macos": platform.mac_ver()[0], "date": date}
 
     def save():
         saved = report | {"rows": list(rows.values())}

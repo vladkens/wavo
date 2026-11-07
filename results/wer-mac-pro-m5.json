@@ -1,135 +1,9 @@
 {
   "wavo": "wavo 0.4.0",
+  "machine": "mac-pro-m5",
   "chip": "Apple M5",
   "date": "2026-11-06",
   "rows": [
-    {
-      "model": "parakeet-v2",
-      "backend": "gpu",
-      "dataset": "test-clean",
-      "language": "en",
-      "metric": "wer",
-      "clips": 2620,
-      "missing": 0,
-      "audio_s": 19452.5,
-      "time_s": 206.26,
-      "speed": 94.3,
-      "rate": 1.69
-    },
-    {
-      "model": "parakeet-v2",
-      "backend": "gpu",
-      "dataset": "test-other",
-      "language": "en",
-      "metric": "wer",
-      "clips": 2939,
-      "missing": 0,
-      "audio_s": 19229.5,
-      "time_s": 188.26,
-      "speed": 102.1,
-      "rate": 3.2
-    },
-    {
-      "model": "parakeet-v2",
-      "backend": "gpu",
-      "dataset": "fleurs-en",
-      "language": "en",
-      "metric": "wer",
-      "clips": 647,
-      "missing": 0,
-      "audio_s": 6387.9,
-      "time_s": 61.72,
-      "speed": 103.5,
-      "rate": 4.12
-    },
-    {
-      "model": "moonshine-base",
-      "backend": "gpu",
-      "dataset": "test-clean",
-      "language": "en",
-      "metric": "wer",
-      "clips": 2620,
-      "missing": 0,
-      "audio_s": 19452.5,
-      "time_s": 128.11,
-      "speed": 151.8,
-      "rate": 3.27
-    },
-    {
-      "model": "moonshine-base",
-      "backend": "gpu",
-      "dataset": "test-other",
-      "language": "en",
-      "metric": "wer",
-      "clips": 2939,
-      "missing": 0,
-      "audio_s": 19229.5,
-      "time_s": 112.35,
-      "speed": 171.2,
-      "rate": 8.19
-    },
-    {
-      "model": "moonshine-base",
-      "backend": "gpu",
-      "dataset": "fleurs-en",
-      "language": "en",
-      "metric": "wer",
-      "clips": 647,
-      "missing": 0,
-      "audio_s": 6387.9,
-      "time_s": 30.8,
-      "speed": 207.4,
-      "rate": 11.54
-    },
-    {
-      "model": "parakeet-he",
-      "backend": "gpu",
-      "dataset": "fleurs-he",
-      "language": "he",
-      "metric": "wer",
-      "clips": 792,
-      "missing": 0,
-      "audio_s": 7382.5,
-      "time_s": 67.79,
-      "speed": 108.9,
-      "rate": 23.14
-    },
-    {
-      "model": "whisper-turbo-he",
-      "backend": "gpu",
-      "dataset": "fleurs-he",
-      "language": "he",
-      "metric": "wer",
-      "clips": 792,
-      "missing": 0,
-      "audio_s": 7382.5,
-      "time_s": 591.47,
-      "speed": 12.5,
-      "rate": 18.4
-    },
-    {
-      "model": "gigaam-v3",
-      "backend": "gpu",
-      "dataset": "fleurs-ru",
-      "language": "ru",
-      "metric": "wer",
-      "clips": 775,
-      "missing": 0,
-      "audio_s": 8993.8,
-      "time_s": 30.89,
-      "speed": 291.1,
-      "rate": 4.52
-    },
-    {
-      "model": "gigaam-v3",
-      "backend": "gpu",
-      "dataset": "fleurs-ru no digits",
-      "language": "ru",
-      "metric": "wer",
-      "clips": 620,
-      "missing": 0,
-      "rate": 3.27
-    },
     {
       "model": "parakeet-v3",
       "backend": "gpu",
@@ -198,45 +72,6 @@
     {
       "model": "parakeet-v3",
       "backend": "gpu",
-      "dataset": "test-clean",
-      "language": "en",
-      "metric": "wer",
-      "clips": 2620,
-      "missing": 0,
-      "audio_s": 19452.5,
-      "time_s": 159.42,
-      "speed": 122.0,
-      "rate": 1.91
-    },
-    {
-      "model": "parakeet-v3",
-      "backend": "gpu",
-      "dataset": "test-other",
-      "language": "en",
-      "metric": "wer",
-      "clips": 2939,
-      "missing": 0,
-      "audio_s": 19229.5,
-      "time_s": 172.96,
-      "speed": 111.2,
-      "rate": 3.59
-    },
-    {
-      "model": "parakeet-v3",
-      "backend": "gpu",
-      "dataset": "fleurs-en",
-      "language": "en",
-      "metric": "wer",
-      "clips": 647,
-      "missing": 0,
-      "audio_s": 6387.9,
-      "time_s": 50.44,
-      "speed": 126.6,
-      "rate": 4.86
-    },
-    {
-      "model": "parakeet-v3",
-      "backend": "gpu",
       "dataset": "fleurs-et",
       "language": "et",
       "metric": "wer",
@@ -263,32 +98,6 @@
     {
       "model": "parakeet-v3",
       "backend": "gpu",
-      "dataset": "fleurs-fr",
-      "language": "fr",
-      "metric": "wer",
-      "clips": 676,
-      "missing": 0,
-      "audio_s": 7024.1,
-      "time_s": 61.33,
-      "speed": 114.5,
-      "rate": 5.22
-    },
-    {
-      "model": "parakeet-v3",
-      "backend": "gpu",
-      "dataset": "fleurs-de",
-      "language": "de",
-      "metric": "wer",
-      "clips": 862,
-      "missing": 0,
-      "audio_s": 11349.3,
-      "time_s": 79.6,
-      "speed": 142.6,
-      "rate": 5.23
-    },
-    {
-      "model": "parakeet-v3",
-      "backend": "gpu",
       "dataset": "fleurs-el",
       "language": "el",
       "metric": "wer",
@@ -311,19 +120,6 @@
       "time_s": 65.06,
       "speed": 169.9,
       "rate": 16.13
-    },
-    {
-      "model": "parakeet-v3",
-      "backend": "gpu",
-      "dataset": "fleurs-it",
-      "language": "it",
-      "metric": "wer",
-      "clips": 865,
-      "missing": 0,
-      "audio_s": 12676.3,
-      "time_s": 84.0,
-      "speed": 150.9,
-      "rate": 3.03
     },
     {
       "model": "parakeet-v3",
@@ -367,32 +163,6 @@
     {
       "model": "parakeet-v3",
       "backend": "gpu",
-      "dataset": "fleurs-pl",
-      "language": "pl",
-      "metric": "wer",
-      "clips": 758,
-      "missing": 0,
-      "audio_s": 7382.5,
-      "time_s": 64.09,
-      "speed": 115.2,
-      "rate": 7.4
-    },
-    {
-      "model": "parakeet-v3",
-      "backend": "gpu",
-      "dataset": "fleurs-pt",
-      "language": "pt",
-      "metric": "wer",
-      "clips": 919,
-      "missing": 0,
-      "audio_s": 11660.1,
-      "time_s": 82.98,
-      "speed": 140.5,
-      "rate": 4.95
-    },
-    {
-      "model": "parakeet-v3",
-      "backend": "gpu",
       "dataset": "fleurs-ro",
       "language": "ro",
       "metric": "wer",
@@ -402,29 +172,6 @@
       "time_s": 57.41,
       "speed": 158.5,
       "rate": 12.65
-    },
-    {
-      "model": "parakeet-v3",
-      "backend": "gpu",
-      "dataset": "fleurs-ru",
-      "language": "ru",
-      "metric": "wer",
-      "clips": 775,
-      "missing": 0,
-      "audio_s": 8993.8,
-      "time_s": 67.37,
-      "speed": 133.5,
-      "rate": 5.53
-    },
-    {
-      "model": "parakeet-v3",
-      "backend": "gpu",
-      "dataset": "fleurs-ru no digits",
-      "language": "ru",
-      "metric": "wer",
-      "clips": 620,
-      "missing": 0,
-      "rate": 4.69
     },
     {
       "model": "parakeet-v3",
@@ -455,19 +202,6 @@
     {
       "model": "parakeet-v3",
       "backend": "gpu",
-      "dataset": "fleurs-es",
-      "language": "es",
-      "metric": "wer",
-      "clips": 908,
-      "missing": 0,
-      "audio_s": 11126.1,
-      "time_s": 81.09,
-      "speed": 137.2,
-      "rate": 3.61
-    },
-    {
-      "model": "parakeet-v3",
-      "backend": "gpu",
       "dataset": "fleurs-sv",
       "language": "sv",
       "metric": "wer",
@@ -477,19 +211,6 @@
       "time_s": 49.26,
       "speed": 170.5,
       "rate": 15.23
-    },
-    {
-      "model": "parakeet-v3",
-      "backend": "gpu",
-      "dataset": "fleurs-uk",
-      "language": "uk",
-      "metric": "wer",
-      "clips": 750,
-      "missing": 0,
-      "audio_s": 8145.1,
-      "time_s": 63.88,
-      "speed": 127.5,
-      "rate": 6.85
     },
     {
       "model": "parakeet-ultra",
@@ -559,45 +280,6 @@
     {
       "model": "parakeet-ultra",
       "backend": "gpu",
-      "dataset": "test-clean",
-      "language": "en",
-      "metric": "wer",
-      "clips": 2620,
-      "missing": 0,
-      "audio_s": 19452.5,
-      "time_s": 184.82,
-      "speed": 105.3,
-      "rate": 1.8
-    },
-    {
-      "model": "parakeet-ultra",
-      "backend": "gpu",
-      "dataset": "test-other",
-      "language": "en",
-      "metric": "wer",
-      "clips": 2939,
-      "missing": 0,
-      "audio_s": 19229.5,
-      "time_s": 186.72,
-      "speed": 103.0,
-      "rate": 3.43
-    },
-    {
-      "model": "parakeet-ultra",
-      "backend": "gpu",
-      "dataset": "fleurs-en",
-      "language": "en",
-      "metric": "wer",
-      "clips": 647,
-      "missing": 0,
-      "audio_s": 6387.9,
-      "time_s": 51.37,
-      "speed": 124.4,
-      "rate": 4.16
-    },
-    {
-      "model": "parakeet-ultra",
-      "backend": "gpu",
       "dataset": "fleurs-et",
       "language": "et",
       "metric": "wer",
@@ -624,32 +306,6 @@
     {
       "model": "parakeet-ultra",
       "backend": "gpu",
-      "dataset": "fleurs-fr",
-      "language": "fr",
-      "metric": "wer",
-      "clips": 676,
-      "missing": 0,
-      "audio_s": 7024.1,
-      "time_s": 60.08,
-      "speed": 116.9,
-      "rate": 4.63
-    },
-    {
-      "model": "parakeet-ultra",
-      "backend": "gpu",
-      "dataset": "fleurs-de",
-      "language": "de",
-      "metric": "wer",
-      "clips": 862,
-      "missing": 0,
-      "audio_s": 11349.3,
-      "time_s": 86.34,
-      "speed": 131.4,
-      "rate": 4.53
-    },
-    {
-      "model": "parakeet-ultra",
-      "backend": "gpu",
       "dataset": "fleurs-el",
       "language": "el",
       "metric": "wer",
@@ -672,19 +328,6 @@
       "time_s": 66.03,
       "speed": 167.4,
       "rate": 13.15
-    },
-    {
-      "model": "parakeet-ultra",
-      "backend": "gpu",
-      "dataset": "fleurs-it",
-      "language": "it",
-      "metric": "wer",
-      "clips": 865,
-      "missing": 0,
-      "audio_s": 12676.3,
-      "time_s": 113.68,
-      "speed": 111.5,
-      "rate": 2.31
     },
     {
       "model": "parakeet-ultra",
@@ -728,32 +371,6 @@
     {
       "model": "parakeet-ultra",
       "backend": "gpu",
-      "dataset": "fleurs-pl",
-      "language": "pl",
-      "metric": "wer",
-      "clips": 758,
-      "missing": 0,
-      "audio_s": 7382.5,
-      "time_s": 73.73,
-      "speed": 100.1,
-      "rate": 6.19
-    },
-    {
-      "model": "parakeet-ultra",
-      "backend": "gpu",
-      "dataset": "fleurs-pt",
-      "language": "pt",
-      "metric": "wer",
-      "clips": 919,
-      "missing": 0,
-      "audio_s": 11660.1,
-      "time_s": 102.28,
-      "speed": 114.0,
-      "rate": 4.13
-    },
-    {
-      "model": "parakeet-ultra",
-      "backend": "gpu",
       "dataset": "fleurs-ro",
       "language": "ro",
       "metric": "wer",
@@ -763,29 +380,6 @@
       "time_s": 58.9,
       "speed": 154.5,
       "rate": 10.08
-    },
-    {
-      "model": "parakeet-ultra",
-      "backend": "gpu",
-      "dataset": "fleurs-ru",
-      "language": "ru",
-      "metric": "wer",
-      "clips": 775,
-      "missing": 0,
-      "audio_s": 8993.8,
-      "time_s": 85.01,
-      "speed": 105.8,
-      "rate": 4.66
-    },
-    {
-      "model": "parakeet-ultra",
-      "backend": "gpu",
-      "dataset": "fleurs-ru no digits",
-      "language": "ru",
-      "metric": "wer",
-      "clips": 620,
-      "missing": 0,
-      "rate": 3.9
     },
     {
       "model": "parakeet-ultra",
@@ -816,19 +410,6 @@
     {
       "model": "parakeet-ultra",
       "backend": "gpu",
-      "dataset": "fleurs-es",
-      "language": "es",
-      "metric": "wer",
-      "clips": 908,
-      "missing": 0,
-      "audio_s": 11126.1,
-      "time_s": 90.34,
-      "speed": 123.2,
-      "rate": 3.03
-    },
-    {
-      "model": "parakeet-ultra",
-      "backend": "gpu",
       "dataset": "fleurs-sv",
       "language": "sv",
       "metric": "wer",
@@ -838,19 +419,6 @@
       "time_s": 49.77,
       "speed": 168.7,
       "rate": 12.77
-    },
-    {
-      "model": "parakeet-ultra",
-      "backend": "gpu",
-      "dataset": "fleurs-uk",
-      "language": "uk",
-      "metric": "wer",
-      "clips": 750,
-      "missing": 0,
-      "audio_s": 8145.1,
-      "time_s": 70.39,
-      "speed": 115.7,
-      "rate": 5.63
     },
     {
       "model": "whisper-turbo",
@@ -894,19 +462,6 @@
     {
       "model": "whisper-turbo",
       "backend": "gpu",
-      "dataset": "fleurs-de",
-      "language": "de",
-      "metric": "wer",
-      "clips": 862,
-      "missing": 0,
-      "audio_s": 11349.3,
-      "time_s": 694.39,
-      "speed": 16.3,
-      "rate": 5.73
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
       "dataset": "fleurs-el",
       "language": "el",
       "metric": "wer",
@@ -916,58 +471,6 @@
       "time_s": 349.71,
       "speed": 19.6,
       "rate": 13.16
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
-      "dataset": "test-clean",
-      "language": "en",
-      "metric": "wer",
-      "clips": 2620,
-      "missing": 0,
-      "audio_s": 19452.5,
-      "time_s": 1835.7,
-      "speed": 10.6,
-      "rate": 1.96
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
-      "dataset": "test-other",
-      "language": "en",
-      "metric": "wer",
-      "clips": 2939,
-      "missing": 0,
-      "audio_s": 19229.5,
-      "time_s": 2107.34,
-      "speed": 9.1,
-      "rate": 3.92
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
-      "dataset": "fleurs-en",
-      "language": "en",
-      "metric": "wer",
-      "clips": 647,
-      "missing": 0,
-      "audio_s": 6387.9,
-      "time_s": 436.74,
-      "speed": 14.6,
-      "rate": 4.44
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
-      "dataset": "fleurs-es",
-      "language": "es",
-      "metric": "wer",
-      "clips": 908,
-      "missing": 0,
-      "audio_s": 11126.1,
-      "time_s": 659.84,
-      "speed": 16.9,
-      "rate": 3.16
     },
     {
       "model": "whisper-turbo",
@@ -998,19 +501,6 @@
     {
       "model": "whisper-turbo",
       "backend": "gpu",
-      "dataset": "fleurs-fr",
-      "language": "fr",
-      "metric": "wer",
-      "clips": 676,
-      "missing": 0,
-      "audio_s": 7024.1,
-      "time_s": 514.04,
-      "speed": 13.7,
-      "rate": 5.51
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
       "dataset": "fleurs-hr",
       "language": "hr",
       "metric": "wer",
@@ -1033,19 +523,6 @@
       "time_s": 448.08,
       "speed": 24.7,
       "rate": 14.85
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
-      "dataset": "fleurs-it",
-      "language": "it",
-      "metric": "wer",
-      "clips": 865,
-      "missing": 0,
-      "audio_s": 12676.3,
-      "time_s": 661.24,
-      "speed": 19.2,
-      "rate": 2.7
     },
     {
       "model": "whisper-turbo",
@@ -1102,32 +579,6 @@
     {
       "model": "whisper-turbo",
       "backend": "gpu",
-      "dataset": "fleurs-pl",
-      "language": "pl",
-      "metric": "wer",
-      "clips": 758,
-      "missing": 0,
-      "audio_s": 7382.5,
-      "time_s": 584.56,
-      "speed": 12.6,
-      "rate": 5.84
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
-      "dataset": "fleurs-pt",
-      "language": "pt",
-      "metric": "wer",
-      "clips": 919,
-      "missing": 0,
-      "audio_s": 11660.1,
-      "time_s": 701.04,
-      "speed": 16.6,
-      "rate": 4.25
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
       "dataset": "fleurs-ro",
       "language": "ro",
       "metric": "wer",
@@ -1137,29 +588,6 @@
       "time_s": 423.49,
       "speed": 21.5,
       "rate": 10.77
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
-      "dataset": "fleurs-ru",
-      "language": "ru",
-      "metric": "wer",
-      "clips": 775,
-      "missing": 0,
-      "audio_s": 8993.8,
-      "time_s": 573.21,
-      "speed": 15.7,
-      "rate": 4.52
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
-      "dataset": "fleurs-ru no digits",
-      "language": "ru",
-      "metric": "wer",
-      "clips": 620,
-      "missing": 0,
-      "rate": 3.74
     },
     {
       "model": "whisper-turbo",
@@ -1199,19 +627,6 @@
       "time_s": 352.06,
       "speed": 23.9,
       "rate": 8.8
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
-      "dataset": "fleurs-uk",
-      "language": "uk",
-      "metric": "wer",
-      "clips": 750,
-      "missing": 0,
-      "audio_s": 8145.1,
-      "time_s": 588.08,
-      "speed": 13.9,
-      "rate": 7.35
     }
   ]
 }
