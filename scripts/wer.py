@@ -15,7 +15,8 @@ and every language a model takes. `download` puts LibriSpeech test-clean and tes
 and the FLEURS test split of each language into `.cache/data/`, shared with scripts/speed.py. `run`
 sends each clip to `wavo serve --backend gpu` (or `ane`, Parakeet and GigaAM only), one model at a
 time, keeps the texts and times in `.cache/wer/texts/<backend>/` and continues where it stopped,
-then writes `results/wer-<machine>.json` and prints the table: the error rate and the speed, seconds of
+then writes `results/wer-<machine>.json` and prints the table: the error rate and the speed, seconds
+of
 audio per second of a request, with the model loaded and warm. Every model runs on every language it
 takes that the sets have; both sides pass one normalizer, the rate is all edits over all reference
 words (characters for languages without spaces). Russian also gets a row without the clips whose
@@ -85,6 +86,8 @@ FLEURS_DIR = {x.split("_")[0]: x for x in FOLDERS.split()} | {
     "yue": "yue_hant_hk",
     "zh": "cmn_hans_cn",
 }
+# FLEURS clips cut short in the archive itself: their WAV header promises more than is there.
+BROKEN = {"4248701110553593570.wav"}  # ar
 # Written without spaces between words: the rate counts characters.
 BY_CHARACTER = {"zh", "yue", "ja", "th", "lo", "my", "km"}
 
@@ -235,17 +238,10 @@ def clips(dataset: str) -> list[tuple[str, Path, str]]:
 
     seen = {}
     for row in rows:
-        audio = folder / "test" / row[1]
-        if whole(audio):
-            seen.setdefault(row[1], (row[1], audio, row[3]))
+        if row[1] not in BROKEN:
+            seen.setdefault(row[1], (row[1], folder / "test" / row[1], row[3]))
 
     return list(seen.values())
-
-
-def whole(audio: Path) -> bool:
-    """Whether a WAV has all the bytes its header says: FLEURS ar has one cut short."""
-    head = audio.open("rb").read(8)
-    return int.from_bytes(head[4:8], "little") + 8 <= audio.stat().st_size
 
 
 def normalize(text: str, lang: str) -> str:
