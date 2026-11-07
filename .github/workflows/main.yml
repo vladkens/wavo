@@ -46,6 +46,7 @@ jobs:
           path: ~/.cache/huggingface/hub
           key: ${{ steps.models.outputs.key }}
       - run: make test
+      - run: make test-portable
 
   # A slowdown only warns; a broken build or a failing model fails the job.
   bench:

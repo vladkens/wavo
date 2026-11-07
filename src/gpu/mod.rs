@@ -422,11 +422,18 @@ impl Epilogue {
 impl Gpu {
   /// The device with the fast kernels that pass their probes, or only the portable ones.
   pub fn new(fast: bool) -> Result<Self> {
+    let value = std::env::var_os("WAVO_KERNELS").filter(|_| fast);
+    let forced = Forced::parse(value.as_ref().map(|v| v.to_string_lossy()).as_deref())?;
     let adapter = adapter()?;
+    if let Some(forced) = forced {
+      forced.check(&adapter)?;
+    }
+
     let info = Device::new(&adapter.get_info(), Kernels::Portable);
-    let size = if fast { fast_size(&adapter) } else { None };
+    let portable = matches!(forced, Some(Forced::Portable(_)));
+    let size = if fast && !portable { fast_size(&adapter) } else { None };
     let fast = size.is_some();
-    let tensor = size == Some(8) && tensor_gpu(&adapter);
+    let tensor = size == Some(8) && tensor_gpu(&adapter) && forced != Some(Forced::Matrix8);
     let cpu = adapter.get_info().device_type == wgpu::DeviceType::Cpu;
     let mappable = adapter.get_info().device_type == wgpu::DeviceType::IntegratedGpu
       && adapter.features().contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
@@ -473,9 +480,10 @@ impl Gpu {
         let fast = size.and_then(|f| compile_fast(&device, f));
         (fast, if tensor { compile_tensor(&device) } else { None })
       });
-      let tile = match (size, cpu) {
-        (_, true) => [64, 64],
-        (Some(16), _) => [128, 32],
+      let tile = match (forced, size, cpu) {
+        (Some(Forced::Portable(tile)), ..) => tile,
+        (_, _, true) => [64, 64],
+        (_, Some(16), _) => [128, 32],
         _ => [128, 64],
       };
       (Portable::new(&device, tile), compiled.join().unwrap())
@@ -515,6 +523,10 @@ impl Gpu {
     gpu.fast.tensor = tensor;
     if gpu.fast.tensor.is_some() && !gpu.probe_tensor() {
       gpu.fast.tensor = None;
+    }
+
+    if let Some(forced) = forced.filter(|f| !f.kept(&gpu.fast)) {
+      return Err(Error::Gpu(format!("WAVO_KERNELS: {forced:?} failed a probe")));
     }
 
     // The tensor GEMM runs even when the 8×8 one failed its probe.
@@ -1083,6 +1095,66 @@ fn tensor_chip(name: &str) -> bool {
     Some((family, n.parse::<u32>().ok()?)).filter(|(f, _)| *f == "M" || *f == "A")
   });
   matches!(chip, Some(("M", 5..)) | Some(("A", 19..)))
+}
+
+/// The tier `WAVO_KERNELS` forces, a test switch for running the fixtures on each tier a machine
+/// can execute. Getting less than the tier is an error: a green run would test the wrong one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Forced {
+  /// Only the portable kernels, with this GEMM tile (`Portable::gemm_tile`).
+  Portable([usize; 2]),
+  /// The 8×8 kernels without the tensor GEMM.
+  Matrix8,
+  /// The 8×8 kernels with the tensor GEMM.
+  Tensor,
+}
+
+impl Forced {
+  /// The tier `value` names; `None` when unset or empty.
+  fn parse(value: Option<&str>) -> Result<Option<Self>> {
+    Ok(Some(match value.unwrap_or_default() {
+      "" => return Ok(None),
+      "portable" => Self::Portable([128, 64]),
+      "portable-32" => Self::Portable([128, 32]),
+      "portable-cpu" => Self::Portable([64, 64]),
+      "matrix8" => Self::Matrix8,
+      "tensor" => Self::Tensor,
+      value => {
+        let want = "portable, portable-32, portable-cpu, matrix8 or tensor";
+        return Err(Error::Gpu(format!("WAVO_KERNELS: unknown value {value:?}, want {want}")));
+      }
+    }))
+  }
+
+  /// Fails unless `adapter`'s features allow the tier. 128-wide tiles crashed WARP on an ARM64 VM,
+  /// which no error can report, so a CPU adapter takes only the 64-wide one.
+  fn check(self, adapter: &wgpu::Adapter) -> Result<()> {
+    let info = adapter.get_info();
+    let allowed = match self {
+      Self::Portable([128, _]) => info.device_type != wgpu::DeviceType::Cpu,
+      Self::Portable(_) => true,
+      Self::Matrix8 => fast_size(adapter) == Some(8),
+      Self::Tensor => kernels(adapter) == Kernels::Tensor,
+    };
+
+    match allowed {
+      true => Ok(()),
+      false => Err(Error::Gpu(format!("WAVO_KERNELS: {self:?} can't run on {}", info.name))),
+    }
+  }
+
+  /// Whether the probes left all of the tier in `fast`.
+  fn kept(self, fast: &Fast) -> bool {
+    let ops = [&fast.layer_norm, &fast.conv_glu, &fast.attention, &fast.relative];
+    match self {
+      Self::Portable(_) => true,
+      _ => {
+        fast.gemm.is_some()
+          && ops.iter().all(|k| k.is_some())
+          && fast.tensor.is_some() == (self == Self::Tensor)
+      }
+    }
+  }
 }
 
 /// Compiles `gemm_tensor.metal` from source; `None` if it fails.
@@ -1697,6 +1769,27 @@ mod tests {
     assert_eq!(device.kernels, Kernels::Portable);
     assert_eq!(*gpus()[1].info(), Device { kernels: gpus()[1].info().kernels, ..device.clone() });
     assert_eq!(devices().unwrap()[0], *gpus()[1].info());
+  }
+
+  #[test]
+  fn forced_kernels() {
+    let parse = |value| Forced::parse(value).unwrap();
+    assert_eq!(parse(None), None);
+    assert_eq!(parse(Some("")), None);
+    assert_eq!(parse(Some("portable")), Some(Forced::Portable([128, 64])));
+    assert_eq!(parse(Some("portable-32")), Some(Forced::Portable([128, 32])));
+    assert_eq!(parse(Some("portable-cpu")), Some(Forced::Portable([64, 64])));
+    assert_eq!(parse(Some("matrix8")), Some(Forced::Matrix8));
+    assert_eq!(parse(Some("tensor")), Some(Forced::Tensor));
+
+    // Not `bail!`, which says "invalid model".
+    let unknown = Forced::parse(Some("Portable"));
+    assert!(matches!(unknown, Err(Error::Gpu(e)) if e.contains("\"Portable\"")));
+
+    // Nothing kept: the portable tiers need nothing, the fast ones fail.
+    let none = Fast::default();
+    assert!(Forced::Portable([128, 64]).kept(&none));
+    assert!(!Forced::Matrix8.kept(&none) && !Forced::Tensor.kept(&none));
   }
 
   #[test]

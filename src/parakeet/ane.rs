@@ -7,6 +7,7 @@
 //! when the mel frames are 1 mod 4), as transcribe.cpp's extent mask does: so `m2` comes after
 //! conv2 and the extent mask `e2` after conv3.
 
+use super::encoder_frames;
 use super::frontend::{HOP, MELS};
 use crate::ane::{self, Graph, Program, Var};
 use crate::error::Result;
@@ -59,12 +60,11 @@ pub fn build(g: &Gguf, p: &mut Program) -> Result<Vec<Var>> {
 }
 
 /// Runs the program on `mel` `[frames][MELS]` (at most the window's), of which the first `valid`
-/// are speech (all but the last with kestrel masking), and returns the joint's encoder
-/// projections `[valid / 8][width]` with their width.
+/// the subsampling keeps (all but the last with kestrel masking), and returns the joint's encoder
+/// projections `[encoder_frames][width]` with their width.
 pub fn run(model: &ane::Model, mel: &[f32], valid: usize) -> Result<(Vec<f32>, usize)> {
   let frames = mel.len() / MELS;
-  let (n1, n2) = (half(valid), half(half(valid)));
-  let n3 = half(n2);
+  let (n1, n2, n3) = (half(valid), half(half(valid)), encoder_frames(frames));
   let mut padded = mel[..valid * MELS].to_vec();
   padded.resize(MEL_FRAMES * MELS, 0.0);
   let (m1, m2, m3) = (ane::mask(T1, n1), ane::mask(T2, n2), ane::mask(T, n3));

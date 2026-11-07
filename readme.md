@@ -13,7 +13,7 @@
 
 `wavo` turns speech into text on your own machine, on the GPU or a Mac's Neural Engine. Give it a recording of any length, from a voice note to a two-hour meeting, and get the text with timestamps. It runs the open models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes, as a command-line tool with an ollama-like model manager or as a pure Rust library.
 
-[Wavo](https://github.com/vladkens/wavo-app) is a dictation app built on this library, for macOS, Windows and Linux. Install it to try wavo without a terminal, or read its code as an example.
+**Looking for dictation?** [Wavo](https://github.com/vladkens/wavo-app) is the desktop app built on this library, for macOS, Windows and Linux: hold a hotkey, speak, and the text lands where you were typing. Report the app's bugs [there](https://github.com/vladkens/wavo-app/issues).
 
 ## 🌟 Features
 

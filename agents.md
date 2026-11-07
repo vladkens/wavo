@@ -1,6 +1,6 @@
 # wavo
 
-Speech-to-text in pure Rust: a library and an ollama-like CLI that run transcribe.cpp's GGUF models with the encoder on the GPU, or on a Mac's Neural Engine for Parakeet and GigaAM. It must be at least as fast as transcribe.cpp, and faster on GigaAM v3 e2e-rnnt, the primary model; dictation loads a model per recording, so load time and the first call matter as much as warm speed.
+Speech-to-text in pure Rust: a library and an ollama-like CLI that run transcribe.cpp's GGUF models with the encoder on the GPU, or on a Mac's Neural Engine for Parakeet and GigaAM. It must be among the fastest engines, above all on GigaAM v3 e2e-rnnt, the primary model; dictation loads a model per recording, so load time and the first call matter as much as warm speed.
 
 Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, the models `hub::MODELS`, features and dependencies `Cargo.toml`, checks and CI the `Makefile` and `.github/workflows/main.yml`, speed work [docs/perf.md](docs/perf.md), the plan [docs/roadmap.md](docs/roadmap.md) and `docs/plans/`.
 
@@ -27,7 +27,7 @@ Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, 
 ## External sources
 
 - Keep models only in the shared Hugging Face cache (`make models`), never in the repository.
-- Keep third-party checkouts in `3rd/` (gitignored) and never modify them. The reference is transcribe.cpp at the Makefile's `REFERENCE_REV`, built by `make reference`: use it to read source, generate fixtures and benchmark, never as a dependency. Its `scripts/convert-<family>.py` is the spec of the `stt.*` GGUF keys, tensor names and bundled frontend tensors.
+- Keep third-party checkouts in `3rd/` (gitignored) and never modify them. transcribe.cpp, at the Makefile's `REFERENCE_REV` and built by `make reference`, is where wavo's port came from: use it to read source and benchmark, never as a dependency. It isn't the measure of correct: wavo differs from it wherever the text gets better. Its `scripts/convert-<family>.py` is the spec of the `stt.*` GGUF keys, tensor names and bundled frontend tensors.
 - When adapting code from `3rd/` (MIT), name the source file in a comment next to it and add the upstream copyright line to `LICENSE` once.
 - Take test audio from `3rd/transcribe.cpp/samples/`, or `3rd/samples/` for clips it lacks (`make samples-he`); never copy audio into the repository.
 - The `research` branch is a read-only reference from an earlier, bloated attempt: read it with `git show research:<path>` and port ideas; never merge it.
@@ -42,8 +42,8 @@ Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, 
 
 ## Correctness
 
-- Every model has fixtures in `tests/fixtures/<model>.txt`, one block per clip, written from the reference CLI by `make fixtures` (`scripts/fixtures.sh` is the format's spec). `make test-all` must reproduce text, tokens and start times exactly, and fail (not skip) when a model, sample or block is missing; `make test` does the same for the smoke models (the Makefile's `MODELS`).
-- Treat any fixture change as a bug: arithmetic may change (e.g. F16 operands) while the fixtures stay exact. A PR may add blocks, but changes an existing one only with the person's approval, asked before committing, with the fixture diff and the gain it buys.
+- Every model has fixtures in `tests/fixtures/<model>.txt`, one block per clip, first written from transcribe.cpp's CLI by `make fixtures` (`scripts/fixtures.sh` is the format's spec) and wavo's own from then on. `make test-all` must reproduce text and tokens exactly, and start times within one encoder frame (80ms), and fail (not skip) when a model, sample or block is missing; `make test` does the same for the smoke models (the Makefile's `MODELS`).
+- Treat any fixture change as a bug unless it makes the text better against a real transcript (a public test set, a book's text): arithmetic may change (e.g. F16 operands) while the fixtures stay exact. A PR may add blocks, but changes an existing one only with the person's approval, asked before committing, with the fixture diff and the gain it buys.
 - The Neural Engine is close to the GPU, not exact: its `*_ane` tests (macOS, `make test-all`) hold each clip within `check_ane`'s tolerances in `tests/models.rs`, while the GPU's fixtures stay exact. When ANE code or a model changes, run `make compare BACKEND=ane` and `BACKEND=gpu` on an hour of speech cut at pauses; `target/release/examples/batch compare` of their two `wavo.jsonl` must give a WER ≤ 0.2% and the same text on ≥ 95% of the 2–15 s pieces.
 - Debug mismatches against the reference's own dumps (`TRANSCRIBE_DUMP_DIR`); don't commit dumps or tensor-level oracle tests, and don't chase bit-exact intermediates.
 - Unit-test only logic that can break silently; unit tests run in CI without models or `3rd/`, so synthesize their inputs.
@@ -55,7 +55,7 @@ Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, 
 
 ## Workflow
 
-- `make check` and `make test` (the smoke run) pass before every commit. `make test-all` (after `make models-all`, `make samples` and `make samples-he`) also passes before a release and before merging speed work or a change to GPU kernels, `src/gpu/`, the GGUF reader, or shared frontend or decoder numerics.
+- `make check` and `make test` (the smoke run) pass before every commit. `make test-all` (after `make models-all`, `make samples` and `make samples-he`) also passes before a release and before merging speed work or a change to GPU kernels, `src/gpu/`, the GGUF reader, or shared frontend or decoder numerics. `WAVO_KERNELS=<tier>` forces a kernel tier; `make test-all` runs each (`scripts/test-kernels.py`).
 - Agree a multi-step change's plan first; it keeps a checklist in `docs/plans/yyyymmdd-<name>.md`, and during the work only tick its checkboxes, with no progress prose. The PR that finishes its last item adds a `Done: yyyy-mm-dd, PR #N` line under the title and a short final `## Result` section with the key numbers, and moves it to `docs/plans/completed/`, fixing links to it. Never delete plans.
 - Every change reaches `main` through a pull request from a `feat/<name>` branch, one per feature or roadmap phase; never commit or push to `main` directly. The maintainer squash-merges it.
 - A commit, and the PR title as the squash commit, is one short lowercase line with no body; docs change in the same commit. A speed PR's body gives the numbers.

@@ -42,7 +42,8 @@ var<immediate> p: Params;
 
 // Rounds to the nearest f16, ties to even, by hand: NVIDIA's Vulkan driver folds
 // unpack2x16float(pack2x16float(x)) into x and AMD's truncates. Normal halves keep 10 mantissa
-// bits, subnormal ones are multiples of 2^-24. Weights never exceed the f16 range.
+// bits, subnormal ones are multiples of 2^-24. Values past the f16 range keep their exponent
+// rather than become inf.
 fn to_half(x: f32) -> f32 {
   let b = bitcast<u32>(x);
   let normal = bitcast<f32>((b + 0xfffu + ((b >> 13u) & 1u)) & 0xffffe000u);

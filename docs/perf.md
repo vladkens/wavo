@@ -198,6 +198,13 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
 
 ### GEMM
 
+- 2026-11-07, all models, the portable GEMM rounds `a` to f16 as `kernel_mul_mm` does (PR #88):
+  without it ivrit he-long gave `החללה` where the fixture has `החלאה`, a near-tie. This reverses
+  the rejection of rounding `a` in the 2026-10-09 entry on rounding W below, now that a fixture
+  needs it. Portable path on Apple M5 on Metal, main → PR: GigaAM `ru` 53.2 → 54.4, `ru-long`
+  303.8 → 308.5, Parakeet V3 `jfk` 211.1 → 216.0, whisper-tiny `jfk` 56.3 → 56.9 ms. Fixtures
+  exact on all tiers. Not measured on the N100. Kept.
+
 - 2026-10-12, all models, the portable GEMM (all GEMMs on GPUs without cooperative matrices, and
   those under 16 tiles of the 16×16 GEMM on NVIDIA): tiles of ROWS × 128 (64 rows; 32 on the
   16×16 tier, for more workgroups), each of 256 threads on 4 (2) rows × two column quads, a
