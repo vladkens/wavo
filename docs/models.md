@@ -2,7 +2,7 @@
 
 ## Which model for your language
 
-Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. The last column is for models trained for one language. Whisper's other languages aren't measured.
+Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. The last column is for models trained for one language. `whisper-large-v3` is the most accurate on Russian and English, 4.1 and 4.2, at half the speed of `whisper-turbo`. Whisper's other languages aren't measured.
 
 | Language | `parakeet-ultra` | `whisper-turbo` | One language |
 |---|---:|---:|---|
