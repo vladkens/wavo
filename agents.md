@@ -55,7 +55,7 @@ Each fact has one source: the public API is the rustdoc, the CLI `wavo --help`, 
 
 ## Workflow
 
-- `make check` and `make test` (the smoke run) pass before every commit. `make test-all` (after `make models-all`, `make samples` and `make samples-he`) also passes before a release and before merging speed work or a change to GPU kernels, `src/gpu/`, the GGUF reader, or shared frontend or decoder numerics. `make test-kernels KERNELS=<tier> [TESTS=<test>]` runs one kernel tier (`WAVO_KERNELS`).
+- `make check` and `make test` (the smoke run) pass before every commit. `make test-all` (after `make models-all`, `make samples` and `make samples-he`) also passes before a release and before merging speed work or a change to GPU kernels, `src/gpu/`, the GGUF reader, or shared frontend or decoder numerics. `WAVO_KERNELS=<tier>` forces a kernel tier; `make test-all` runs each (`scripts/test-kernels.py`).
 - Agree a multi-step change's plan first; it keeps a checklist in `docs/plans/yyyymmdd-<name>.md`, and during the work only tick its checkboxes, with no progress prose. The PR that finishes its last item adds a `Done: yyyy-mm-dd, PR #N` line under the title and a short final `## Result` section with the key numbers, and moves it to `docs/plans/completed/`, fixing links to it. Never delete plans.
 - Every change reaches `main` through a pull request from a `feat/<name>` branch, one per feature or roadmap phase; never commit or push to `main` directly. The maintainer squash-merges it.
 - A commit, and the PR title as the squash commit, is one short lowercase line with no body; docs change in the same commit. A speed PR's body gives the numbers.
