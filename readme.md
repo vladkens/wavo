@@ -11,9 +11,9 @@
 
 </div>
 
-`wavo` turns speech into text on your own machine, with no cloud. Give it a recording of any length and get the text with timestamps. Use it as a command-line tool or as a Rust library.
+`wavo` turns speech into text locally, on the GPU or a Mac's Neural Engine, in pure Rust. Give it a recording of any length, a voice note or a two-hour meeting, and get the text with timestamps. It runs the open ASR models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes. Use it as a command-line tool with an ollama-like model manager, or as a library that builds with a plain `cargo build`.
 
-[Wavo](https://github.com/vladkens/wavo-app) is a dictation app built on this library, for macOS, Windows and Linux.
+[Wavo](https://github.com/vladkens/wavo-app) is a real app built on this library: offline push-to-talk dictation for macOS, Windows and Linux. Install it to try wavo without a terminal, or read its code as an example for your own app.
 
 ## 🌟 Features
 
@@ -28,9 +28,7 @@
 
 ## 📥 Installation
 
-Download the binary for your system from the [latest release](https://github.com/vladkens/wavo/releases/latest) and put it into a folder on your `PATH`, such as `~/.local/bin`.
-
-Or build it with Rust, which takes a few minutes:
+Download the binary for macOS (Apple Silicon), Linux or Windows from the [latest release](https://github.com/vladkens/wavo/releases/latest) and put `wavo` (`wavo.exe`) into a folder on your `PATH`, such as `~/.local/bin`. Or build it with Rust, which takes a few minutes:
 
 ```sh
 cargo install wavo
@@ -47,6 +45,8 @@ sudo apt install mesa-vulkan-drivers       # the driver
 sudo usermod -aG render $USER              # GPU access, then log out and back in
 ```
 
+GPUs other than Apple's use simpler kernels for now: an Intel N100 transcribes 11 s of audio in 1.3–2.2 s.
+
 </details>
 
 <details>
@@ -59,13 +59,15 @@ winget install Rustlang.Rustup
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-wavo uses the GPU through its Vulkan driver, which NVIDIA, AMD and Intel ship. On a laptop with two GPUs it takes the discrete one. Without a Vulkan driver, in a VM for example, wavo falls back to DirectX 12, which is slower.
+wavo uses the GPU through its Vulkan driver (NVIDIA, AMD and Intel ship one); on a laptop with two GPUs it takes the discrete one. GPUs other than Apple's use simpler kernels for now, apart from matrix multiplication and attention on NVIDIA's tensor cores: an RTX 4060 laptop transcribes 11 s of audio in 42 ms (`gigaam-v3`), 79 ms (`parakeet-v3`) or 0.2 s (`whisper-turbo`).
+
+Without a Vulkan driver (e.g. a VM) wavo falls back to DirectX 12 with the simpler kernels only; `WGPU_BACKEND=dx12` forces it.
 
 </details>
 
 ### Newest version
 
-This readme follows main, which may be ahead of the latest release. Binaries of main are in the [dev release](https://github.com/vladkens/wavo/releases/tag/dev). To build it with Rust:
+This readme follows main, which may be ahead of the latest release. Binaries of main are in the [dev release](https://github.com/vladkens/wavo/releases/tag/dev), or build it with Rust:
 
 ```sh
 cargo install --git https://github.com/vladkens/wavo
@@ -156,7 +158,7 @@ let transcript = model.transcribe(&pcm)?;
 println!("{}", transcript.text);
 ```
 
-The [API docs](https://docs.rs/wavo) have the rest.
+The [API docs](https://docs.rs/wavo) have the rest: downloading models, long recordings, progress and cancel.
 
 ## 🔍 See also
 
@@ -170,7 +172,7 @@ The [API docs](https://docs.rs/wavo) have the rest.
 
 ## 🤝 Contributing
 
-Pull requests are welcome, including ones made with agents: point yours at [agents.md](agents.md). When reporting a bug, include the output of `wavo debug`.
+Pull requests are welcome, including ones made with agents: point yours at [agents.md](agents.md). When reporting a bug, include the output of `wavo debug`: it shows the GPU wavo runs on and which of its kernels the GPU allows.
 
 <details>
 <summary>Installing a branch</summary>
