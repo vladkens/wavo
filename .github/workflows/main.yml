@@ -89,4 +89,12 @@ jobs:
       id-token: write # crates.io Trusted Publishing and attestations
     steps:
       - uses: actions/checkout@v7
-      - uses: vladkens/actions/rust-publish@v1
+      - id: release
+        uses: vladkens/actions/rust-publish@v1
+
+      - uses: vladkens/actions/homebrew-bump@v1
+        with:
+          tag: ${{ steps.release.outputs.tag }}
+          file: ${{ steps.release.outputs.files }}
+          tap: vladkens/homebrew-tap
+          token: ${{ secrets.HOMEBREW_REPO_TOKEN }}
