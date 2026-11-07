@@ -7,6 +7,7 @@
 
 use std::sync::{Mutex, PoisonError};
 
+use super::encoder_frames;
 use super::frontend::MELS;
 use crate::conformer::{self, Buffers, Conformer};
 use crate::error::Result;
@@ -72,14 +73,14 @@ impl Encoder {
     })
   }
 
-  /// Encodes `mel` `[mel frames][MELS]` and returns the joint's encoder projections in rows of
-  /// the returned width (the joint's size padded to a multiple of 64). With `valid` less than the
-  /// mel frames, the frames past it are padding, as transcribe.cpp's kestrel length masking has
-  /// it: the subsampling masks its outputs past their valid lengths, and only the valid encoder
-  /// frames are encoded.
+  /// Encodes `mel` `[mel frames][MELS]` and returns the joint's encoder projections, one row per
+  /// encoder frame (`encoder_frames`), in rows of the returned width (the joint's size padded to a
+  /// multiple of 64). With `valid` less than the mel frames, the frames past it are padding, as
+  /// transcribe.cpp's kestrel length masking has it: the subsampling masks its outputs past their
+  /// valid lengths.
   pub fn run(&self, gpu: &Gpu, mel: &[f32], valid: usize) -> Result<(Vec<f32>, usize)> {
     let mel_frames = mel.len() / MELS;
-    let (t, d, width) = (half(half(half(valid))), self.conformer.cfg.d, self.joint.width());
+    let (t, d, width) = (encoder_frames(mel_frames), self.conformer.cfg.d, self.joint.width());
     // Sized for all mel frames: the buffers hold 8 of them per encoder frame.
     let all = half(half(half(mel_frames)));
     let mut arena = self.arena.lock().unwrap_or_else(PoisonError::into_inner);
@@ -105,7 +106,7 @@ impl Encoder {
     // sees the valid mel frames only (the frame past them is zero) and zeroes conv2's rows past
     // its own. conv5 sees conv3's output of those rows, then zero padding.
     let (t2, f2) = (half(half(mel_frames)), half(half(MELS)));
-    let (t, f) = (half(half(half(valid))), half(f2));
+    let (t, f) = (encoder_frames(mel_frames), half(f2));
     // Always CHUNKS chunks, some maybe empty, so the dispatches match the cached bind groups.
     let c = t.div_ceil(CHUNKS);
     for t0 in (0..CHUNKS).map(|i| i * c) {
