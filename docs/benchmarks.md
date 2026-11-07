@@ -1,8 +1,10 @@
 # Benchmarks
 
-How long each engine takes to give you the text, and how much energy that uses. Every engine runs the same model on the same audio. Times are in seconds, energy in joules, lower is better, the best in bold.
+How long each engine takes to give you the text, and how much energy that uses.
 
-A short phrase is instant everywhere, so the 1-hour column is the one that shows a difference.
+Times are in seconds and energy in joules. Lower is better, the best in bold.
+
+A short phrase is instant everywhere. The 1-hour column is the one that shows a difference.
 
 ## Parakeet v3, English
 
@@ -34,10 +36,20 @@ A short phrase is instant everywhere, so the 1-hour column is the one that shows
 
 ## How it's measured
 
-- Same model and same audio for every engine, one at a time, on one machine, with the model loaded once.
-- 5, 15 and 30 s: one clip, 6 calls in a row, the median of the last 5.
-- 1 hour: the recording cut at pauses into 2–15 s pieces, the same pieces for every engine, the whole process with the model load, the median of 3 rounds.
-- Energy: the CPU, GPU and Neural Engine power from [macmon](https://github.com/vladkens/macmon) over the 1-hour run, minus the idle power of the 15 s before it, nothing else running, the median of 3 rounds. Good for comparing engines on one Mac, not as an absolute number; memory isn't counted, macmon has no reading for it on this chip.
-- Engines store weights differently: wavo and transcribe.cpp 8-bit (Q8_0), FluidAudio and sherpa-onnx int8, parakeet-mlx bf16. transcribe.cpp's time is the sum of its own stage timers.
+Every engine runs the same model on the same audio, one engine at a time, on one machine.
 
-Measured on a MacBook Pro with an Apple M5 and 32 GB, macOS 27. ANE is Apple's Neural Engine. Rerun it with `scripts/speed.py run`. The raw numbers are in [results/](../results).
+- 5, 15 and 30 s: one clip called 6 times in a row, the median of the last 5.
+- 1 hour: a recording cut at pauses into pieces of 2–15 s, the same pieces for every engine. The time is the whole process, with the model load, the median of 3 rounds.
+- Energy: CPU, GPU and Neural Engine power from [macmon](https://github.com/vladkens/macmon) during the 1-hour run, minus the idle power before it, the median of 3 rounds.
+
+Energy is good for comparing engines on one Mac, not as an absolute number. Memory isn't counted: macmon has no reading for it on this chip.
+
+Engines store weights differently: wavo and transcribe.cpp in 8-bit Q8_0, FluidAudio and sherpa-onnx in int8, parakeet-mlx in bf16.
+
+transcribe.cpp's time is the sum of its own stage timers.
+
+ANE is Apple's Neural Engine.
+
+Measured on a MacBook Pro with an Apple M5 and 32 GB, macOS 27.
+
+Rerun it with `scripts/speed.py run`. The raw numbers are in [results/](../results).

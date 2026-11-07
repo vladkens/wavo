@@ -11,19 +11,20 @@
 
 </div>
 
-`wavo` turns speech into text locally, on the GPU or a Mac's Neural Engine, in pure Rust. Give it a
-recording of any length, a voice note or a two-hour meeting, and get the text with timestamps. It
-runs the open ASR models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp)
-publishes. Use it as a command-line tool with an ollama-like model manager, or as a library that
-builds with a plain `cargo build`.
+`wavo` turns speech into text on your own machine, with no cloud.
 
-[Wavo](https://github.com/vladkens/wavo-app) is a real app built on this library: offline push-to-talk dictation for macOS, Windows and Linux. Install it to try wavo without a terminal, or read its code as an example for your own app.
+Give it a recording of any length and get the text with timestamps.
+
+Use it as a command-line tool or as a Rust library.
+
+[Wavo](https://github.com/vladkens/wavo-app) is a dictation app built on this library, for macOS, Windows and Linux.
 
 ## 🌟 Features
 
 - 📏 Audio of any length: long recordings are split at pauses and joined back
 - 🎧 Any common format: wav, mp3, m4a, flac, ogg (Vorbis), resampled for you
-- ⚡ Runs on the GPU: Metal on Apple Silicon, Vulkan on Linux and Windows; Parakeet and GigaAM also on a Mac's Neural Engine
+- ⚡ Runs on the GPU: Metal on a Mac, Vulkan on Linux and Windows
+- 🧠 Runs on a Mac's Neural Engine too, for Parakeet and GigaAM
 - 🦀 Pure Rust library: no CMake, C++ toolchain, Python or ONNX Runtime to install
 - 📦 `pull` / `list` / `rm` models, shared with the Hugging Face cache that `hf` uses
 - 📝 Plain text, JSON with a start time for every token, or SRT subtitles
@@ -31,10 +32,9 @@ builds with a plain `cargo build`.
 
 ## 📥 Installation
 
-Download the binary for macOS (Apple Silicon), Linux or Windows from the
-[latest release](https://github.com/vladkens/wavo/releases/latest) and put `wavo` (`wavo.exe`)
-into a folder on your `PATH`, such as `~/.local/bin`. Or build it with Rust, which takes a few
-minutes:
+Download the binary for your system from the [latest release](https://github.com/vladkens/wavo/releases/latest) and put it into a folder on your `PATH`, such as `~/.local/bin`.
+
+Or build it with Rust, which takes a few minutes:
 
 ```sh
 cargo install wavo
@@ -51,9 +51,6 @@ sudo apt install mesa-vulkan-drivers       # the driver
 sudo usermod -aG render $USER              # GPU access, then log out and back in
 ```
 
-GPUs other than Apple's use simpler kernels for now: an Intel N100 transcribes 11 s of audio in
-1.3–2.2 s.
-
 </details>
 
 <details>
@@ -66,20 +63,19 @@ winget install Rustlang.Rustup
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-wavo uses the GPU through its Vulkan driver (NVIDIA, AMD and Intel ship one); on a laptop with
-two GPUs it takes the discrete one. GPUs other than Apple's use simpler kernels for now, apart
-from matrix multiplication and attention on NVIDIA's tensor cores: an RTX 4060 laptop transcribes
-11 s of audio in 42 ms (`gigaam-v3`), 79 ms (`parakeet-v3`) or 0.2 s (`whisper-turbo`).
+wavo uses the GPU through its Vulkan driver, which NVIDIA, AMD and Intel ship.
 
-Without a Vulkan driver (e.g. a VM) wavo falls back to DirectX 12 with the simpler kernels only;
-`WGPU_BACKEND=dx12` forces it.
+On a laptop with two GPUs it takes the discrete one.
+
+Without a Vulkan driver, in a VM for example, wavo falls back to DirectX 12, which is slower.
 
 </details>
 
 ### Newest version
 
-This readme follows main, which may be ahead of the latest release. Binaries of main are in the
-[dev release](https://github.com/vladkens/wavo/releases/tag/dev), or build it with Rust:
+This readme follows main, which may be ahead of the latest release.
+
+Binaries of main are in the [dev release](https://github.com/vladkens/wavo/releases/tag/dev). To build it with Rust:
 
 ```sh
 cargo install --git https://github.com/vladkens/wavo
@@ -103,16 +99,17 @@ wavo debug                            # your system, GPUs and models, to paste i
 wavo run talk.wav --backend gpu       # the GPU even where the Neural Engine is ready
 ```
 
-- Any length works: long recordings are split at pauses, `--segment SECS` sets the piece length.
-- `wavo run` asks before downloading a model, `-y` skips the question.
-- Whisper detects the language, `--language CODE` sets it.
+- Long recordings are split at pauses by themselves. `--segment SECS` sets the piece length.
+- `wavo run` asks before downloading a model. `-y` skips the question.
+- Whisper detects the language. `--language CODE` sets it.
 - Models live in the Hugging Face cache, shared with `hf download`.
-- On a Mac, `wavo pull` also prepares Parakeet and GigaAM for the Neural Engine, once, in 15–30 s. `wavo run` then uses it; `--backend gpu` stays on the GPU.
+- On a Mac, `wavo pull` prepares Parakeet and GigaAM for the Neural Engine, once, in 15–30 s.
+- `--backend gpu` stays on the GPU even where the Neural Engine is ready.
 
 <details>
 <summary>Server</summary>
 
-`wavo serve` is a local stand-in for OpenAI's transcription API: an app built for it works with wavo once you change its URL.
+`wavo serve` is a local stand-in for OpenAI's transcription API. An app built for that API works with wavo once you change its URL.
 
 ```sh
 wavo serve                                       # parakeet-ultra on http://127.0.0.1:8000
@@ -122,7 +119,9 @@ wavo serve --host 0.0.0.0 --api-key KEY          # on the network, with a key
 curl -F file=@talk.mp3 -F model=whisper-1 http://127.0.0.1:8000/v1/audio/transcriptions
 ```
 
-It also works as [Bazarr](https://www.bazarr.media)'s Whisper provider, for subtitles. `wavo --help` lists the endpoints and options.
+It also works as [Bazarr](https://www.bazarr.media)'s Whisper provider, for subtitles.
+
+`wavo --help` lists the endpoints and options.
 
 </details>
 
@@ -136,11 +135,15 @@ It also works as [Bazarr](https://www.bazarr.media)'s Whisper provider, for subt
 | `whisper-turbo` | 100 | 0.89 GB | 2.0 | 4.5 | ~4 min |
 | `moonshine-base` | English | 0.08 GB | 3.3 | – | ~20 s |
 
-Errors are wrong words per 100, lower is better. [All models and languages](docs/models.md).
+Errors are wrong words per 100, lower is better.
+
+[All models and languages](docs/models.md).
 
 ## ⚡ Speed
 
-How long an hour of speech takes to transcribe, and how much energy it uses. Every engine runs the same Parakeet v3 model on the same audio.
+How long an hour of speech takes to transcribe, and how much energy it uses.
+
+Every engine runs the same model, Parakeet v3, on the same audio.
 
 | Engine | On | 1 hour | Energy | Language | Platforms |
 |---|---|---:|---:|---|---|
@@ -152,7 +155,11 @@ How long an hour of speech takes to transcribe, and how much energy it uses. Eve
 | [parakeet-mlx](https://github.com/senstella/parakeet-mlx) | GPU | 59 s | 393 J | Python | Mac |
 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | CPU | 92 s | 1474 J | C++ | Mac, Windows, Linux |
 
-Measured on a MacBook Pro with an Apple M5. ANE is Apple's Neural Engine. The full tables and the method are in [docs/benchmarks.md](docs/benchmarks.md).
+ANE is Apple's Neural Engine.
+
+Measured on a MacBook Pro with an Apple M5.
+
+The full tables and the method are in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## 📚 Library usage
 
@@ -167,7 +174,7 @@ let transcript = model.transcribe(&pcm)?;
 println!("{}", transcript.text);
 ```
 
-The [API docs](https://docs.rs/wavo) have the rest: downloading models, long recordings, progress and cancel.
+The [API docs](https://docs.rs/wavo) have the rest.
 
 ## 🔍 See also
 
@@ -181,7 +188,9 @@ The [API docs](https://docs.rs/wavo) have the rest: downloading models, long rec
 
 ## 🤝 Contributing
 
-Pull requests are welcome, including ones made with agents: point yours at [agents.md](agents.md). When reporting a bug, include the output of `wavo debug`: it shows the GPU wavo runs on and which of its kernels the GPU allows.
+Pull requests are welcome, including ones made with agents: point yours at [agents.md](agents.md).
+
+When reporting a bug, include the output of `wavo debug`.
 
 <details>
 <summary>Installing a branch</summary>
