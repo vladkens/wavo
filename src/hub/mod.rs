@@ -11,6 +11,9 @@
 //! Only [`Hub::pull`] uses the network. It blocks until the file is complete, so run it on a thread
 //! of your own (the library starts none): [`std::thread::spawn`], or tokio's `spawn_blocking`.
 //!
+//! [`ModelInfo::wer`] and [`ModelInfo::speed`] give what wavo measured of a model, to sort models
+//! for a language, and [`best_for`] the most accurate one.
+//!
 //! ```no_run
 //! use std::ops::ControlFlow;
 //! use wavo::hub::{self, Hub};
@@ -30,6 +33,7 @@
 //! ```
 
 mod cache;
+mod scores;
 
 use std::fmt;
 use std::ops::ControlFlow;
@@ -109,6 +113,49 @@ impl ModelInfo {
   /// Whether the model's family runs on the Neural Engine (Parakeet, GigaAM).
   pub fn neural_engine(&self) -> bool {
     crate::program(&self.family.to_lowercase()).is_some()
+  }
+
+  /// Word error rate in % on the FLEURS test set of a language, lower is better: wrong words per
+  /// 100, or characters per 100 for languages written without spaces, such as `zh` and `ja`. Case
+  /// and punctuation don't count. `language` is a code as in [`langs`](Self::langs).
+  ///
+  /// `None` when this model wasn't measured on that language, which says nothing of how it does.
+  ///
+  /// # Examples
+  ///
+  /// The measured models for Russian, the most accurate first:
+  ///
+  /// ```
+  /// use wavo::hub::{self, MODELS};
+  ///
+  /// let mut ru: Vec<_> = MODELS.iter().filter_map(|m| Some((m.wer("ru")?, m))).collect();
+  /// ru.sort_by(|a, b| a.0.total_cmp(&b.0));
+  /// assert_eq!(Some(ru[0].1), hub::best_for("ru"));
+  ///
+  /// assert_eq!(MODELS[0].wer("no such code"), None);
+  /// ```
+  pub fn wer(&self, language: &str) -> Option<f32> {
+    scores::WER.iter().find(|x| x.0 == self.name && x.1 == language).map(|x| x.2)
+  }
+
+  /// How many times faster than `whisper-turbo`, which is `1.0`: seconds of audio over seconds of
+  /// work, divided by `whisper-turbo`'s. A ratio, so it doesn't depend much on the machine; only
+  /// the order of models and the rough size mean anything. Measured on the GPU of an Apple M5, the
+  /// model loaded and warm, on clips of some seconds.
+  ///
+  /// `None` when this model wasn't measured.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use wavo::hub::lookup;
+  ///
+  /// assert_eq!(lookup("whisper-turbo")?.speed(), Some(1.0));
+  /// assert!(lookup("gigaam-v3")?.speed().is_some_and(|x| x > 1.0));
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn speed(&self) -> Option<f32> {
+    scores::SPEED.iter().find(|x| x.0 == self.name).map(|x| x.1)
   }
 }
 
@@ -203,6 +250,24 @@ pub fn lookup(name: &str) -> Result<&'static ModelInfo> {
     .min()
     .filter(|&(d, n)| d <= (n.len() / 3).max(2));
   Err(Error::UnknownModel { name: name.into(), suggestion: closest.map(|(_, n)| n) })
+}
+
+/// The measured model with the lowest [`wer`](ModelInfo::wer) for a language, the first of
+/// [`MODELS`] on a tie. `language` is a code as in [`ModelInfo::langs`].
+///
+/// `None` when no model was measured on that language. A model that wasn't measured doesn't take
+/// part, even if it takes the language.
+///
+/// # Examples
+///
+/// ```
+/// let m = wavo::hub::best_for("ru").unwrap();
+/// assert!(m.langs.contains(&"ru"));
+/// assert_eq!(wavo::hub::best_for("no such code"), None);
+/// ```
+pub fn best_for(language: &str) -> Option<&'static ModelInfo> {
+  let measured = MODELS.iter().filter_map(|m| Some((m, m.wer(language)?)));
+  measured.min_by(|a, b| a.1.total_cmp(&b.1)).map(|(m, _)| m)
 }
 
 /// The end of [`Error::UnknownModel`]'s first sentence.
@@ -568,6 +633,36 @@ mod tests {
 
     assert!(lookup("gigaam-v3").unwrap().neural_engine());
     assert!(!lookup("moonshine-tiny").unwrap().neural_engine());
+  }
+
+  #[test]
+  fn measured() {
+    let m = lookup("gigaam-v3").unwrap();
+    assert!(m.wer("ru").is_some_and(|x| x > 0.0 && x < 100.0));
+    assert!(m.speed().is_some_and(|x| x > 1.0));
+    assert_eq!(lookup("whisper-turbo").unwrap().speed(), Some(1.0));
+    assert_eq!(m.wer("en"), None);
+    assert_eq!(ModelInfo { name: "unmeasured", ..*m }.speed(), None);
+
+    assert_eq!(best_for("no such code"), None);
+    assert!(best_for("ru").is_some());
+    for &(_, lang, _) in scores::WER {
+      let best = best_for(lang).unwrap().wer(lang).unwrap();
+      assert!(MODELS.iter().filter_map(|m| m.wer(lang)).all(|x| best <= x), "{lang}");
+    }
+  }
+
+  /// `wer` and `speed` compare with `ModelInfo::name`, so a full name here would never match.
+  #[test]
+  fn score_tables_match() {
+    let model = |name| MODELS.iter().find(|m| m.name == name);
+    for &(name, lang, _) in scores::WER {
+      assert!(model(name).is_some_and(|m| m.langs.contains(&lang)), "{name}: {lang}");
+    }
+
+    for &(name, _) in scores::SPEED {
+      assert!(model(name).is_some(), "{name}");
+    }
   }
 
   #[test]
