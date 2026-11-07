@@ -36,14 +36,14 @@ A short phrase is instant everywhere. The 1-hour column is the one that shows a 
 
 Every engine runs the same model on the same audio, one engine at a time, on one machine.
 
-- 5, 15 and 30 s: one clip called 6 times in a row, the median of the last 5.
-- 1 hour: a recording cut at pauses into pieces of 2–15 s, the same pieces for every engine. The time is the whole process, with the model load, the median of 3 rounds.
+- 5, 15 and 30s: one clip called 6 times in a row, the median of the last 5.
+- 1 hour: a recording cut at pauses into pieces of 2–15s, the same pieces for every engine. The time is the whole process, with the model load, the median of 3 rounds.
 - Energy: CPU, GPU and Neural Engine power from [macmon](https://github.com/vladkens/macmon) during the 1-hour run, minus the idle power before it, the median of 3 rounds.
 
 Energy is good for comparing engines on one Mac, not as an absolute number. Memory isn't counted: macmon has no reading for it on this chip.
 
 Engines store weights differently: wavo and transcribe.cpp in 8-bit Q8_0, FluidAudio and sherpa-onnx in int8, parakeet-mlx in bf16. transcribe.cpp's time is the sum of its own stage timers.
 
-ANE is Apple's Neural Engine. Measured on a MacBook Pro with an Apple M5 and 32 GB, macOS 27.
+ANE is Apple's Neural Engine. Measured on a MacBook Pro with an Apple M5 and 32GB, macOS 27.
 
 Rerun it with `scripts/speed.py run`. The raw numbers are in [results/](../results).

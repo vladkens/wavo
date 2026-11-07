@@ -11,9 +11,9 @@
 
 </div>
 
-`wavo` turns speech into text locally, on the GPU or a Mac's Neural Engine, in pure Rust. Give it a recording of any length, a voice note or a two-hour meeting, and get the text with timestamps. It runs the open ASR models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes. Use it as a command-line tool with an ollama-like model manager, or as a library that builds with a plain `cargo build`.
+`wavo` turns speech into text on your own machine, on the GPU or a Mac's Neural Engine. Give it a recording of any length, from a voice note to a two-hour meeting, and get the text with timestamps. It runs the open models that [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) publishes, as a command-line tool with an ollama-like model manager or as a pure Rust library.
 
-[Wavo](https://github.com/vladkens/wavo-app) is a real app built on this library: offline push-to-talk dictation for macOS, Windows and Linux. Install it to try wavo without a terminal, or read its code as an example for your own app.
+[Wavo](https://github.com/vladkens/wavo-app) is a dictation app built on this library, for macOS, Windows and Linux. Install it to try wavo without a terminal, or read its code as an example.
 
 ## 🌟 Features
 
@@ -28,7 +28,7 @@
 
 ## 📥 Installation
 
-Download the binary for macOS (Apple Silicon), Linux or Windows from the [latest release](https://github.com/vladkens/wavo/releases/latest) and put `wavo` (`wavo.exe`) into a folder on your `PATH`, such as `~/.local/bin`. Or build it with Rust, which takes a few minutes:
+Download the binary for macOS (Apple Silicon), Linux or Windows from the [latest release](https://github.com/vladkens/wavo/releases/latest) and put it into a folder on your `PATH`. Or build it with Rust, which takes a few minutes:
 
 ```sh
 cargo install wavo
@@ -45,7 +45,7 @@ sudo apt install mesa-vulkan-drivers       # the driver
 sudo usermod -aG render $USER              # GPU access, then log out and back in
 ```
 
-GPUs other than Apple's use simpler kernels for now: an Intel N100 transcribes 11 s of audio in 1.3–2.2 s.
+GPUs other than Apple's use simpler kernels for now. An Intel N100 takes 1.3–2.2s for 11s of audio.
 
 </details>
 
@@ -59,9 +59,11 @@ winget install Rustlang.Rustup
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-wavo uses the GPU through its Vulkan driver (NVIDIA, AMD and Intel ship one); on a laptop with two GPUs it takes the discrete one. GPUs other than Apple's use simpler kernels for now, apart from matrix multiplication and attention on NVIDIA's tensor cores: an RTX 4060 laptop transcribes 11 s of audio in 42 ms (`gigaam-v3`), 79 ms (`parakeet-v3`) or 0.2 s (`whisper-turbo`).
+wavo uses the GPU through its Vulkan driver, which NVIDIA, AMD and Intel ship. On a laptop with two GPUs it takes the discrete one.
 
-Without a Vulkan driver (e.g. a VM) wavo falls back to DirectX 12 with the simpler kernels only; `WGPU_BACKEND=dx12` forces it.
+GPUs other than Apple's use simpler kernels for now, except for matrix multiplication and attention on NVIDIA's tensor cores. An RTX 4060 laptop takes 42ms for 11s of audio with `gigaam-v3`, 79ms with `parakeet-v3` and 0.2s with `whisper-turbo`.
+
+Without a Vulkan driver, in a VM for example, wavo falls back to DirectX 12 with the simpler kernels. `WGPU_BACKEND=dx12` forces it.
 
 </details>
 
@@ -95,7 +97,7 @@ wavo run talk.wav --backend gpu       # the GPU even where the Neural Engine is 
 - `wavo run` asks before downloading a model. `-y` skips the question.
 - Whisper detects the language. `--language CODE` sets it.
 - Models live in the Hugging Face cache, shared with `hf download`.
-- On a Mac, `wavo pull` prepares Parakeet and GigaAM for the Neural Engine, once, in 15–30 s.
+- On a Mac, `wavo pull` prepares Parakeet and GigaAM for the Neural Engine, once, in 15–30s.
 - `--backend gpu` stays on the GPU even where the Neural Engine is ready.
 
 <details>
@@ -119,11 +121,11 @@ It also works as [Bazarr](https://www.bazarr.media)'s Whisper provider, for subt
 
 | Model | Languages | Size | Errors, English | Errors, Russian | 1 hour of audio |
 |---|---|---:|---:|---:|---:|
-| `parakeet-ultra` (default) | 25 European | 0.74 GB | 1.8 | 4.7 | ~30 s |
-| `gigaam-v3` | Russian | 0.27 GB | – | 4.5 | 11 s |
-| `parakeet-v2` | English | 0.73 GB | 1.7 | – | ~35 s |
-| `whisper-turbo` | 100 | 0.89 GB | 2.0 | 4.5 | ~4 min |
-| `moonshine-base` | English | 0.08 GB | 3.3 | – | ~20 s |
+| `parakeet-ultra` (default) | 25 European | 0.74GB | 1.8 | 4.7 | ~30s |
+| `gigaam-v3` | Russian | 0.27GB | – | 4.5 | 11s |
+| `parakeet-v2` | English | 0.73GB | 1.7 | – | ~35s |
+| `whisper-turbo` | 100 | 0.89GB | 2.0 | 4.5 | ~4min |
+| `moonshine-base` | English | 0.08GB | 3.3 | – | ~20s |
 
 Errors are wrong words per 100, lower is better. [All models and languages](docs/models.md).
 
@@ -133,17 +135,15 @@ How long an hour of speech takes to transcribe, and how much energy it uses. Eve
 
 | Engine | On | 1 hour | Energy | Language | Platforms |
 |---|---|---:|---:|---|---|
-| wavo | ANE | 18 s | 225 J | Rust | Mac |
-| [FluidAudio](https://github.com/FluidInference/FluidAudio) | ANE | 21 s | 164 J | Swift | Mac |
-| wavo | GPU | 22 s | 377 J | Rust | Mac, Windows, Linux |
-| [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) | GPU | 34 s | 565 J | C++ | Mac, Windows, Linux |
-| [parakeet.cpp](https://github.com/mudler/parakeet.cpp) | GPU | 40 s | 472 J | C++ | Mac, Windows, Linux |
-| [parakeet-mlx](https://github.com/senstella/parakeet-mlx) | GPU | 59 s | 393 J | Python | Mac |
-| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | CPU | 92 s | 1474 J | C++ | Mac, Windows, Linux |
+| wavo | ANE | 18s | 225J | Rust | Mac |
+| [FluidAudio](https://github.com/FluidInference/FluidAudio) | ANE | 21s | 164J | Swift | Mac |
+| wavo | GPU | 22s | 377J | Rust | Mac, Windows, Linux |
+| [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) | GPU | 34s | 565J | C++ | Mac, Windows, Linux |
+| [parakeet.cpp](https://github.com/mudler/parakeet.cpp) | GPU | 40s | 472J | C++ | Mac, Windows, Linux |
+| [parakeet-mlx](https://github.com/senstella/parakeet-mlx) | GPU | 59s | 393J | Python | Mac |
+| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | CPU | 92s | 1474J | C++ | Mac, Windows, Linux |
 
-ANE is Apple's Neural Engine. Measured on a MacBook Pro with an Apple M5.
-
-The full tables and the method are in [docs/benchmarks.md](docs/benchmarks.md).
+ANE is Apple's Neural Engine. Measured on a MacBook Pro with an Apple M5. The full tables and the method are in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## 📚 Library usage
 
