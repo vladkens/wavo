@@ -11,11 +11,7 @@
 
 </div>
 
-`wavo` turns speech into text on your own machine, with no cloud.
-
-Give it a recording of any length and get the text with timestamps.
-
-Use it as a command-line tool or as a Rust library.
+`wavo` turns speech into text on your own machine, with no cloud. Give it a recording of any length and get the text with timestamps. Use it as a command-line tool or as a Rust library.
 
 [Wavo](https://github.com/vladkens/wavo-app) is a dictation app built on this library, for macOS, Windows and Linux.
 
@@ -63,19 +59,13 @@ winget install Rustlang.Rustup
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-wavo uses the GPU through its Vulkan driver, which NVIDIA, AMD and Intel ship.
-
-On a laptop with two GPUs it takes the discrete one.
-
-Without a Vulkan driver, in a VM for example, wavo falls back to DirectX 12, which is slower.
+wavo uses the GPU through its Vulkan driver, which NVIDIA, AMD and Intel ship. On a laptop with two GPUs it takes the discrete one. Without a Vulkan driver, in a VM for example, wavo falls back to DirectX 12, which is slower.
 
 </details>
 
 ### Newest version
 
-This readme follows main, which may be ahead of the latest release.
-
-Binaries of main are in the [dev release](https://github.com/vladkens/wavo/releases/tag/dev). To build it with Rust:
+This readme follows main, which may be ahead of the latest release. Binaries of main are in the [dev release](https://github.com/vladkens/wavo/releases/tag/dev). To build it with Rust:
 
 ```sh
 cargo install --git https://github.com/vladkens/wavo
@@ -119,9 +109,7 @@ wavo serve --host 0.0.0.0 --api-key KEY          # on the network, with a key
 curl -F file=@talk.mp3 -F model=whisper-1 http://127.0.0.1:8000/v1/audio/transcriptions
 ```
 
-It also works as [Bazarr](https://www.bazarr.media)'s Whisper provider, for subtitles.
-
-`wavo --help` lists the endpoints and options.
+It also works as [Bazarr](https://www.bazarr.media)'s Whisper provider, for subtitles. `wavo --help` lists the endpoints and options.
 
 </details>
 
@@ -135,15 +123,11 @@ It also works as [Bazarr](https://www.bazarr.media)'s Whisper provider, for subt
 | `whisper-turbo` | 100 | 0.89 GB | 2.0 | 4.5 | ~4 min |
 | `moonshine-base` | English | 0.08 GB | 3.3 | – | ~20 s |
 
-Errors are wrong words per 100, lower is better.
-
-[All models and languages](docs/models.md).
+Errors are wrong words per 100, lower is better. [All models and languages](docs/models.md).
 
 ## ⚡ Speed
 
-How long an hour of speech takes to transcribe, and how much energy it uses.
-
-Every engine runs the same model, Parakeet v3, on the same audio.
+How long an hour of speech takes to transcribe, and how much energy it uses. Every engine runs the same model (Parakeet v3) on the same audio.
 
 | Engine | On | 1 hour | Energy | Language | Platforms |
 |---|---|---:|---:|---|---|
@@ -155,9 +139,7 @@ Every engine runs the same model, Parakeet v3, on the same audio.
 | [parakeet-mlx](https://github.com/senstella/parakeet-mlx) | GPU | 59 s | 393 J | Python | Mac |
 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | CPU | 92 s | 1474 J | C++ | Mac, Windows, Linux |
 
-ANE is Apple's Neural Engine.
-
-Measured on a MacBook Pro with an Apple M5.
+ANE is Apple's Neural Engine. Measured on a MacBook Pro with an Apple M5.
 
 The full tables and the method are in [docs/benchmarks.md](docs/benchmarks.md).
 
@@ -188,9 +170,7 @@ The [API docs](https://docs.rs/wavo) have the rest.
 
 ## 🤝 Contributing
 
-Pull requests are welcome, including ones made with agents: point yours at [agents.md](agents.md).
-
-When reporting a bug, include the output of `wavo debug`.
+Pull requests are welcome, including ones made with agents: point yours at [agents.md](agents.md). When reporting a bug, include the output of `wavo debug`.
 
 <details>
 <summary>Installing a branch</summary>

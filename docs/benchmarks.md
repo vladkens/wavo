@@ -1,8 +1,6 @@
 # Benchmarks
 
-How long each engine takes to give you the text, and how much energy that uses.
-
-Times are in seconds and energy in joules. Lower is better, the best in bold.
+How long each engine takes to give you the text, and how much energy that uses. Times are in seconds and energy in joules. Lower is better, the best in bold.
 
 A short phrase is instant everywhere. The 1-hour column is the one that shows a difference.
 
@@ -44,12 +42,8 @@ Every engine runs the same model on the same audio, one engine at a time, on one
 
 Energy is good for comparing engines on one Mac, not as an absolute number. Memory isn't counted: macmon has no reading for it on this chip.
 
-Engines store weights differently: wavo and transcribe.cpp in 8-bit Q8_0, FluidAudio and sherpa-onnx in int8, parakeet-mlx in bf16.
+Engines store weights differently: wavo and transcribe.cpp in 8-bit Q8_0, FluidAudio and sherpa-onnx in int8, parakeet-mlx in bf16. transcribe.cpp's time is the sum of its own stage timers.
 
-transcribe.cpp's time is the sum of its own stage timers.
-
-ANE is Apple's Neural Engine.
-
-Measured on a MacBook Pro with an Apple M5 and 32 GB, macOS 27.
+ANE is Apple's Neural Engine. Measured on a MacBook Pro with an Apple M5 and 32 GB, macOS 27.
 
 Rerun it with `scripts/speed.py run`. The raw numbers are in [results/](../results).

@@ -2,9 +2,7 @@
 
 ## Which model for your language
 
-Wrong words per 100, lower is better, the best in bold.
-
-*Made for it* is a model trained for that language alone.
+Wrong words per 100, lower is better, the best in bold. *Made for it* is a model trained for that language alone.
 
 | Language | `parakeet-ultra` | `parakeet-v3` | `whisper-turbo` | Made for it |
 |---|---:|---:|---:|---|
@@ -35,9 +33,7 @@ Wrong words per 100, lower is better, the best in bold.
 | Swedish | 12.8 | 15.2 | **8.8** | – |
 | Ukrainian | **5.6** | 6.8 | 7.3 | – |
 
-Measured on the FLEURS test set.
-
-Whisper's other languages aren't measured.
+Measured on the FLEURS test set. Whisper's other languages aren't measured.
 
 ## All models
 
@@ -70,9 +66,7 @@ Whisper's other languages aren't measured.
 
 Speed is how many times faster than `whisper-turbo`. Trust the order, not the digits.
 
-Moonshine gives no timestamps.
-
-Full names, such as `parakeet-tdt-0.6b-v3`, and a path to a `.gguf` work too.
+Moonshine gives no timestamps. Full names, such as `parakeet-tdt-0.6b-v3`, and a path to a `.gguf` work too.
 
 ## Credits
 
