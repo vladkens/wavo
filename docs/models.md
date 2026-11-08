@@ -2,7 +2,7 @@
 
 ## Which model for your language
 
-Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. The last column is for models trained for one language. For Chinese, Japanese and Thai it's wrong characters per 100. `whisper-large-v3` is the most accurate on Russian, 4.1, and gives 4.2 on English, at half the speed of `whisper-turbo`. `whisper-turbo` is measured on all 82 of its languages in FLEURS, which the library has; on some, such as Amharic, Lao or Sindhi, it makes more errors than there are words.
+Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. The last column is for models trained for one language. For Chinese, Japanese and Thai it's wrong characters per 100. `whisper-large-v3` is the most accurate on Russian, 4.1, and gives 4.2 on English, at half the speed of `whisper-turbo`. `whisper-turbo` is measured on all 82 of its languages in FLEURS, which the library has; on some, such as Amharic, Hausa or Sindhi, it makes more errors than there are words.
 
 | Language | `parakeet-ultra` | `whisper-turbo` | One language |
 |---|---:|---:|---|
