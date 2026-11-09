@@ -23,6 +23,10 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **15. Moonshine tiny and base, correct** (#30). [Plan](plans/20261011-moonshine.md)
 - [x] **Hebrew:** ivrit.ai's Whisper turbo and Yakov Kolani's Parakeet v3 fine-tunes, converted
       and published under `vladkens` on Hugging Face (#64).
+- [x] **GigaAM Multilingual:** Sber's Large CTC for Russian, English, Kazakh, Kyrgyz and Uzbek,
+      converted by `scripts/convert.sh` with the converter of transcribe.cpp's unmerged
+      [PR #251](https://github.com/handy-computer/transcribe.cpp/pull/251) and published under
+      `vladkens`.
 - [x] **Server:** `wavo serve`, OpenAI's transcription API on `std::net`.
 - [x] **19. Parakeet Ultra** on the Parakeet family, correct and faster than transcribe.cpp:
       `jfk` on an M2 in 145 vs 203 ms (best of 20).

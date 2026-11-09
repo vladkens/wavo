@@ -170,6 +170,8 @@ const VK: &str = "vladkens";
 static EN: &[&str] = &["en"];
 static HE: &[&str] = &["he"];
 static RU: &[&str] = &["ru"];
+/// GigaAM Multilingual's, in its model card's order.
+static GIGAAM_ML: &[&str] = &["ru", "en", "kk", "ky", "uz"];
 static ZH_EN: &[&str] = &["zh", "en"];
 /// transcribe.cpp's `V3_LANGUAGES`, in the model card's order.
 static PARAKEET_V3: &[&str] = &[
@@ -208,6 +210,7 @@ pub static MODELS: &[ModelInfo] = &[
   ModelInfo { name: "gigaam-v3-e2e-ctc", owner: HC, full_name: "gigaam-v3-e2e-ctc", size: 272_151_136, languages: "Russian", langs: RU, punctuated: true, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
   ModelInfo { name: "gigaam-v3-rnnt", owner: HC, full_name: "gigaam-v3-rnnt", size: 273_022_880, languages: "Russian", langs: RU, punctuated: false, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
   ModelInfo { name: "gigaam-v3-ctc", owner: HC, full_name: "gigaam-v3-ctc", size: 271_803_328, languages: "Russian", langs: RU, punctuated: false, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
+  ModelInfo { name: "gigaam-multilingual", owner: VK, full_name: "gigaam-multilingual-large-ctc", size: 711_746_112, languages: "Russian, English, Kazakh, Kyrgyz and Uzbek", langs: GIGAAM_ML, punctuated: false, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-Multilingual" },
   ModelInfo { name: "whisper-turbo", owner: HC, full_name: "whisper-large-v3-turbo", size: 886_381_760, languages: "100 languages", langs: WHISPER_V3, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-large-v3-turbo" },
   ModelInfo { name: "whisper-turbo-he", owner: VK, full_name: "ivrit-whisper-large-v3-turbo", size: 886_381_920, languages: "Hebrew", langs: HE, punctuated: true, family: "Whisper", maker: "ivrit.ai", card: "https://huggingface.co/ivrit-ai/whisper-large-v3-turbo" },
   ModelInfo { name: "whisper-tiny", owner: HC, full_name: "whisper-tiny", size: 45_981_088, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-tiny" },
@@ -586,6 +589,7 @@ mod tests {
     let m = lookup("parakeet-he").unwrap();
     assert_eq!(m.repo(), "vladkens/parakeet-tdt-0.6b-v3-he-gguf");
     assert_eq!(m.file(), "parakeet-tdt-0.6b-v3-he-Q8_0.gguf");
+    assert_eq!(name("gigaam-multilingual-large-ctc"), "gigaam-multilingual");
   }
 
   #[test]
