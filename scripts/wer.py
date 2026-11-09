@@ -516,7 +516,10 @@ def write_scores(args):
 
     rate_rows = []
     for model in sorted({m for m, _ in rates}):
-        pairs = [f'("{lang}", {x})' for (m, lang), x in sorted(rates.items()) if m == model]
+        # Past 100 the model makes up more words than were said: just "doesn't work", for apps.
+        pairs = [
+            f'("{lang}", {min(x, 100.0)})' for (m, lang), x in sorted(rates.items()) if m == model
+        ]
         lines = [", ".join(pairs[i : i + 6]) + "," for i in range(0, len(pairs), 6)]
         rate_rows.append(f'  ("{model}", &[\n' + "\n".join(f"    {x}" for x in lines) + "\n  ]),")
     speed_rows = [f'  ("{m}", {round(x, 1)}),' for m, x in sorted(ratios.items())]

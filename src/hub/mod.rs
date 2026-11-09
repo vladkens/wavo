@@ -117,7 +117,8 @@ impl ModelInfo {
 
   /// Word error rate in % on the FLEURS test set of a language, lower is better: wrong words per
   /// 100, or characters per 100 for languages written without spaces, such as `zh` and `ja`. Case
-  /// and punctuation don't count. `language` is a code as in [`langs`](Self::langs).
+  /// and punctuation don't count, and 100 is the most: a model making up more words than were said
+  /// gets 100 too. `language` is a code as in [`langs`](Self::langs).
   ///
   /// `None` when this model wasn't measured on that language, which says nothing of how it does.
   ///
