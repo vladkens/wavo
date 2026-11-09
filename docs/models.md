@@ -54,6 +54,7 @@ Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. T
 | `parakeet-v2` | 0.73GB | English | cased, punctuated | 7.6× |
 | `parakeet-ultra` (default) | 0.74GB | 25 European languages | cased, punctuated | 7× |
 | `parakeet-he` | 0.74GB | Hebrew | cased, punctuated | 8× |
+| `parakeet-uk` | 0.74GB | Ukrainian and English | cased, punctuated | – |
 | `gigaam-v3` | 0.27GB | Russian | cased, punctuated | 13.1× |
 | `gigaam-v3-e2e-ctc` | 0.27GB | Russian | cased, punctuated | 16.3× |
 | `gigaam-v3-rnnt` | 0.27GB | Russian | lowercase, no punctuation | 13.5× |
@@ -88,7 +89,7 @@ wavo's kernels and algorithms are built from the ideas and code of these project
 - [ggml](https://github.com/ggml-org/ggml) (MIT): kernels adapted from it. Flash attention after Vulkan's `flash_attn_cm1.comp`, the Q8_0 matrix multiplication after ggml-metal's `kernel_mul_mm`, and GELU's erf.
 - [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT), [Hugging Face transformers](https://github.com/huggingface/transformers) and [NVIDIA NeMo](https://github.com/NVIDIA/NeMo) (Apache-2.0): algorithms that reached wavo through transcribe.cpp's ports.
 
-**Models.** wavo ships no weights: `wavo pull` downloads the GGUF conversions that [handy-computer](https://huggingface.co/handy-computer) publishes on Hugging Face, and [vladkens](https://huggingface.co/vladkens) for the Hebrew models and GigaAM Multilingual, under the original licenses:
+**Models.** wavo ships no weights: `wavo pull` downloads the GGUF conversions that [handy-computer](https://huggingface.co/handy-computer) publishes on Hugging Face, and [vladkens](https://huggingface.co/vladkens) for the Hebrew models, the Ukrainian Parakeet and GigaAM Multilingual, under the original licenses:
 
 - Parakeet TDT ([v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2), [v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)) © NVIDIA, CC-BY-4.0
 - [Parakeet Ultra](https://huggingface.co/moondream/parakeet-ultra) © Moondream, CC-BY-4.0
@@ -99,3 +100,4 @@ wavo's kernels and algorithms are built from the ideas and code of these project
 - [Breeze-ASR-25](https://huggingface.co/MediaTek-Research/Breeze-ASR-25) © MediaTek Research, Apache-2.0
 - [ivrit-ai/whisper-large-v3-turbo](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo) © ivrit.ai, Apache-2.0
 - [parakeet-tdt-0.6b-v3-he](https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he) © Yakov Kolani, CC-BY-4.0
+- [parakeet-tdt-0.6b-v3-uk](https://huggingface.co/ihnatov-yuri/parakeet-tdt-0.6b-v3-uk) © Yurii Ihnatov, CC-BY-4.0
