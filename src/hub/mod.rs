@@ -117,7 +117,8 @@ impl ModelInfo {
 
   /// Word error rate in % on the FLEURS test set of a language, lower is better: wrong words per
   /// 100, or characters per 100 for languages written without spaces, such as `zh` and `ja`. Case
-  /// and punctuation don't count. `language` is a code as in [`langs`](Self::langs).
+  /// and punctuation don't count, and 100 is the most: a model making up more words than were said
+  /// gets 100 too. `language` is a code as in [`langs`](Self::langs).
   ///
   /// `None` when this model wasn't measured on that language, which says nothing of how it does.
   ///
@@ -135,7 +136,8 @@ impl ModelInfo {
   /// assert_eq!(MODELS[0].wer("no such code"), None);
   /// ```
   pub fn wer(&self, language: &str) -> Option<f32> {
-    scores::WER.iter().find(|x| x.0 == self.name && x.1 == language).map(|x| x.2)
+    let langs = scores::WER.iter().find(|x| x.0 == self.name)?.1;
+    langs.iter().find(|x| x.0 == language).map(|x| x.1)
   }
 
   /// How many times faster than `whisper-turbo`, which is `1.0`: seconds of audio over seconds of
@@ -647,7 +649,7 @@ mod tests {
 
     assert_eq!(best_for("no such code"), None);
     assert!(best_for("ru").is_some());
-    for &(_, lang, _) in scores::WER {
+    for &(lang, _) in scores::WER.iter().flat_map(|x| x.1) {
       let best = best_for(lang).unwrap().wer(lang).unwrap();
       assert!(MODELS.iter().filter_map(|m| m.wer(lang)).all(|x| best <= x), "{lang}");
     }
@@ -657,8 +659,10 @@ mod tests {
   #[test]
   fn score_tables_match() {
     let model = |name| MODELS.iter().find(|m| m.name == name);
-    for &(name, lang, _) in scores::WER {
-      assert!(model(name).is_some_and(|m| m.langs.contains(&lang)), "{name}: {lang}");
+    for &(name, langs) in scores::WER {
+      for &(lang, _) in langs {
+        assert!(model(name).is_some_and(|m| m.langs.contains(&lang)), "{name}: {lang}");
+      }
     }
 
     for &(name, _) in scores::SPEED {
