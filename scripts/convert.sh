@@ -15,7 +15,11 @@
 # replace that one's. CONVERTER runs a converter from another checkout of transcribe.cpp, such as
 # an unmerged pull request's (3rd/ is gitignored: check it out beside 3rd/transcribe.cpp).
 #
-#   PROFILE='{"base": "parakeet-tdt-0.6b-v3", "languages": ["uk", "en"], ...}' \
+# Pin the source to the commit the model card names. Parakeet's `--revision` pins only a
+# Transformers checkpoint (`"source_format": "hf_safetensors"`); NeMo loads a `.nemo` repository
+# at its latest commit, so pass a local `.nemo` downloaded at the commit instead:
+#
+#   PROFILE='{"base": "parakeet-tdt-0.6b-v3", "source_format": "hf_safetensors", ...}' \
 #     scripts/convert.sh parakeet ihnatov-yuri/parakeet-tdt-0.6b-v3-uk \
 #     out/parakeet-tdt-0.6b-v3-uk-Q8_0.gguf --revision <commit>
 #
