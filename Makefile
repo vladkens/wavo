@@ -23,6 +23,7 @@ test: test-unit
 
 test-all:
 	cargo test $(CARGO_FLAGS)
+	scripts/test-kernels.py
 
 build:
 	cargo build $(CARGO_FLAGS)
@@ -36,7 +37,7 @@ clean:
 	cargo clean
 
 # wavo
-.PHONY: test-unit models models-all samples samples-he reference fixtures compare bench-compare
+.PHONY: test-unit test-portable models models-all samples samples-he reference fixtures compare bench-compare
 
 ALL_MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc \
 	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 parakeet-tdt-0.6b-v3-he parakeet-ultra \
@@ -57,6 +58,10 @@ test-unit:
 	cargo test $(CARGO_FLAGS) --lib --bins
 	cargo test $(CARGO_FLAGS) --doc --no-default-features
 	cargo test $(CARGO_FLAGS) --doc --no-default-features --features hub
+
+# The smoke models on the portable kernels, for CI.
+test-portable:
+	WAVO_KERNELS=portable cargo test $(CARGO_FLAGS) --test models -- --exact $(SMOKE_TESTS)
 
 # All at once with our own `wavo pull`. A second run waits on the first one's locks.
 models: build

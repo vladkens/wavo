@@ -96,6 +96,9 @@ fn check_languages(name: &str, model: &wavo::Model) {
   assert_eq!(model.takes_language(), takes, "{name}: takes_language");
 }
 
+/// Kernels round differently, so a token's start may land one encoder frame away; text may not.
+const START_SLACK_MS: u32 = 80;
+
 fn check(name: &str, samples: &[&str]) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
   let model = wavo::Model::load_with(model_path(name), wavo::Backend::Gpu).unwrap();
@@ -131,7 +134,10 @@ fn check(name: &str, samples: &[&str]) {
       let trim = |s: String| s.trim_matches([' ', '\t', '\n', '\r']).to_string();
       got = joined.into_iter().map(|(text, start)| (trim(text), start)).collect();
     }
-    assert_eq!(got, tokens, "{name} {sample}: tokens");
+    let close =
+      |(a, b): (&(String, u32), &(String, u32))| a.0 == b.0 && a.1.abs_diff(b.1) <= START_SLACK_MS;
+    let same = got.len() == tokens.len() && got.iter().zip(&tokens).all(close);
+    assert!(same, "{name} {sample}: tokens\n got {got:?}\nwant {tokens:?}");
   }
 }
 

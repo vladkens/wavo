@@ -35,7 +35,7 @@ fn gemm64(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index)
       if (m0 + r < p.m) {
         v = a[(m0 + r) * p.k + k0 + e % 32u];
       }
-      at64[r * S + e % 32u] = v;
+      at64[r * S + e % 32u] = to_half(v);
     }
     // Each thread loads 8 weights: element e of the tile is W[n0 + e / 32][k0 + e % 32].
     for (var i = 0u; i < 2u; i++) {

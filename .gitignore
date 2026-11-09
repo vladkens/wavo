@@ -2,3 +2,4 @@ target/
 /3rd
 .claude/
 .DS_Store
+.cache/

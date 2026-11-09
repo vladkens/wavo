@@ -62,6 +62,7 @@ Serve options:
   --host ADDR                  the address to listen on (127.0.0.1)
   --port PORT                  the port to listen on (8000)
   --api-key KEY                require `Authorization: Bearer KEY` (or set WAVO_API_KEY)
+  --backend auto|gpu|ane       where the encoder runs, as in run
   -y, --yes                    download missing models without asking
   POST /v1/audio/transcriptions takes OpenAI's fields file, model, language and
   response_format (json, text, srt, vtt, verbose_json); GET /v1/models lists the downloaded

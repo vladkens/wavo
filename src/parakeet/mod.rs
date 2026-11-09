@@ -18,6 +18,7 @@ use crate::ane::Backend;
 use crate::conformer::{self, Attention};
 use crate::error::{Error, Result, bail};
 use crate::gguf::Gguf;
+use crate::gpu::half;
 use crate::sentencepiece::Tokenizer;
 use crate::{Token, Transcript};
 
@@ -33,6 +34,14 @@ pub struct Parakeet {
   special: Vec<bool>,
   /// kestrel length masking: the mel frames past `pcm.len() / HOP` are padding.
   kestrel: bool,
+}
+
+/// Encoder frames of `mel_frames` mel frames: three stride-2 convs over all but the last mel frame,
+/// which is padding (NeMo's `get_seq_len` counts `pcm.len() / HOP` frames). It differs from the
+/// convs' own output length at 8k + 1 mel frames, where that one frame more, past the end of the
+/// speech, would join the self-attention and can lose the transcript of all the others.
+fn encoder_frames(mel_frames: usize) -> usize {
+  half(half(half(mel_frames - 1)))
 }
 
 /// Checks the encoder's metadata and returns its config, subsampling channels and joint size.
@@ -119,7 +128,7 @@ impl Parakeet {
     if mel.is_empty() {
       return Ok(Transcript::default());
     }
-    // kestrel's valid length, pcm.len() / HOP, is all mel frames but the last.
+    // kestrel also masks the subsampling at its valid length, pcm.len() / HOP: all but the last.
     let valid = mel.len() / MELS - self.kestrel as usize;
     let (enc, width) = match &self.backend {
       Backend::Gpu(gpu) => gpu.1.run(&gpu.0, &mel, valid)?,
@@ -136,5 +145,17 @@ impl Parakeet {
     // Runs of spaces collapse to one, and the ends are trimmed.
     let text = text.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
     Ok(Transcript { text, tokens })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  #[test]
+  fn encoder_frames() {
+    let table =
+      [(3, 1), (8, 1), (9, 1), (10, 2), (16, 2), (17, 2), (18, 3), (505, 63), (1057, 132)];
+    for (mel_frames, want) in table {
+      assert_eq!(super::encoder_frames(mel_frames), want, "{mel_frames} mel frames");
+    }
   }
 }
