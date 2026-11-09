@@ -1,3 +1,25 @@
+## v0.5.0 – 2026-11-09
+
+### Features
+
+- Added `ModelInfo::wer`, `ModelInfo::speed` and `hub::best_for`: the error rate of every model on each of its languages, measured on FLEURS, and its speed relative to `whisper-turbo`, so apps can pick the best model for a language (#89, #93, #94)
+- Added installation with Homebrew on macOS and Linux: `brew install vladkens/tap/wavo` (#92)
+- Added `--backend auto|gpu|ane` to `wavo serve`, as in `wavo run` (#86)
+
+### Fixes
+
+- Fixed Parakeet losing text on some clip lengths: a 5s clip could come back empty and a 10s clip could lose its last words (#90)
+- Fixed GPUs without fast matrix kernels misreading some words, seen with the Hebrew Whisper model (#88, by @mjc)
+- Fixed two programs on one Mac, such as an installed app and a dev build, falling back to the GPU instead of the Neural Engine until a restart (#95)
+
+### Docs
+
+- Added a comparison of wavo with FluidAudio, transcribe.cpp, parakeet.cpp, parakeet-mlx and sherpa-onnx in speed and energy, and a table of the best model for each language (#86, #89)
+
+**Full Changelog**: https://github.com/vladkens/wavo/compare/v0.4.0...v0.5.0
+
+---
+
 ## v0.4.0 – 2026-11-04
 
 ### Breaking Changes
