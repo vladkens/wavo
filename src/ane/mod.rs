@@ -14,7 +14,8 @@
 //! <stem>.<id>.v<GRAPH>.trash                   a compiled model being deleted
 //! ```
 //!
-//! `<stem>` is the GGUF's file name without `.gguf` (dots as `_`) and `<id>` a hash of its content.
+//! `<stem>` is the GGUF's file name without `.gguf` (dots as `_`) and `<id>` a hash of its content;
+//! `<program>` is the executable's file name and a hash of its path.
 //! A prepare drops the other ids and versions of its stem, the older revisions of the model, so
 //! the cache holds one compiled model per model name. The first load, prepare or `prepared` of a
 //! process also starts a sweep in the background that deletes the compiled models whose GGUF was
@@ -161,16 +162,25 @@ fn compiled(path: &Path) -> Result<PathBuf> {
 fn marker(compiled: &Path) -> (PathBuf, &'static str) {
   static STAMP: OnceLock<(String, String)> = OnceLock::new();
   let (program, stamp) = STAMP.get_or_init(|| {
-    let exe = std::env::current_exe().ok();
-    let name = exe.as_deref().and_then(Path::file_stem).map(|s| s.to_string_lossy().into_owned());
-    let meta = exe.and_then(|p| fs::metadata(p).ok());
+    let exe = std::env::current_exe().ok().map(|p| fs::canonicalize(&p).unwrap_or(p));
+    let meta = exe.as_ref().and_then(|p| fs::metadata(p).ok());
     let time = meta.as_ref().and_then(|m| m.modified().ok());
     let time = time.and_then(|t| t.duration_since(UNIX_EPOCH).ok());
     let stamp = format!("{:?} {time:?} {}", meta.map(|m| m.len()), coreml::os_version());
-    (name.unwrap_or_default().chars().map(safe).collect(), stamp)
+    (exe.as_deref().map(program).unwrap_or_default(), stamp)
   });
   let marker = format!("{}.{program}.loaded", compiled.with_extension("").display());
   (PathBuf::from(marker), stamp)
+}
+
+/// `<file stem>-<hash>`, what names an executable's markers: the hash, FNV-1a over its full path,
+/// keeps apart programs of one name (an installed app and its dev build), whose stamps differ.
+fn program(exe: &Path) -> String {
+  let stem: String =
+    exe.file_stem().unwrap_or_default().to_string_lossy().chars().map(safe).collect();
+  let mut h = FNV;
+  fnv(&mut h, exe.as_os_str().as_encoded_bytes());
+  format!("{stem}-{:08x}", h as u32)
 }
 
 /// Whether this program has loaded `compiled` before: then a load takes about 0.1 s.
@@ -469,6 +479,15 @@ mod tests {
     }
 
     fs::remove_dir_all(dir).unwrap();
+  }
+
+  #[test]
+  fn markers_follow_the_executable() {
+    let app = program(Path::new("/Applications/Wavo.app/Contents/MacOS/wavo-app"));
+    let dev = program(Path::new("/src/target/Wavo Dev.app/Contents/MacOS/wavo-app"));
+    assert!(app.starts_with("wavo-app-") && app.len() == 17, "{app}");
+    assert_ne!(app, dev, "one name, another path");
+    assert_eq!(app, program(Path::new("/Applications/Wavo.app/Contents/MacOS/wavo-app")));
   }
 
   #[test]
