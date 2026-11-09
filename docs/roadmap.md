@@ -29,6 +29,9 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **20. Neural Engine backend** on macOS: Parakeet and GigaAM encoders through Core ML,
       1.8–2.5× faster than the GPU on 11 s of audio on an M2, a sixth of the energy (#37).
       [Plan](plans/completed/20261011-ane.md)
+- [x] **Spoken language:** `Model::detect_language`, `Transcript::language` and Bazarr's
+      `POST /detect-language`; for Parakeet v3 and ultra, the language of Parakeet's text
+      (whatlang) (#77).
 
 Open:
 
@@ -42,9 +45,6 @@ Open:
   plan's portable-encoder items. On Apple M5 and newer the GEMM runs on the Metal 4 tensor API:
   GigaAM, Parakeet and Whisper 1.5–1.9× faster there, ahead of transcribe.cpp on every model.
 - **Server, more:** a Docker image and the Wyoming protocol (Home Assistant).
-- **Bazarr's `POST /detect-language`**, called only for audio tracks without a language tag and
-  answered with `{"detected_language": "english", "language_code": "en"}`: needs `Transcript` to
-  report the language Whisper detects (a public API change); Parakeet can't detect one.
 - **Fast build.** The in-house FFT replaced `rustfft` (#15); left: wgpu features per target.
   [Plan](plans/20261010-fast-build.md)
 - **Other engines.** Measure wavo against the other ways to run the same models on a Mac, not

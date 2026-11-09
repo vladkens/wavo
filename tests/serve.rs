@@ -1,7 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! `wavo serve` end to end: started on a free port with a smoke model (`make models`), it must
 //! answer curl's uploads with the text `wavo run` prints, for the model it was started with and
-//! for one it loads on demand, and Bazarr's `POST /asr` with its subtitles and `GET /status`.
+//! for one it loads on demand, and Bazarr's `POST /asr` with its subtitles, `POST /detect-language`
+//! and `GET /status`.
 #![cfg(feature = "cli")]
 
 use std::io::{BufRead, BufReader};
@@ -69,8 +70,12 @@ fn transcribes_like_run() {
   let pcm = std::env::temp_dir().join(format!("wavo-serve-{}.pcm", std::process::id()));
   std::fs::write(&pcm, &wav[data..]).unwrap();
   let query = "task=transcribe&language=en&output=srt&encode=false&video_file=%2Fa.mkv";
-  let srt = send(&format!("/asr?{query}"), &[&format!("audio_file=@{}", pcm.display())]);
+  let audio_file = format!("audio_file=@{}", pcm.display());
+  let srt = send(&format!("/asr?{query}"), &[&audio_file]);
+  let detected = send("/detect-language?encode=false&video_file=%2Fa.mkv", &[&audio_file]);
   std::fs::remove_file(&pcm).unwrap();
+  let english = "{\"detected_language\": \"english\", \"language_code\": \"en\", \"confidence\": ";
+  assert!(detected.starts_with(english), "/detect-language: {detected}");
   let run =
     output(Command::new(WAVO).args(["run", "whisper-tiny", "--srt", "--language", "en"]).arg(&jfk));
   assert_eq!(srt, run, "/asr");
