@@ -16,8 +16,9 @@ Numbers a / b / c follow that clip order.
 
 ## How each family runs
 
-**GigaAM.** Load reads the GGUF header and streams each tensor from the file into weight buffers
-mapped on unified memory (no staging copy), on a discrete GPU into wgpu staging buffers whose
+**GigaAM.** Load reads the GGUF header and streams each tensor (on macOS from the file's memory
+map, read into the page cache at once with `F_RDADVISE`; elsewhere from the file) into weight
+buffers mapped on unified memory (no staging copy), on a discrete GPU into wgpu staging buffers whose
 copies are submitted every 16 MB while the rest loads; weights stay Q8_0/F16 on the GPU, Q8_0
 scales as f16. Apart from those copies, load runs nothing on the GPU but the fast-kernel probes,
 in one submission. Metal caches compiled pipelines across runs by shader source, so new shaders
@@ -133,7 +134,11 @@ wait on a thread); starting the device while the GGUF header is read (≤ 3 ms l
 (RTX 4060) the Vulkan instance takes ~110 ms of Parakeet V3's ~296 ms load and the device ~35:
 reading the weights into memory meanwhile would hide part of it, at the cost of a copy and the
 weights' size in RAM. Whisper's and Moonshine's first call still compiles the decoder pipelines
-(first − warm: whisper-tiny ~5, moonshine-tiny ~12 ms on the RTX 4060).
+(first − warm: whisper-tiny ~5, moonshine-tiny ~12 ms on the RTX 4060). The GGUF's memory map
+on Linux and Windows, which still read it. Weights served from the map without a copy, as
+transcribe.cpp does on Metal (an `MTLBuffer` over the map): load and footprint would lose the
+weights' copy (GigaAM 334 → ~90 MiB), but the kernels would have to read Q8_0 in the file's
+34-byte blocks and unpadded rows at 256-byte-aligned binding offsets.
 
 Memory: in one pass, peak footprint grows with length faster than the reference's (1 → 10 minutes
 +509 vs +185 MiB for GigaAM, +695 vs +376 MiB for Parakeet); `wavo run` splits by default. Over a
@@ -593,6 +598,27 @@ The reference's `load_ms` covers less than wavo's load: not its first GGUF parse
 runs before the timer) and no Metal pipelines, which ggml compiles in the first call. Compare load
 plus first call.
 
+- 2026-11-10, GPU loads on an Apple M5, the GGUF memory-mapped on macOS (`mmap` and
+  `F_RDADVISE` over the whole file through own `extern "C"` declarations, no crate) instead of
+  `read`s into a 278 KB `Vec` per piece. Fresh processes, `wavo bench -n 1`, medians of 5, A/B
+  interleaved; cold after `msync(MS_INVALIDATE)` of the file. Load warm GigaAM 55.1 → 31.6,
+  Parakeet V3 68.8 → 50.7, turbo 78.7 → 66.1 ms; cold 379 → 223, 476 → 207, 529 → 225 ms (cold
+  varies with the disk, 2–5 GB/s: GigaAM 104 ms in a run of cold loads alone). GigaAM's first call
+  43.1 → 32.6 ms in all three A/B runs, the others' unchanged; warm calls, footprint and the
+  fixtures unchanged. Kept. Per part (temporary probes, medians of 5):
+  - The map alone: warm as above, cold GigaAM 129–311 ms, its pages faulted in one by one.
+    `F_RDADVISE` reads the file within the call at the disk's pace (GigaAM 57–70 ms); with
+    `read`s it helps cold as much (GigaAM 124, turbo 245 ms) but not warm.
+  - On the Neural Engine, which reads only the decoders (2–19 MB), the whole-file read-ahead made
+    Parakeet V3's cold load 75 → 218 ms: its load keeps the reads.
+  - Weight buffers made as `MTLBuffer`s through wgpu-hal, skipping wgpu's zeroing of buffers
+    mapped at creation: no gain with reads, −1 to −4 ms on the map (turbo 67.2 → 62.9), and
+    `objc2-metal` would become a direct dependency. Rejected.
+  - transcribe.cpp v0.4.1 (weights mapped since its PR #195, its Metal buffers over the map, no
+    copy) on the same files: `load_ms` warm 29.3 / 41.2 / 41.9, cold 88 / 182 / 188 ms; load +
+    first call warm 81 / 147 / 623 ms (wavo 64 / 126 / 503), cold 140 / 291 / 771 (wavo 267 /
+    283 / 663). Footprint 90 / 221 / 180 MiB against wavo's 334 / 797 / 1064: wavo's weights are
+    a copy in its own layout. With `--no-mmap` its warm load was 78 / 170 / 218 ms.
 - 2026-10-12, all models, Windows RTX 4060 (discrete, so weights go through wgpu staging
   buffers): the first call ran the staging copies of all weights, which wgpu defers to the next
   submission (~22 ms for Parakeet V3's ~650 MB; after 20–60 s of GPU idle main's first call on

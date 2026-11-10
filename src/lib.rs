@@ -436,7 +436,9 @@ impl Model {
   /// The file is one of the Q8_0 GGUFs transcribe.cpp publishes (see the
   /// [model table](crate#models)); the family comes from its `general.architecture`. Parakeet and
   /// GigaAM load on the Neural Engine (in about 0.1 s) when this program has
-  /// [prepared](Model::prepare) the file on a Mac that has one, and on the GPU otherwise.
+  /// [prepared](Model::prepare) the file on a Mac that has one, and on the GPU otherwise. On macOS
+  /// the GPU's load memory-maps the file: replace a model file by renaming a new one over it, not
+  /// by rewriting it in place.
   ///
   /// # Errors
   ///
@@ -476,10 +478,11 @@ impl Model {
   /// ```
   pub fn load_with(path: impl AsRef<Path>, backend: Backend) -> Result<Self> {
     let path = path.as_ref();
-    let g = gguf::Gguf::open(path)?;
+    let mut g = gguf::Gguf::open(path)?;
     let languages = g.optional_array::<&str>("general.languages")?;
     let languages = languages.into_iter().map(str::to_string).collect();
-    let arch = g.get::<&str>("general.architecture")?;
+    let arch = g.get::<&str>("general.architecture")?.to_string();
+    let arch = arch.as_str();
     let ane = match backend {
       Backend::Gpu => None,
       Backend::NeuralEngine => Some(neural_engine(path, arch)?),
@@ -490,6 +493,11 @@ impl Model {
         .flatten()
         .and_then(|compiled| ane::load_compiled(&compiled).ok()),
     };
+
+    // The GPU takes every weight; the Neural Engine's program has the encoder's already.
+    if ane.is_none() {
+      g.map();
+    }
 
     let family = match arch {
       "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g, ane)?)),

@@ -1,5 +1,6 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! GGUF v3 reader: metadata from the header, F32/F16/Q8_0 tensors streamed from the file.
+//! GGUF v3 reader: metadata from the header, F32/F16/Q8_0 tensors streamed from the file, or on
+//! macOS from its memory map.
 
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -104,6 +105,8 @@ pub struct Gguf {
   meta: HashMap<String, (u32, usize)>,
   tensors: HashMap<String, Info>,
   data: usize,
+  /// The whole file, where it maps: tensors are copied from it instead of read.
+  map: Option<map::Map>,
 }
 
 /// A tensor in the file. `dims` are in ggml order: `dims[0]` is the contiguous axis, so a linear
@@ -166,7 +169,7 @@ impl Gguf {
     }
 
     let end = r.pos;
-    let mut g = Self { path, head, meta, tensors, data: 0 };
+    let mut g = Self { path, head, meta, tensors, data: 0, map: None };
     let align = match g.value("general.alignment") {
       Ok((_, Value::Int(a))) => a as usize,
       _ => 32,
@@ -238,6 +241,13 @@ impl Gguf {
     self.array(key)
   }
 
+  /// Maps the file, for a load that copies all the weights (the GPU's): tensors come from the map
+  /// then, and the whole file is read into the page cache at once rather than page by page as
+  /// they are copied. Where it doesn't map, they are read from the file.
+  pub fn map(&mut self) {
+    self.map = File::open(&self.path).ok().and_then(map::Map::new);
+  }
+
   /// The tensor `name`, which must have exactly the ggml-order `dims`.
   pub fn tensor(&self, name: &str, dims: &[usize]) -> Result<Tensor<'_>> {
     let Some(t) = self.tensors.get(name) else { bail!("missing tensor {name}") };
@@ -256,7 +266,8 @@ impl Tensor<'_> {
 
   /// Calls `f(offset, bytes)` on consecutive pieces of the tensor's data of up to `chunk` bytes.
   pub fn read(&self, chunk: usize, mut f: impl FnMut(usize, &[u8])) -> Result<()> {
-    if let Some(bytes) = self.gguf.head.get(self.start..self.start + self.size) {
+    let mapped = self.gguf.map.as_ref().map_or(&self.gguf.head[..], map::Map::bytes);
+    if let Some(bytes) = mapped.get(self.start..self.start + self.size) {
       bytes.chunks(chunk).enumerate().for_each(|(i, c)| f(i * chunk, c));
       return Ok(());
     }
@@ -297,7 +308,105 @@ impl Gguf {
       infos.insert(name.to_string(), Info { dims: dims.to_vec(), ty, offset: head.len() });
       head.extend_from_slice(data);
     }
-    Self { path: PathBuf::new(), head, meta: HashMap::new(), tensors: infos, data: 0 }
+    Self { path: PathBuf::new(), head, meta: HashMap::new(), tensors: infos, data: 0, map: None }
+  }
+}
+
+/// A read-only memory map of the whole file while a model loads, on macOS: the weights are copied
+/// from the page cache into their buffers, with no read into a buffer between, and a file the page
+/// cache lacks is read at the disk's pace (`F_RDADVISE`) instead of page by page (see
+/// docs/perf.md). Elsewhere `Map::new` gives `None` and tensors are read from the file.
+mod map {
+  #[cfg(target_os = "macos")]
+  pub use macos::Map;
+
+  #[cfg(not(target_os = "macos"))]
+  pub enum Map {}
+
+  #[cfg(not(target_os = "macos"))]
+  impl Map {
+    pub fn new(_: std::fs::File) -> Option<Self> {
+      None
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+      match *self {}
+    }
+  }
+
+  #[cfg(target_os = "macos")]
+  mod macos {
+    use std::ffi::c_void;
+    use std::fs::File;
+    use std::os::fd::AsRawFd;
+
+    unsafe extern "C" {
+      fn mmap(
+        addr: *mut c_void,
+        len: usize,
+        prot: i32,
+        flags: i32,
+        fd: i32,
+        off: i64,
+      ) -> *mut c_void;
+      fn munmap(addr: *mut c_void, len: usize) -> i32;
+      fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    }
+
+    const PROT_READ: i32 = 1;
+    const MAP_PRIVATE: i32 = 2;
+    const F_RDADVISE: i32 = 44;
+
+    /// `struct radvisory` of `<sys/fcntl.h>`.
+    #[repr(C)]
+    struct Radvisory {
+      offset: i64,
+      count: i32,
+    }
+
+    pub struct Map {
+      ptr: *mut c_void,
+      len: usize,
+    }
+
+    // SAFETY: the mapping is read-only and lives until `drop`.
+    unsafe impl Send for Map {}
+    unsafe impl Sync for Map {}
+
+    impl Map {
+      /// The file mapped and read ahead, or `None` when it doesn't map: tensors are read then.
+      pub fn new(file: File) -> Option<Self> {
+        let (fd, len) = (file.as_raw_fd(), file.metadata().ok()?.len() as usize);
+        // SAFETY: a new private read-only mapping, which aliases nothing of ours.
+        let ptr = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ, MAP_PRIVATE, fd, 0) };
+        if ptr as isize == -1 {
+          return None;
+        }
+
+        // A hint only, in pieces of at most 1 GiB (`count` is an `int`): when it fails, the pages
+        // are read as they are first touched.
+        for offset in (0..len).step_by(1 << 30) {
+          let count = (len - offset).min(1 << 30) as i32;
+          let advice = Radvisory { offset: offset as i64, count };
+          // SAFETY: `fcntl` reads `advice` during the call only.
+          unsafe { fcntl(fd, F_RDADVISE, &advice as *const Radvisory) };
+        }
+        Some(Self { ptr, len })
+      }
+
+      pub fn bytes(&self) -> &[u8] {
+        // SAFETY: mapped for `len` bytes until `drop`. Model files don't change while they
+        // load: one truncated meanwhile would fault (SIGBUS) where a read would fail.
+        unsafe { std::slice::from_raw_parts(self.ptr.cast(), self.len) }
+      }
+    }
+
+    impl Drop for Map {
+      fn drop(&mut self) {
+        // SAFETY: mapped by `new`; no slice of it outlives `self`.
+        unsafe { munmap(self.ptr, self.len) };
+      }
+    }
   }
 }
 
@@ -480,6 +589,28 @@ mod tests {
     let mut pieces = Vec::new();
     q.read(16, |offset, piece| pieces.push((offset, piece.len()))).unwrap();
     assert_eq!(pieces, [(0, 16), (16, 16), (32, 2)]);
+  }
+
+  /// From a file, as models load on the GPU: through its memory map on macOS.
+  #[test]
+  fn reads_tensors_from_files() {
+    let path = std::env::temp_dir().join(format!("wavo-gguf-{}.gguf", std::process::id()));
+    std::fs::write(&path, sample()).unwrap();
+    let mut g = Gguf::open(&path).unwrap();
+    g.map();
+    assert_eq!(g.map.is_some(), cfg!(target_os = "macos"));
+    assert_eq!(g.get::<u32>("a.n").unwrap(), 7);
+    assert_eq!(g.tensor("w", &[2, 1]).unwrap().to_f32().unwrap(), [1.5, -2.0]);
+    let mut pieces = Vec::new();
+    let q = g.tensor("q", &[32]).unwrap();
+    q.read(16, |offset, piece| pieces.push((offset, piece.to_vec()))).unwrap();
+    assert_eq!(
+      pieces.iter().map(|(o, p)| (*o, p.len())).collect::<Vec<_>>(),
+      [(0, 16), (16, 16), (32, 2)]
+    );
+    assert_eq!(pieces[0].1[..2], f16::from_f32(0.5).to_le_bytes());
+    drop(g);
+    std::fs::remove_file(&path).unwrap();
   }
 
   #[test]
