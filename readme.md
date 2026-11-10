@@ -89,7 +89,7 @@ wavo run gigaam-v3 talk.mp3           # or with another model
 wavo run whisper-turbo talk.mp3 -y    # download a missing model without asking
 wavo pull parakeet-ultra              # download a model
 wavo pull gigaam-v3 whisper-turbo     # or several at once
-wavo run talk.wav --json              # text and every token with its start time
+wavo run talk.wav --json              # text, its language and every token with its start time
 wavo run talk.wav --srt > talk.srt    # subtitles
 wavo run whisper-turbo talk.mp3 --language he  # Whisper: set the language, not detect it
 wavo list                             # downloaded models
@@ -119,7 +119,7 @@ wavo serve --host 0.0.0.0 --api-key KEY          # on the network, with a key
 curl -F file=@talk.mp3 -F model=whisper-1 http://127.0.0.1:8000/v1/audio/transcriptions
 ```
 
-It also works as [Bazarr](https://www.bazarr.media)'s Whisper provider, for subtitles. `wavo --help` lists the endpoints and options.
+It also works as [Bazarr](https://www.bazarr.media)'s Whisper provider, for subtitles, and names the language of an untagged audio track. `wavo --help` lists the endpoints and options.
 
 </details>
 

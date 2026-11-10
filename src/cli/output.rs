@@ -12,9 +12,12 @@ const MAX_CUE: usize = 80;
 /// A cue shows at most this long after its last token starts.
 const LINGER_MS: u32 = 1500;
 
-/// `{"text": ..., "tokens": [{"id", "piece", "start_ms"}, ...]}`, one token per line.
+/// `{"text": ..., "language": ..., "tokens": [{"id", "piece", "start_ms"}, ...]}`, one token per
+/// line; `language` only when the model says it.
 pub fn json(t: &Transcript) -> String {
-  let mut out = format!("{{\"text\": {}, \"tokens\": [", quote(&t.text));
+  let language = t.language.as_deref().map(|l| format!("\"language\": {}, ", quote(l)));
+  let mut out =
+    format!("{{\"text\": {}, {}\"tokens\": [", quote(&t.text), language.unwrap_or_default());
   for (i, token) in t.tokens.iter().enumerate() {
     let (sep, id, piece, start) =
       (if i == 0 { "" } else { "," }, token.id, quote(&token.piece), token.start_ms);

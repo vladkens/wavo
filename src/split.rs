@@ -166,6 +166,7 @@ mod tests {
     let part = |text: &str, ids: &[u32]| Transcript {
       text: text.into(),
       tokens: ids.iter().map(|&id| crate::Token { id, ..Default::default() }).collect(),
+      language: None,
     };
     let mut t = Transcript::default();
     for p in [part("a b", &[1, 2]), part("", &[]), part("c", &[3])] {

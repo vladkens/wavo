@@ -94,6 +94,37 @@ fn check_languages(name: &str, model: &wavo::Model) {
   options.language = model.languages().first().cloned();
   let takes = model.transcribe_with(&[], &options).is_ok();
   assert_eq!(model.takes_language(), takes, "{name}: takes_language");
+  // `detect_language`: a ranking for multilingual Whisper, the sole language of a model of one,
+  // nothing for Parakeet v3; the transcript names the same language.
+  let ranked = model.detect_language(&[]).unwrap();
+  let language = model.transcribe(&[]).unwrap().language;
+  match codes {
+    [only] => {
+      assert_eq!(ranked.len(), 1, "{name}: detect_language");
+      assert_eq!((ranked[0].code.as_str(), ranked[0].probability), (only.as_str(), 1.0));
+      assert_eq!(language.as_deref(), Some(only.as_str()), "{name}: language");
+    }
+    _ if model.takes_language() => {
+      let sum: f32 = ranked.iter().map(|l| l.probability).sum();
+      assert!(ranked.len() == codes.len() && (sum - 1.0).abs() < 1e-3, "{name}: sum {sum}");
+    }
+    _ => assert!(ranked.is_empty() && language.is_none(), "{name}: {ranked:?}, {language:?}"),
+  }
+}
+
+/// The language `detect_language` ranks first on each sample is the expected one, and the one
+/// the transcript is in.
+fn detect(name: &str, expected: &[(&str, &str)]) {
+  let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
+  let model = wavo::Model::load_with(model_path(name), wavo::Backend::Gpu).unwrap();
+  for &(sample, code) in expected {
+    let pcm = read_sample(sample);
+    let ranked = model.detect_language(&pcm).unwrap();
+    assert_eq!(ranked.len(), model.languages().len(), "{name} {sample}");
+    assert_eq!(ranked[0].code, code, "{name} {sample}: {:?}", &ranked[..2]);
+    let language = model.transcribe(&pcm).unwrap().language;
+    assert_eq!(language.as_deref(), Some(code), "{name} {sample}: transcript");
+  }
 }
 
 /// Kernels round differently, so a token's start may land one encoder frame away; text may not.
@@ -464,6 +495,11 @@ fn whisper_tiny() {
   const SAMPLES: &[&str] =
     &["jfk", "zh-short", "ru-long", "jobs-silence", "uk-short+lang=uk", "ru-long+lang=uk"];
   check("whisper-tiny", SAMPLES);
+  // ru-long is past 30 s: two windows.
+  detect(
+    "whisper-tiny",
+    &[("jfk", "en"), ("zh-short", "zh"), ("ru-long", "ru"), ("uk-short", "ru")],
+  );
 }
 
 #[test]
