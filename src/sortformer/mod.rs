@@ -10,14 +10,14 @@ mod encoder;
 mod stream;
 
 use encoder::Encoder;
-use stream::{Params, State};
+use stream::{CONTEXT, Params, State};
 
 use crate::conformer::{self, Attention};
 use crate::error::{Result, bail};
 use crate::gguf::Gguf;
 use crate::gpu::Gpu;
 use crate::parakeet::frontend::{Frontend, HOP, MELS, N_FFT, PRE_EMPHASIS, WINDOW};
-use crate::{Device, Turn};
+use crate::{Device, Turn, transformer};
 
 /// Mel frames per output frame.
 const SUBSAMPLING: usize = 8;
@@ -63,8 +63,6 @@ impl Sortformer {
     let speakers = u("max_speakers")?;
     let params = Params {
       chunk: u("stream.chunk_len")?,
-      left: 1,
-      right: 1,
       fifo: u("stream.fifo_len")?,
       cache: u("stream.spkcache_len")?,
       period: u("stream.spkcache_update_period")?,
@@ -76,11 +74,14 @@ impl Sortformer {
 
     let enc = conformer::Config::load(g, "sortformer", Attention::Relative, true)?;
     let ch = u("encoder.subsampling_channels")?;
-    let tf = encoder::Config {
+    let tf = transformer::Config {
       layers: u("transformer.n_layers")?,
       d: u("transformer.d_model")?,
       heads: u("transformer.n_heads")?,
       d_ff: u("transformer.d_ff")?,
+      bias: true,
+      rot: 0,
+      gated: false,
     };
     let gpu = Gpu::new(true)?;
     let encoder = Encoder::new(&gpu, g, enc, ch, tf)?;
@@ -89,10 +90,6 @@ impl Sortformer {
 
   pub fn device(&self) -> &Device {
     self.gpu.info()
-  }
-
-  pub fn speakers(&self) -> usize {
-    self.speakers
   }
 
   /// The turns of 16 kHz PCM, by start then speaker.
@@ -109,22 +106,24 @@ impl Sortformer {
       return Ok(Vec::new());
     }
 
-    let mut mel = self.frontend.log_mel(pcm, frames);
-    mel[pcm.len() / HOP * MELS..].fill(0.0);
-
     let (p, d, sub) = (self.params, self.encoder.width(), SUBSAMPLING);
-    let window = p.left + p.chunk + p.right;
+    let window = 2 * CONTEXT + p.chunk;
     self.encoder.reserve(&self.gpu, window.max(p.cache + p.fifo + window));
     let scale = (d as f32).sqrt();
     let mut state = State::new(d, self.speakers);
     let (mut start, mut end) = (0, 0);
     while end < frames {
-      // A chunk's mel frames with up to `left` and `right` output frames of context.
-      let left = (p.left * sub).min(start);
+      // A chunk's mel frames with up to CONTEXT output frames before and after. The frames from
+      // pcm.len() / HOP on are zero.
+      let left = (CONTEXT * sub).min(start);
       end = (start + p.chunk * sub).min(frames);
-      let right = (p.right * sub).min(frames - end);
-      let embs =
-        self.encoder.embed(&self.gpu, &mel[(start - left) * MELS..(end + right) * MELS])?;
+      let right = (CONTEXT * sub).min(frames - end);
+      let range = start - left..end + right;
+      let mut mel = self.frontend.log_mel(pcm, range.clone());
+      let valid = (pcm.len() / HOP).clamp(range.start, range.end) - range.start;
+      mel[valid * MELS..].fill(0.0);
+
+      let embs = self.encoder.embed(&self.gpu, &mel)?;
       let x: Vec<f32> = state.context().chain(&embs).map(|v| v * scale).collect();
       let logits = self.encoder.predict(&self.gpu, &x, self.speakers)?;
       let preds: Vec<f32> = logits.iter().map(|&z| 1.0 / (1.0 + (-z).exp())).collect();

@@ -1075,13 +1075,12 @@ impl Diarizer {
 
   /// Who speaks when in 16 kHz mono PCM samples in [-1, 1], of any length: the [`Turn`]s of each
   /// speaker, sorted by start, then speaker. Speakers are numbered from 0 in the order they first
-  /// talk; past the model's [`speakers`](Self::speakers), voices share numbers. Turns start and end
+  /// talk; past the model's 4 (`sortformer`), voices share numbers. Turns start and end
   /// on the model's 80 ms frames, and those of two speakers overlap where both talk. Silence,
   /// noise and audio of 10 ms or less give none.
   ///
   /// The model runs over the audio in chunks of 15 s with a cache of each speaker's voice, so its
-  /// time grows linearly with the audio and its GPU memory stays that of one chunk: an hour takes
-  /// about 22 s on an Apple M2.
+  /// time grows linearly with the audio and its memory beyond `pcm` stays that of one chunk.
   ///
   /// # Errors
   ///
@@ -1099,11 +1098,6 @@ impl Diarizer {
   /// ```
   pub fn diarize(&self, pcm: &[f32]) -> Result<Vec<Turn>> {
     self.0.diarize(pcm)
-  }
-
-  /// The most speakers the model tells apart: 4 for `sortformer`.
-  pub fn speakers(&self) -> usize {
-    self.0.speakers()
   }
 
   /// The GPU the model runs on, as [`Model::device`] reports it.

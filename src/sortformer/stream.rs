@@ -17,15 +17,14 @@ const STRONG_BOOST_RATE: f32 = 0.75;
 const WEAK_BOOST_RATE: f32 = 1.5;
 const MIN_POS_SCORES_RATE: f32 = 0.5;
 
-/// The chunking, in 80 ms frames: the GGUF's `stt.sortformer.stream.*` with one frame of context
-/// on each side.
+/// Frames of context before and after a chunk.
+pub const CONTEXT: usize = 1;
+
+/// The chunking, in 80 ms frames: the GGUF's `stt.sortformer.stream.*`.
 #[derive(Clone, Copy)]
 pub struct Params {
   /// Frames per chunk.
   pub chunk: usize,
-  /// Frames of context before and after a chunk.
-  pub left: usize,
-  pub right: usize,
   /// Frames of the FIFO and of the speaker cache.
   pub fifo: usize,
   pub cache: usize,
@@ -253,7 +252,7 @@ mod tests {
 
   #[test]
   fn fifo_cache_and_compression() {
-    let p = Params { chunk: 4, left: 0, right: 0, fifo: 2, cache: 5, period: 4 };
+    let p = Params { chunk: 4, fifo: 2, cache: 5, period: 4 };
     let mut st = State::new(1, 1);
     // Frame i has embedding i; the speaker talks in even frames.
     let preds = |frames: std::ops::Range<usize>| -> Vec<f32> {

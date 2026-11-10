@@ -11,27 +11,19 @@ use wavo::{Token, Transcript, Turn, Utterance};
 const MAX_CUE: usize = 80;
 /// A cue shows at most this long after its last token starts.
 const LINGER_MS: u32 = 1500;
-/// The longest line of a dialogue cue, in characters (Netflix's).
-const DIALOGUE_LINE: usize = 42;
 
 /// `{"text": ..., "language": ..., "tokens": [{"id", "piece", "start_ms"}, ...]}`, one token per
-/// line; `language` only when the model says it. With `utterances` each token has its `speaker`
-/// too, and `"utterances": [{"speaker", "start_ms", "end_ms", "text"}, ...]` follow; speakers
-/// count from 1, `null` when unknown.
+/// line; `language` only when the model says it. With `utterances`,
+/// `"utterances": [{"speaker", "start_ms", "end_ms", "text"}, ...]` follow; speakers count from 1,
+/// `null` when unknown.
 pub fn json(t: &Transcript, utterances: Option<&[Utterance]>) -> String {
-  let speaker = |i: usize| {
-    let u = utterances?.iter().find(|u| u.tokens.contains(&i));
-    Some(u.and_then(|u| u.speaker).map_or("null".into(), |s| (s + 1).to_string()))
-  };
   let language = t.language.as_deref().map(|l| format!("\"language\": {}, ", quote(l)));
   let mut out =
     format!("{{\"text\": {}, {}\"tokens\": [", quote(&t.text), language.unwrap_or_default());
   for (i, token) in t.tokens.iter().enumerate() {
     let (sep, id, piece, start) =
       (if i == 0 { "" } else { "," }, token.id, quote(&token.piece), token.start_ms);
-    let speaker = speaker(i).map(|s| format!(", \"speaker\": {s}")).unwrap_or_default();
-    write!(out, "{sep}\n  {{\"id\": {id}, \"piece\": {piece}, \"start_ms\": {start}{speaker}}}")
-      .unwrap();
+    write!(out, "{sep}\n  {{\"id\": {id}, \"piece\": {piece}, \"start_ms\": {start}}}").unwrap();
   }
 
   out += if t.tokens.is_empty() { "]" } else { "\n]" };
@@ -61,43 +53,29 @@ fn label(speaker: Option<u32>) -> String {
   speaker.map_or("Speaker ?".into(), |s| format!("Speaker {}", s + 1))
 }
 
-/// A diarization model's turns: `00:00:00.320 --> 00:00:02.400  Speaker 1` per line, as JSON
-/// `{"turns": [{"speaker", "start_ms", "end_ms"}, ...]}` (speakers from 1), or as subtitles.
-pub fn turns(turns: &[Turn], format: Option<&str>) -> String {
-  match format {
-    Some("--json") => {
-      let turns: Vec<String> = (turns.iter())
-        .map(|t| {
-          let (s, a, b) = (t.speaker + 1, t.start_ms, t.end_ms);
-          format!("\n  {{\"speaker\": {s}, \"start_ms\": {a}, \"end_ms\": {b}}}")
-        })
-        .collect();
-      let end = if turns.is_empty() { "" } else { "\n" };
-      format!("{{\"turns\": [{}{end}]}}\n", turns.join(","))
-    }
-    Some(_) => {
-      let cue = |t: &Turn| {
-        let (start, end, text) = (t.start_ms, t.end_ms, label(Some(t.speaker)));
-        Cue { start, end, text, tokens: 0..0, words: Vec::new() }
-      };
-      srt(&turns.iter().map(cue).collect::<Vec<_>>())
-    }
-    None => (turns.iter())
-      .map(|t| {
-        format!(
-          "{} --> {}  {}\n",
-          time(t.start_ms, '.'),
-          time(t.end_ms, '.'),
-          label(Some(t.speaker))
-        )
-      })
-      .collect(),
+/// A diarization model's turns: `00:00:00.320 --> 00:00:02.400  Speaker 1` per line, or with
+/// `json` `{"turns": [{"speaker", "start_ms", "end_ms"}, ...]}` (speakers from 1).
+pub fn turns(turns: &[Turn], json: bool) -> String {
+  if !json {
+    let line = |t: &Turn| {
+      let (start, end) = (time(t.start_ms, '.'), time(t.end_ms, '.'));
+      format!("{start} --> {end}  {}\n", label(Some(t.speaker)))
+    };
+    return turns.iter().map(line).collect();
   }
+
+  let turns: Vec<String> = (turns.iter())
+    .map(|t| {
+      let (s, a, b) = (t.speaker + 1, t.start_ms, t.end_ms);
+      format!("\n  {{\"speaker\": {s}, \"start_ms\": {a}, \"end_ms\": {b}}}")
+    })
+    .collect();
+  let end = if turns.is_empty() { "" } else { "\n" };
+  format!("{{\"turns\": [{}{end}]}}\n", turns.join(","))
 }
 
 /// The cues of each utterance on its own, so that none spans two speakers, shown at most until
-/// the next utterance starts. Two short lines of different speakers in a row, the first shown
-/// until the second starts, share a cue as a dialogue: `- line one` / `- line two`.
+/// the next utterance starts.
 pub fn speaker_cues(
   tokens: &[Token],
   starts: &[usize],
@@ -105,8 +83,7 @@ pub fn speaker_cues(
   audio_ms: u32,
   timed: bool,
 ) -> Vec<Cue> {
-  // Cues and the speaker of each.
-  let mut all: Vec<(Cue, Option<u32>)> = Vec::new();
+  let mut out = Vec::new();
   for (i, u) in utterances.iter().enumerate() {
     let r = u.tokens.clone();
     let end = utterances.get(i + 1).map_or(audio_ms, |n| n.start_ms);
@@ -114,23 +91,8 @@ pub fn speaker_cues(
       starts.iter().filter(|&&s| r.contains(&s)).map(|s| s - r.start).collect();
     for mut cue in cues(&tokens[r.clone()], &within, end, timed) {
       cue.tokens = cue.tokens.start + r.start..cue.tokens.end + r.start;
-      all.push((cue, u.speaker));
+      out.push(cue);
     }
-  }
-
-  let mut out: Vec<Cue> = Vec::new();
-  let mut cues = all.into_iter().peekable();
-  while let Some((mut cue, speaker)) = cues.next() {
-    let short = |c: &Cue| c.text.chars().count() <= DIALOGUE_LINE;
-    if let Some((next, _)) =
-      cues.next_if(|(n, s)| *s != speaker && short(n) && short(&cue) && cue.end == n.start)
-    {
-      cue.text = format!("- {}\n- {}", cue.text, next.text);
-      (cue.end, cue.tokens.end) = (next.end, next.tokens.end);
-      cue.words.extend(next.words);
-    }
-
-    out.push(cue);
   }
 
   out
@@ -463,16 +425,14 @@ mod tests {
     (t.text, t.tokens) = ("Hi. Yes. And then".into(), tokens(&pieces));
     let u = t.utterances(&[turn(0, 0, 800), turn(1, 900, 1500), turn(0, 3900, 5000)]);
     assert_eq!(by_speaker(&u), "Speaker 1: Hi.\nSpeaker 2: Yes.\nSpeaker 1: And then\n");
-    // A cue per speaker; the first two, short and back to back, as a dialogue.
+    // No cue spans two speakers; each shows until the next speaker's starts.
     assert_eq!(
       srt(&speaker_cues(&t.tokens, &[], &u, 6000, true)),
-      "1\n00:00:00,000 --> 00:00:02,500\n- Hi.\n- Yes.\n\n2\n00:00:04,000 --> 00:00:05,700\nAnd then\n\n"
+      "1\n00:00:00,000 --> 00:00:01,000\nHi.\n\n2\n00:00:01,000 --> 00:00:02,500\nYes.\n\n\
+       3\n00:00:04,000 --> 00:00:05,700\nAnd then\n\n"
     );
     let rendered = json(&t, Some(&u));
-    assert!(
-      rendered.contains("\"piece\": \"▁Yes.\", \"start_ms\": 1000, \"speaker\": 2}"),
-      "{rendered}"
-    );
+    assert!(rendered.contains("\"piece\": \"▁Yes.\", \"start_ms\": 1000},"), "{rendered}");
     assert!(
       rendered.ends_with(
         "\"utterances\": [\n  {\"speaker\": 1, \"start_ms\": 0, \"end_ms\": 1000, \"text\": \"Hi.\"},\
@@ -491,18 +451,15 @@ mod tests {
   fn turns_alone() {
     let t = [turn(0, 320, 2400), turn(1, 2000, 3_600_080)];
     assert_eq!(
-      turns(&t, None),
+      turns(&t, false),
       "00:00:00.320 --> 00:00:02.400  Speaker 1\n00:00:02.000 --> 01:00:00.080  Speaker 2\n"
     );
     assert_eq!(
-      turns(&t, Some("--json")),
+      turns(&t, true),
       "{\"turns\": [\n  {\"speaker\": 1, \"start_ms\": 320, \"end_ms\": 2400},\
        \n  {\"speaker\": 2, \"start_ms\": 2000, \"end_ms\": 3600080}\n]}\n"
     );
-    assert_eq!(turns(&[], Some("--json")), "{\"turns\": []}\n");
-    assert!(
-      turns(&t, Some("--srt")).starts_with("1\n00:00:00,320 --> 00:00:02,400\nSpeaker 1\n\n2\n")
-    );
+    assert_eq!(turns(&[], true), "{\"turns\": []}\n");
   }
 
   /// Cue texts give each fixture's transcript text, up to whitespace: Chinese segments join

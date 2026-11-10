@@ -107,7 +107,7 @@ wavo run talk.wav --device radeon     # another GPU, by part of its name or its 
 - Long recordings are split at pauses by themselves. `--segment SECS` sets the piece length.
 - `wavo run` asks before downloading a model. `-y` skips the question.
 - Whisper detects the language. `--language CODE` sets it.
-- `--diarize` tells up to 4 speakers apart with NVIDIA's Sortformer (0.14GB), downloaded like any model. Speakers are numbered in the order they first talk. In subtitles a cue holds one speaker, or two short lines of a dialogue.
+- `--diarize` tells up to 4 speakers apart with NVIDIA's Sortformer (0.14GB), downloaded like any model. Speakers are numbered in the order they first talk. In subtitles no cue spans two speakers.
 - Models live in the Hugging Face cache, shared with `hf download`.
 - On a Mac, `wavo pull` prepares Parakeet and GigaAM for the Neural Engine, once, in 15–30s.
 - `--backend gpu` stays on the GPU even where the Neural Engine is ready.

@@ -27,7 +27,7 @@ doesn't port: out of scope until it has a reference.
 
 ## API (for the person's review in the PR)
 
-- `wavo::Diarizer::load(path)`, `diarize(&pcm) -> Vec<Turn>`, `speakers()`, `device()`.
+- `wavo::Diarizer::load(path)`, `diarize(&pcm) -> Vec<Turn>`, `device()`.
 - `wavo::Turn { speaker, start_ms, end_ms }`, sorted by start.
 - `Transcript::utterances(&turns) -> Vec<Utterance { speaker, start_ms, end_ms, text, tokens }>`:
   each word goes to the speaker whose turns overlap it most, consecutive words of a speaker join.
@@ -35,12 +35,12 @@ doesn't port: out of scope until it has a reference.
 
 ## CLI
 
-- `wavo run [MODEL] AUDIO --diarize`: text as `Speaker 1: …` lines, `--json` with a speaker per
-  token and the utterances; the diarizer is `sortformer`, downloaded as `run` downloads a model.
+- `wavo run [MODEL] AUDIO --diarize`: text as `Speaker 1: …` lines, `--json` with the
+  utterances; the diarizer is `sortformer`, downloaded as `run` downloads a model. Not with
+  Moonshine, which has no token times.
 - `--srt` with `--diarize`: speakers as cue boundaries, not labels (as Subtitle Edit does with
-  Sortformer): no cue spans two speakers, and two short lines of different speakers back to back
-  share a cue as a dialogue, `- line one` / `- line two`. Labels in cues would be opt-in.
-- `wavo run sortformer AUDIO`: the turns alone.
+  Sortformer): no cue spans two speakers.
+- `wavo run sortformer AUDIO`: the turns alone, as text or `--json`.
 - `wavo serve` stays out (OpenAI's `diarized_json` is a follow-up).
 
 ## Checklist

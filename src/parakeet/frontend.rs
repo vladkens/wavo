@@ -55,7 +55,7 @@ impl Frontend {
       return Vec::new();
     }
 
-    let mut mel = self.log_mel(pcm, frames);
+    let mut mel = self.log_mel(pcm, 0..frames);
     // Unbiased statistics over all frames but the last.
     let n = frames - 1;
     for m in 0..MELS {
@@ -71,18 +71,23 @@ impl Frontend {
     mel
   }
 
-  /// The log-mel of the first `frames` frames, time-major `[frames][MELS]`, up to
-  /// `pcm.len() / 160 + 1` of them; `pcm` is not empty.
-  pub fn log_mel(&self, pcm: &[f32], frames: usize) -> Vec<f32> {
-    let mut padded = vec![0f64; pcm.len() + N_FFT];
-    padded[N_FFT / 2] = pcm[0] as f64;
-    for (y, x) in padded[N_FFT / 2 + 1..].iter_mut().zip(pcm.windows(2)) {
-      *y = x[1] as f64 - PRE_EMPHASIS as f64 * x[0] as f64;
-    }
-    let mut mel = Vec::with_capacity(frames * MELS);
+  /// The log-mel of `frames`, time-major `[frames.len()][MELS]`: frames of the whole `pcm`, up to
+  /// `pcm.len() / 160 + 1` of them, computed from only the samples they cover.
+  pub fn log_mel(&self, pcm: &[f32], frames: Range<usize>) -> Vec<f32> {
+    // Samples `pad - N_FFT / 2..` of the pre-emphasized audio with N_FFT / 2 zeros on each side.
+    let pad = frames.start * HOP;
+    let len = frames.len().saturating_sub(1) * HOP + N_FFT;
+    let padded: Vec<f64> = (pad..pad + len)
+      .map(|j| match j.checked_sub(N_FFT / 2) {
+        Some(0) => pcm[0] as f64,
+        Some(i) if i < pcm.len() => pcm[i] as f64 - PRE_EMPHASIS as f64 * pcm[i - 1] as f64,
+        _ => 0.0,
+      })
+      .collect();
+    let mut mel = Vec::with_capacity(frames.len() * MELS);
     let (mut frame, mut buf) = ([0f64; N_FFT], [0f64; 4 * N_FFT]);
     let mut power = [0f32; BINS];
-    for t in 0..frames {
+    for t in 0..frames.len() {
       for ((x, s), w) in frame.iter_mut().zip(&padded[t * HOP..]).zip(&self.window) {
         *x = s * w;
       }
@@ -141,5 +146,17 @@ mod tests {
     let mel = frontend.compute(&[0.1; 320]);
     assert_eq!(mel.len(), 3 * super::MELS);
     assert!(mel.iter().all(|x| x.is_finite()));
+  }
+
+  /// A range of frames is the same as those frames of the whole audio, at the edges too.
+  #[test]
+  fn frame_ranges() {
+    let frontend = super::Frontend::new();
+    let pcm: Vec<f32> = (0..16_000).map(|i| (i as f32 * 0.01).sin() * 0.5).collect();
+    let all = frontend.log_mel(&pcm, 0..101);
+    for r in [0..1, 0..7, 3..40, 95..101, 100..101] {
+      let m = super::MELS;
+      assert_eq!(frontend.log_mel(&pcm, r.clone()), all[r.start * m..r.end * m], "{r:?}");
+    }
   }
 }

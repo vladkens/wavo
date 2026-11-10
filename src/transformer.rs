@@ -57,7 +57,10 @@ fn stacked(
 
 /// Loads `load(i)` for each of `n` layers on its own thread: repacking and uploading dominate load
 /// time.
-fn parallel<T: Send>(n: usize, load: impl Fn(usize) -> Result<T> + Sync) -> Result<Vec<T>> {
+pub(crate) fn parallel<T: Send>(
+  n: usize,
+  load: impl Fn(usize) -> Result<T> + Sync,
+) -> Result<Vec<T>> {
   std::thread::scope(|s| {
     let load = &load;
     let threads: Vec<_> = (0..n).map(|i| s.spawn(move || load(i))).collect();

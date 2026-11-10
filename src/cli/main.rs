@@ -57,8 +57,9 @@ Run options:
   --language CODE              the language of the speech (en, he, ...) for multilingual
                                Whisper models, instead of detecting it
   --diarize                    tell who speaks with the sortformer model (downloaded as
-                               MODEL is): Speaker 1: ... lines, a speaker per token and
-                               the utterances in --json, a cue per speaker in --srt
+                               MODEL is): Speaker 1: ... lines, the utterances in --json,
+                               cues split where the speaker changes in --srt; not with
+                               Moonshine, which doesn't time its words
   -y, --yes                    download a missing model without asking
   --backend auto|gpu|ane       where the encoder runs: auto (the default) takes the Neural
                                Engine for Parakeet and GigaAM once `wavo pull` prepared
@@ -85,7 +86,8 @@ Serve options:
   whisper-asr-webservice does, for Bazarr's subtitles, with the first model.
 
 MODEL is a name below, its full name or a path to a .gguf file (for serve, a name); for
-sortformer, wavo run prints who speaks when, up to 4 speakers numbered from 1. AUDIO is
+sortformer, wavo run prints who speaks when (as text or --json), up to 4 speakers numbered
+from 1. AUDIO is
 wav, mp3, m4a, flac or ogg (Vorbis), downmixed to mono and resampled to 16 kHz.
 Models live in the Hugging Face cache (HF_HUB_CACHE or HF_HOME), shared with the hf CLI;
 only `wavo pull`, and `wavo run` and `wavo serve` for a missing model (after asking, or with
@@ -339,10 +341,22 @@ fn run(args: &[&str]) -> Result<()> {
   };
   ensure!(!meta.is_dir(), "{audio}: a folder, not an audio file");
   let path = model_path(model, download, on)?;
-  let diarizer = models::architecture(&path).is_some_and(|a| a == "sortformer");
+  let arch = models::architecture(&path);
+  let diarizer = arch.as_deref() == Some("sortformer");
+  if diarizer {
+    ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU only, not --backend ane");
+    ensure!(
+      !diarize && segment.is_none() && options.language.is_none(),
+      "--diarize, --segment and --language are for speech-to-text models; {model} only tells \
+       who speaks when"
+    );
+    ensure!(format != Some("--srt"), "{model} prints its turns as text or --json, not --srt");
+  }
+
   ensure!(
-    !diarizer || on != Backend::NeuralEngine,
-    "{model} runs on the GPU only, not --backend ane"
+    !diarize || arch.as_deref() != Some("moonshine"),
+    "--diarize needs the time of each word, which {model} doesn't give: use Parakeet, GigaAM or \
+     Whisper"
   );
   let speakers = match diarize && !diarizer {
     true => Some(model_path(DIARIZER, download, Backend::Gpu)?),
@@ -358,7 +372,7 @@ fn run(args: &[&str]) -> Result<()> {
       eprintln!("no speech found in {audio}");
     }
 
-    let text = output::turns(&turns, format);
+    let text = output::turns(&turns, format == Some("--json"));
     return Ok(std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())?);
   }
 
@@ -570,24 +584,27 @@ fn bench(model: &str, audio: &str, opts: &[&str]) -> Result<()> {
   let (pcm, path) = (audio::read(audio)?, model_path(model, Download::Never, on)?);
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
   let t = Instant::now();
-  // A diarization model's call is `diarize`.
-  let (model, diarizer) = match models::architecture(&path).as_deref() {
-    Some("sortformer") if on == Backend::NeuralEngine => {
-      bail!("{model} runs on the GPU only, not --backend ane")
-    }
-    Some("sortformer") => (None, Some(wavo::Diarizer::load(&path)?)),
-    _ => (Some(load(&path, on)?), None),
-  };
+  // The call: `diarize` for a diarization model.
+  let pcm = &pcm;
+  let (call, device): (Box<dyn Fn() -> wavo::Result<()>>, String) =
+    match models::architecture(&path).as_deref() {
+      Some("sortformer") => {
+        ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU only, not --backend ane");
+        let d = wavo::Diarizer::load(&path)?;
+        let device = d.device().to_string();
+        (Box::new(move || d.diarize(pcm).map(drop)), device)
+      }
+      _ => {
+        let m = load(&path, on)?;
+        let device = m.device().to_string();
+        (Box::new(move || m.transcribe(pcm).map(drop)), device)
+      }
+    };
   let load = ms(t);
-  let device = model.as_ref().map(|m| m.device()).or(diarizer.as_ref().map(|d| d.device()));
-  eprintln!("device: {}", device.unwrap());
+  eprintln!("device: {device}");
   let mut calls = (0..=n).map(|_| {
     let t = Instant::now();
-    match (&model, &diarizer) {
-      (Some(m), _) => m.transcribe(&pcm).map(|_| ms(t)),
-      (_, Some(d)) => d.diarize(&pcm).map(|_| ms(t)),
-      _ => unreachable!(),
-    }
+    call().map(|_| ms(t))
   });
   let first = calls.next().unwrap()?;
   let mut warm = calls.collect::<Result<Vec<_>, _>>()?;

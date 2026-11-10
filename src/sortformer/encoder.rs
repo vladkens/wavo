@@ -13,15 +13,7 @@ use crate::gguf::Gguf;
 use crate::gpu::{Buffer, Channels, Epilogue, Gpu, Groups, Linear, Pass, half, pos_rows};
 use crate::parakeet::encoder::Subsampling;
 use crate::parakeet::frontend::MELS;
-use crate::transformer::norm;
-
-/// The transformer's shape.
-pub struct Config {
-  pub layers: usize,
-  pub d: usize,
-  pub heads: usize,
-  pub d_ff: usize,
-}
+use crate::transformer::{Config, norm, parallel};
 
 pub struct Encoder {
   subsampling: Subsampling,
@@ -57,42 +49,39 @@ struct Arena {
 }
 
 impl Encoder {
+  /// Loads the network with the transformer `cfg` (post-LN, biases, no positions).
   pub fn new(gpu: &Gpu, g: &Gguf, enc: conformer::Config, ch: usize, cfg: Config) -> Result<Self> {
-    let (d, f, ed) = (cfg.d, cfg.d_ff, enc.d);
+    let (d, f, ed, hd) = (cfg.d, cfg.d_ff, enc.d, cfg.head_dim());
+    if d > 1024 || !d.is_multiple_of(cfg.heads) || !hd.is_multiple_of(4) {
+      bail!("unsupported transformer shape: d_model {d}, {} heads", cfg.heads);
+    }
+
     let speakers = g.get::<u32>("stt.sortformer.max_speakers")? as usize;
     let linear = |name: &str, dims: &[usize]| conformer::linear(gpu, g, &[name.into()], dims, true);
-    let blocks = std::thread::scope(|s| {
-      let threads: Vec<_> = (0..cfg.layers)
-        .map(|i| {
-          s.spawn(move || {
-            let p = |n: &str| format!("tf.blocks.{i}.{n}");
-            let qkv = ["q", "k", "v"].map(|n| p(&format!("attn.{n}")));
-            Ok(Block {
-              qkv: conformer::linear(gpu, g, &qkv, &[d, d], true)?,
-              out: linear(&p("attn.out"), &[d, d])?,
-              norm1: norm(gpu, g, &p("norm_1"), d, true)?,
-              ff_in: linear(&p("ff.in"), &[d, f])?,
-              ff_out: linear(&p("ff.out"), &[f, d])?,
-              norm2: norm(gpu, g, &p("norm_2"), d, true)?,
-            })
+    let (blocks, subsampling, conformer) = std::thread::scope(|s| {
+      let subsampling = s.spawn(|| Subsampling::new(gpu, g, ch, ed));
+      let blocks = s.spawn(|| {
+        parallel(cfg.layers, |i| {
+          let p = |n: &str| format!("tf.blocks.{i}.{n}");
+          let qkv = ["q", "k", "v"].map(|n| p(&format!("attn.{n}")));
+          Ok(Block {
+            qkv: conformer::linear(gpu, g, &qkv, &[d, d], true)?,
+            out: linear(&p("attn.out"), &[d, d])?,
+            norm1: norm(gpu, g, &p("norm_1"), d, true)?,
+            ff_in: linear(&p("ff.in"), &[d, f])?,
+            ff_out: linear(&p("ff.out"), &[f, d])?,
+            norm2: norm(gpu, g, &p("norm_2"), d, true)?,
           })
         })
-        .collect();
-      threads.into_iter().map(|t| t.join().unwrap()).collect::<Result<Vec<_>>>()
-    });
-    let (subsampling, conformer) = std::thread::scope(|s| {
-      let subsampling = s.spawn(|| Subsampling::new(gpu, g, ch, ed));
+      });
       let conformer = Conformer::load(gpu, g, enc)?;
-      Ok::<_, crate::Error>((subsampling.join().unwrap()?, conformer))
+      Ok::<_, crate::Error>((blocks.join().unwrap()?, subsampling.join().unwrap()?, conformer))
     })?;
-    if cfg.d > 1024 || !cfg.d.is_multiple_of(cfg.heads) || !(cfg.d / cfg.heads).is_multiple_of(4) {
-      bail!("unsupported transformer shape: d_model {}, {} heads", cfg.d, cfg.heads);
-    }
 
     Ok(Self {
       subsampling,
       proj: linear("diar.encoder_proj", &[ed, d])?,
-      blocks: blocks?,
+      blocks,
       fc1: linear("diar.fc1", &[d, d])?,
       head: linear("diar.single_spk_head", &[d, speakers])?,
       conformer,
@@ -157,7 +146,7 @@ impl Encoder {
     p.gemm(enc, &self.proj, x, t, Epilogue::Bias);
     p.layers(&self.blocks, |p, k| {
       p.gemm(x, &k.qkv, &b.qk, t, Epilogue::Bias);
-      p.attention(&b.qk, None, None, &b.s, y, t, heads, d / heads);
+      p.attention(&b.qk, None, None, &b.s, y, t, heads, self.cfg.head_dim());
       p.gemm(y, &k.out, x, t, Epilogue::Residual(1.0));
       p.layer_norm(x, &k.norm1, y, t, d, None);
       p.gemm(y, &k.ff_in, &b.h, t, Epilogue::Relu);
