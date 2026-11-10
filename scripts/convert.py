@@ -19,13 +19,14 @@ a JSON object whose `base` names the profile it copies and whose other keys repl
 CONVERTER runs a converter from another checkout of transcribe.cpp, such as an unmerged pull
 request's (3rd/ is gitignored: check it out beside 3rd/transcribe.cpp).
 
-Pin the source to the commit the model card names. GigaAM's converter takes the weights from its
-own table by `--repo-id` (scripts/lib/gigaam_hf.py, the `gigaam` package's downloads): SOURCE only
-names them, so name the commit that table pins. Parakeet's `--revision` pins only a Transformers
-checkpoint (`"source_format": "hf_safetensors"`); NeMo loads a `.nemo` repository at its latest
-commit, so pass a local `.nemo` downloaded at the commit instead:
+Pin the source to the commit the model card names. GigaAM's converter loads the weights itself by
+`--repo-id`, and SOURCE only names them: the v3 ones from the `gigaam` package's own download URLs,
+which carry no Hugging Face commit, GigaAM Multilingual at the commit that transcribe.cpp PR #251's
+scripts/lib/gigaam_hf.py pins. Name on the card what it loaded. Parakeet's `--revision` pins only
+a Transformers checkpoint (`"source_format": "hf_safetensors"`); NeMo loads a `.nemo` repository at
+its latest commit, so pass a local `.nemo` downloaded at the commit instead:
 
-    PROFILE='{"base": "parakeet-tdt-0.6b-v3", "source_format": "hf_safetensors", ...}' \\
+    PROFILE='{"base": "parakeet-tdt-0.6b-v3", "source_format": "hf_safetensors"}' \\
       scripts/convert.py parakeet ihnatov-yuri/parakeet-tdt-0.6b-v3-uk \\
       out/parakeet-tdt-0.6b-v3-uk-Q8_0.gguf --revision <commit>
 
