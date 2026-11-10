@@ -115,6 +115,7 @@ wavo run talk.wav --backend gpu       # the GPU even where the Neural Engine is 
 wavo serve                                       # parakeet-ultra on http://127.0.0.1:8000
 wavo serve whisper-turbo gigaam-v3 --port 9000   # these models, loaded up front
 wavo serve --host 0.0.0.0 --api-key KEY          # on the network, with a key
+wavo serve --unload-after 10m                    # free the memory after 10 idle minutes
 
 curl -F file=@talk.mp3 -F model=whisper-1 http://127.0.0.1:8000/v1/audio/transcriptions
 ```

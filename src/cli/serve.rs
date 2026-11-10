@@ -4,7 +4,8 @@
 //! names wavo doesn't know (OpenAI's `whisper-1`); another downloaded model loads on first use,
 //! one at a time. Requests share each model, and their calls take turns on the GPU. `POST /asr`,
 //! `POST /detect-language` and `GET /status` answer as whisper-asr-webservice does, for Bazarr's
-//! subtitles.
+//! subtitles. With `--unload-after`, a model idle that long is freed, and its next request loads
+//! it again from the cache.
 
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -54,15 +55,19 @@ struct Loaded {
   model: wavo::Model,
   /// Whether it times tokens, not segments only: see `models::timed`.
   timed: bool,
+  /// When a request last took it, or `free` last saw one using it.
+  used: Mutex<Instant>,
 }
 
 struct Server {
-  /// The models given on the command line, loaded for good; the first is the default.
-  models: Vec<Arc<Loaded>>,
+  /// The models given on the command line, `None` while freed; the first is the default.
+  models: Vec<(&'static ModelInfo, Mutex<Option<Arc<Loaded>>>)>,
   /// The other models requests asked for; locked while one loads.
   extra: Mutex<Extra<Loaded>>,
   /// Where every model runs.
   backend: Backend,
+  /// The first model's device, for `/health` also while it is freed.
+  device: wavo::Device,
   key: Option<String>,
   /// Open connections.
   open: AtomicUsize,
@@ -77,7 +82,7 @@ struct Reply {
 
 pub fn serve(args: &[&str]) -> Result<()> {
   let (mut host, mut port, mut key, mut download) = ("127.0.0.1", 8000, None, Download::Ask);
-  let mut on = Backend::Auto;
+  let (mut on, mut unload) = (Backend::Auto, None);
   let mut names = Vec::new();
   let mut args = args.iter().copied();
   while let Some(arg) = args.next() {
@@ -86,6 +91,10 @@ pub fn serve(args: &[&str]) -> Result<()> {
       "--port" => port = args.next().and_then(|p| p.parse().ok()).context("--port takes a port")?,
       "--api-key" => key = Some(args.next().context("--api-key takes a key")?.to_string()),
       "--backend" => on = crate::backend(args.next().as_ref())?,
+      "--unload-after" => {
+        let after = args.next().and_then(duration);
+        unload = Some(after.context("--unload-after takes a duration such as 30s, 10m or 1h")?);
+      }
       "-y" | "--yes" => download = Download::Yes,
       _ if arg.starts_with('-') => bail!("unknown option {arg}\n{USAGE}"),
       _ => names.push(crate::named(arg)?),
@@ -104,7 +113,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
     TcpListener::bind((host, port)).with_context(|| format!("listening on {host}:{port}"))?;
   let models = names.iter().map(|m| load(m, &crate::model_path(m.name, download, on)?, on));
   let models = models.collect::<Result<Vec<_>>>()?;
-  let device = models[0].model.device();
+  let device = models[0].model.device().clone();
   if let Some(warning) = device.warning() {
     eprintln!("warning: {warning}");
   }
@@ -116,9 +125,24 @@ pub fn serve(args: &[&str]) -> Result<()> {
 
   let names: Vec<&str> = models.iter().map(|m| m.info.name).collect();
   eprintln!("{} on {device}\nlistening on http://{addr}", names.join(", "));
+  let models = models.into_iter().map(|m| (m.info, Mutex::new(Some(m)))).collect();
   let extra = Mutex::new(Extra { last: None, used: Vec::new() });
-  let server = Server { models, extra, backend: on, key, open: AtomicUsize::new(0) };
+  let server = Server { models, extra, backend: on, device, key, open: AtomicUsize::new(0) };
   std::thread::scope(|s| {
+    if let Some(after) = unload {
+      let server = &server;
+      s.spawn(move || {
+        loop {
+          std::thread::sleep(Duration::from_secs(1));
+          for (_, m) in &server.models {
+            free(&mut m.lock().unwrap_or_else(PoisonError::into_inner), after);
+          }
+
+          free(&mut server.extra.lock().unwrap_or_else(PoisonError::into_inner).last, after);
+        }
+      });
+    }
+
     for stream in listener.incoming() {
       let Ok(stream) = stream else {
         std::thread::sleep(Duration::from_millis(100)); // out of file handles: let some close
@@ -140,7 +164,29 @@ pub fn serve(args: &[&str]) -> Result<()> {
 }
 
 fn load(info: &'static ModelInfo, path: &Path, on: Backend) -> Result<Arc<Loaded>> {
-  Ok(Arc::new(Loaded { info, model: crate::load(path, on)?, timed: models::timed(path) }))
+  let (model, timed) = (crate::load(path, on)?, models::timed(path));
+  Ok(Arc::new(Loaded { info, model, timed, used: Mutex::new(Instant::now()) }))
+}
+
+/// Frees the model in `slot` when no request holds it and none used it for `after`.
+fn free(slot: &mut Option<Arc<Loaded>>, after: Duration) {
+  let Some(m) = slot.as_ref() else { return };
+  if Arc::strong_count(m) > 1 {
+    return m.touch(); // a request uses it
+  }
+
+  let idle = m.used.lock().unwrap_or_else(PoisonError::into_inner).elapsed();
+  if idle >= after {
+    eprintln!("freed {}: no requests for {} s", m.info.name, idle.as_secs());
+    *slot = None;
+  }
+}
+
+impl Loaded {
+  /// Marks the model used now.
+  fn touch(&self) {
+    *self.used.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
+  }
 }
 
 /// A client's socket whose reads and writes wait up to `TIMEOUT` each and fail past `until`, also
@@ -243,10 +289,11 @@ impl Server {
 
   /// The GPU, the loaded models (not one still loading) and any warning about the GPU.
   fn health(&self) -> Reply {
-    let device = self.models[0].model.device();
+    let device = &self.device;
+    let given = self.models.iter().filter_map(|(_, m)| m.try_lock().ok()?.clone());
     let extra = self.extra.try_lock().map(|x| x.used.iter().filter_map(Weak::upgrade).collect());
     let extra: Vec<_> = extra.unwrap_or_default();
-    let names: Vec<String> = self.models.iter().chain(&extra).map(|m| quote(m.info.name)).collect();
+    let names: Vec<String> = given.chain(extra).map(|m| quote(m.info.name)).collect();
     let warning = device.warning().map(|w| quote(&w)).unwrap_or_default();
     let (device, names) = (quote(&device.to_string()), names.join(", "));
     let fields = format!("\"device\": {device}, \"models\": [{names}], \"warnings\": [{warning}]");
@@ -257,7 +304,7 @@ impl Server {
   /// The downloaded models in OpenAI's list format, the ones given on the command line first.
   fn list(&self) -> Reply {
     let mut found: Vec<_> = Hub::new().downloaded().into_iter().map(|(m, _)| m).collect();
-    let given = |m: &ModelInfo| self.models.iter().position(|x| x.info.name == m.name);
+    let given = |m: &ModelInfo| self.models.iter().position(|x| x.0.name == m.name);
     found.sort_by_key(|m| given(m).unwrap_or(usize::MAX));
     let model = |m: &ModelInfo| {
       let (id, owner) = (quote(m.name), quote(m.owner));
@@ -304,7 +351,7 @@ impl Server {
     let Some(&(_, format)) = ASR_FORMATS.iter().find(|f| f.0 == output) else {
       return Err(fail(400, format!("output {output:?} is not one of txt, srt, vtt, json")));
     };
-    let model = &self.models[0];
+    let model = &self.given(0)?;
     let listed = |c: &&str| model.model.languages().iter().any(|l| l == c);
     if let Some(code) = query("language").filter(|c| !listed(c)) {
       let name = model.info.name;
@@ -336,7 +383,7 @@ impl Server {
     let pcm = decode(body, &parts, "audio_file", raw)?;
     let failed = |e: wavo::Error| fail(500, format!("detecting the language: {e}"));
     let detect = |m: &Loaded| m.model.detect_language(&pcm);
-    let by = &self.models[0];
+    let by = &self.given(0)?;
     let ranked = detect(by).map_err(failed)?;
     let (code, confidence) = match ranked.first() {
       Some(top) => (top.code.clone(), top.probability as f64),
@@ -369,23 +416,39 @@ impl Server {
   /// The model a request's `model` names: one given on the command line, else another loaded
   /// one, else a downloaded one, loaded. 404 for a model not downloaded.
   fn pick(&self, name: &str) -> Res<Arc<Loaded>> {
-    let Some(m) = wanted(name) else { return Ok(self.models[0].clone()) };
-    if let Some(loaded) = self.models.iter().find(|x| x.info.name == m.name) {
-      return Ok(loaded.clone());
+    let Some(m) = wanted(name) else { return self.given(0) };
+    if let Some(i) = self.models.iter().position(|x| x.0.name == m.name) {
+      return self.given(i);
     }
 
-    let not_found = || fail(404, format!("{0} is not downloaded; run: wavo pull {0}", m.name));
-    let fetch = || {
-      let path = Hub::new().find(m.name).ok_or_else(not_found)?;
-      load(m, &path, self.backend).map_err(|e| fail(500, format!("{e:#}")))
-    };
     let mut extra = self.extra.lock().unwrap_or_else(PoisonError::into_inner);
-    extra.get(|x| x.info.name == m.name, fetch)
+    let loaded = extra.get(|x| x.info.name == m.name, || self.fetch(m))?;
+    loaded.touch();
+    Ok(loaded)
+  }
+
+  /// The `i`th model given on the command line, loaded again when it was freed.
+  fn given(&self, i: usize) -> Res<Arc<Loaded>> {
+    let (info, slot) = &self.models[i];
+    let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(m) = &*slot {
+      m.touch();
+      return Ok(m.clone());
+    }
+
+    Ok(slot.insert(self.fetch(info)?).clone())
+  }
+
+  /// Loads a downloaded model from the cache; 404 for one not downloaded.
+  fn fetch(&self, m: &'static ModelInfo) -> Res<Arc<Loaded>> {
+    let not_found = || fail(404, format!("{0} is not downloaded; run: wavo pull {0}", m.name));
+    let path = Hub::new().find(m.name).ok_or_else(not_found)?;
+    load(m, &path, self.backend).map_err(|e| fail(500, format!("{e:#}")))
   }
 }
 
-/// The models loaded on request: the last one asked for stays loaded, the others only while
-/// requests use them.
+/// The models loaded on request: the last one asked for stays loaded (with `--unload-after`, until
+/// it is idle that long), the others only while requests use them.
 struct Extra<T> {
   last: Option<Arc<T>>,
   used: Vec<Weak<T>>,
@@ -408,6 +471,13 @@ impl<T> Extra<T> {
     self.last = Some(loaded.clone());
     Ok(loaded)
   }
+}
+
+/// A duration such as `30s`, `10m` or `1h`; a plain number is seconds.
+fn duration(s: &str) -> Option<Duration> {
+  let mut units = [("s", 1), ("m", 60), ("h", 3600)].into_iter();
+  let (n, secs) = units.find_map(|(u, secs)| Some((s.strip_suffix(u)?, secs))).unwrap_or((s, 1));
+  n.parse::<u64>().ok()?.checked_mul(secs).map(Duration::from_secs)
 }
 
 /// The wavo model a request's `model` names exactly, by its short or full name; `None` for the
@@ -572,6 +642,17 @@ mod tests {
     assert_eq!(extra.used.len(), 2);
     get(&mut extra, "c");
     assert_eq!((extra.used.len(), loads), (2, 4), "a was freed; a, b, b and c loaded");
+  }
+
+  #[test]
+  fn durations() {
+    for (s, secs) in [("0", 0), ("90", 90), ("30s", 30), ("10m", 600), ("2h", 7200)] {
+      assert_eq!(duration(s), Some(Duration::from_secs(secs)), "{s}");
+    }
+
+    for bad in ["", "m", "-1", "1.5m", "5 m", "5min", "1d", "99999999999999999999h"] {
+      assert_eq!(duration(bad), None, "{bad}");
+    }
   }
 
   /// A client that reads a little at a time can't keep a response going past its deadline.
