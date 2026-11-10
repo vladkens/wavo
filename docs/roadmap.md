@@ -39,8 +39,9 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       `POST /detect-language`; for Parakeet v3 and ultra, the language of Parakeet's text
       (whatlang) (#77).
 
-- [ ] **21. Speaker diarization:** NVIDIA's streaming Sortformer 4spk v2.1, `wavo::Diarizer` and
-      `wavo run --diarize`. [Plan](plans/20261110-diarization.md)
+- [x] **21. Speaker diarization:** NVIDIA's streaming Sortformer 4spk v2.1, `wavo::Diarizer` and
+      `wavo run --diarize`, 2.2× transcribe.cpp's speed on an M2 (#100).
+      [Plan](plans/completed/20261110-diarization.md)
 
 Open:
 
@@ -53,7 +54,10 @@ Open:
   rest of the [speed plan](plans/20261012-speed.md), the tier on AMD and Intel Arc, and the Linux
   plan's portable-encoder items. On Apple M5 and newer the GEMM runs on the Metal 4 tensor API:
   GigaAM, Parakeet and Whisper 1.5–1.9× faster there, ahead of transcribe.cpp on every model.
-- **Server, more:** a Docker image and the Wyoming protocol (Home Assistant).
+- **Server, more:** a Docker image and the Wyoming protocol (Home Assistant); OpenAI's
+  `diarized_json` from `--diarize`'s utterances.
+- **Diarization, more:** Nemotron 3 Diarization (8 speakers, better DER; needs a reference other
+  than transcribe.cpp), the very-high-latency streaming preset, the Neural Engine (fixed shapes).
 - **Fast build.** The in-house FFT replaced `rustfft` (#15); left: wgpu features per target.
   [Plan](plans/20261010-fast-build.md)
 - **Other engines.** Measure wavo against the other ways to run the same models on a Mac, not

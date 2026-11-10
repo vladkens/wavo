@@ -1,5 +1,7 @@
 # Speaker diarization
 
+Done: 2026-11-10, PR #100
+
 Who spoke when, and speaker-attributed transcripts, approved by the person on 2026-11-10. The
 model is NVIDIA's streaming Sortformer 4spk v2.1, the diarizer transcribe.cpp ports at
 `REFERENCE_REV` (`src/arch/sortformer/`, `scripts/convert-sortformer.py`,
@@ -54,3 +56,11 @@ doesn't port: out of scope until it has a reference.
 - [x] CLI: `--diarize`, the turns of `wavo run sortformer`
 - [x] Speed against transcribe.cpp on the M2
 - [x] `docs/roadmap.md`, `readme.md`
+
+## Result
+
+- Turns of `sortformer-2spk-mix`, `multitalker-2spk-mix`, `jfk`, `dots` and `noise` as
+  transcribe.cpp's; `dots-full` 9 of 2945 speech frames apart (transcribe.cpp CPU vs Metal: 18;
+  portable kernels: 0).
+- On the M2, warm: jfk 40 vs 84 ms, dots 194 vs 421 ms, dots-full 1.82 vs 4.01 s (transcribe.cpp
+  on Metal); an hour in 22 s; load 37 ms.
