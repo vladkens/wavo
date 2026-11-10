@@ -102,16 +102,19 @@ impl Transcript {
     let mut out: Vec<Utterance> = Vec::new();
     for ((range, start), end) in words.into_iter().zip(ends) {
       let speaker = speaker(turns, start, end);
-      // Words join with one space, also those a pause starts.
       let pieces: String =
         tokens[range.clone()].iter().map(|t| t.piece.replace('▁', " ")).collect();
       let text = pieces.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
       match out.last_mut() {
         Some(u) if u.speaker == speaker => {
           (u.end_ms, u.tokens.end) = (end, range.end);
-          if !text.is_empty() {
-            u.text = if u.text.is_empty() { text } else { format!("{} {text}", u.text) };
-          }
+          // Words join with one space; one a pause starts, only between letters of a script that
+          // has spaces.
+          let marked = pieces.starts_with(' ');
+          let joint = [u.text.chars().next_back(), text.chars().next()];
+          let space = marked || joint.iter().all(|c| c.is_some_and(|c| !spaceless(c)));
+          u.text += if space && !u.text.is_empty() && !text.is_empty() { " " } else { "" };
+          u.text += &text;
         }
         _ => out.push(Utterance { speaker, start_ms: start, end_ms: end, text, tokens: range }),
       }
@@ -119,6 +122,13 @@ impl Transcript {
 
     out
   }
+}
+
+/// Whether `c` belongs to a script written without spaces between words: Chinese, Japanese, Thai,
+/// and their punctuation.
+fn spaceless(c: char) -> bool {
+  matches!(c, '\u{0E00}'..='\u{0E7F}' | '\u{3000}'..='\u{30FF}' | '\u{3400}'..='\u{9FFF}'
+    | '\u{F900}'..='\u{FAFF}' | '\u{FF00}'..='\u{FFEF}')
 }
 
 /// The speaker whose turns overlap `start..end` most (the lower one on a tie), else the speaker of
@@ -210,6 +220,9 @@ mod tests {
     let turns = [turn(0, 0, 500), turn(1, 1800, 2500)];
     let got: Vec<_> = said(&t, &turns).into_iter().map(|u| (u.0, u.1)).collect();
     assert_eq!(got, [(Some(0), "да".into()), (Some(1), "нет".into())]);
+    // Text without spaces stays so across a pause.
+    let t = transcript(&[("我们", 0), ("走吧。", 0), ("好", 2000)]);
+    assert_eq!(said(&t, &[turn(0, 0, 3000)])[0].1, "我们走吧。好");
     // Pieces of `transcribe_long` joined without a space token: the pause starts a word.
     let t = transcript(&[("д", 0), ("а", 40), ("н", 2000), ("е", 2040), ("т", 2080)]);
     assert_eq!(said(&t, &turns).into_iter().map(|u| u.1).collect::<Vec<_>>(), ["да", "нет"]);
