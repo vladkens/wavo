@@ -1,6 +1,6 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! GGUF v3 reader: metadata from the header, F32/F16/Q8_0 tensors streamed from the file or its
-//! memory map.
+//! GGUF v3 reader: metadata from the header, F32/F16/Q8_0 tensors streamed from the file, or on
+//! macOS and Windows from its memory map.
 
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -318,29 +318,22 @@ impl Gguf {
   }
 }
 
-/// A read-only memory map of the whole file while a model loads: the weights are copied from the
-/// page cache into their buffers, with no read into a buffer between, and a file the page cache
-/// lacks is read ahead in large requests (macOS `F_RDADVISE`, Linux `MADV_WILLNEED`, Windows
-/// `PrefetchVirtualMemory`) instead of page by page as it is copied (see docs/perf.md). Where it
-/// doesn't map, `Map::new` gives `None` and tensors are read from the file.
+/// A read-only memory map of the whole file while a model loads, on macOS and Windows: the weights
+/// are copied from the page cache into their buffers, with no read into a buffer between, and a
+/// file the page cache lacks is read ahead in large requests (macOS `F_RDADVISE`, Windows
+/// `PrefetchVirtualMemory`) instead of page by page as it is copied (see docs/perf.md). On Linux
+/// the map gained nothing warm and lost cold, so there, as elsewhere, `Map::new` gives `None` and
+/// tensors are read from the file.
 mod map {
-  #[cfg(any(target_os = "macos", all(target_os = "linux", target_pointer_width = "64")))]
-  pub use unix::Map;
+  #[cfg(target_os = "macos")]
+  pub use macos::Map;
   #[cfg(windows)]
   pub use windows::Map;
 
-  #[cfg(not(any(
-    target_os = "macos",
-    all(target_os = "linux", target_pointer_width = "64"),
-    windows
-  )))]
+  #[cfg(not(any(target_os = "macos", windows)))]
   pub enum Map {}
 
-  #[cfg(not(any(
-    target_os = "macos",
-    all(target_os = "linux", target_pointer_width = "64"),
-    windows
-  )))]
+  #[cfg(not(any(target_os = "macos", windows)))]
   impl Map {
     pub fn new(_: &std::fs::File) -> Option<Self> {
       None
@@ -351,9 +344,8 @@ mod map {
     }
   }
 
-  /// macOS and 64-bit Linux, where `off_t` is an `i64`.
-  #[cfg(any(target_os = "macos", all(target_os = "linux", target_pointer_width = "64")))]
-  mod unix {
+  #[cfg(target_os = "macos")]
+  mod macos {
     use std::ffi::c_void;
     use std::fs::File;
     use std::os::fd::AsRawFd;
@@ -368,21 +360,14 @@ mod map {
         off: i64,
       ) -> *mut c_void;
       fn munmap(addr: *mut c_void, len: usize) -> i32;
-      #[cfg(target_os = "macos")]
       fn fcntl(fd: i32, cmd: i32, ...) -> i32;
-      #[cfg(target_os = "linux")]
-      fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
     }
 
     const PROT_READ: i32 = 1;
     const MAP_PRIVATE: i32 = 2;
-    #[cfg(target_os = "macos")]
     const F_RDADVISE: i32 = 44;
-    #[cfg(target_os = "linux")]
-    const MADV_WILLNEED: i32 = 3;
 
     /// `struct radvisory` of `<sys/fcntl.h>`.
-    #[cfg(target_os = "macos")]
     #[repr(C)]
     struct Radvisory {
       offset: i64,
@@ -410,20 +395,12 @@ mod map {
 
         // A hint only, in pieces of at most 1 GiB (`count` is an `int`): when it fails, the pages
         // are read as they are first touched.
-        #[cfg(target_os = "macos")]
         for offset in (0..len).step_by(1 << 30) {
           let count = (len - offset).min(1 << 30) as i32;
           let advice = Radvisory { offset: offset as i64, count };
           // SAFETY: `fcntl` reads `advice` during the call only.
           unsafe { fcntl(fd, F_RDADVISE, &advice as *const Radvisory) };
         }
-
-        // A hint only: the kernel starts reading the whole file into the page cache.
-        // SAFETY: the range is the mapping's.
-        #[cfg(target_os = "linux")]
-        unsafe {
-          madvise(ptr, len, MADV_WILLNEED)
-        };
         Some(Self { ptr, len })
       }
 
@@ -724,15 +701,14 @@ mod tests {
     assert_eq!(pieces, [(0, 16), (16, 16), (32, 2)]);
   }
 
-  /// From a file, as models load on the GPU: through its memory map.
+  /// From a file, as models load on the GPU: through its memory map on macOS and Windows.
   #[test]
   fn reads_tensors_from_files() {
     let path = std::env::temp_dir().join(format!("wavo-gguf-{}.gguf", std::process::id()));
     std::fs::write(&path, sample()).unwrap();
     let mut g = Gguf::open(&path).unwrap();
     g.map();
-    let linux = cfg!(all(target_os = "linux", target_pointer_width = "64"));
-    assert_eq!(g.map.is_some(), cfg!(any(target_os = "macos", windows)) || linux);
+    assert_eq!(g.map.is_some(), cfg!(any(target_os = "macos", windows)));
     assert_eq!(g.get::<u32>("a.n").unwrap(), 7);
     assert_eq!(g.tensor("w", &[2, 1]).unwrap().to_f32().unwrap(), [1.5, -2.0]);
     let mut pieces = Vec::new();

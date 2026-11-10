@@ -16,12 +16,12 @@ Numbers a / b / c follow that clip order.
 
 ## How each family runs
 
-**GigaAM.** Load reads the GGUF header and streams each tensor from the file's memory map, read
-into the page cache at once (`F_RDADVISE` on macOS, `MADV_WILLNEED` on Linux,
-`PrefetchVirtualMemory` on Windows), into weight buffers mapped on unified memory (no staging
-copy), on a discrete GPU into wgpu staging buffers whose copies are submitted every 16 MB while
-the rest loads; weights stay Q8_0/F16 on the GPU, Q8_0 scales as f16. Apart from those copies, load runs nothing on the GPU but the fast-kernel probes,
-in one submission. Metal caches compiled pipelines across runs by shader source, so new shaders
+**GigaAM.** Load reads the GGUF header and streams each tensor (on macOS and Windows from the file's
+memory map, read into the page cache at once with `F_RDADVISE` or `PrefetchVirtualMemory`; on Linux
+from the file) into weight buffers mapped on unified memory (no staging copy), on a discrete GPU
+into wgpu staging buffers whose copies are submitted every 16 MB while the rest loads; weights stay
+Q8_0/F16 on the GPU, Q8_0 scales as f16. Apart from those copies, load runs nothing on the GPU but
+the fast-kernel probes, in one submission. Metal caches compiled pipelines across runs by shader source, so new shaders
 cost 0.2–0.4 s once. Per call: CPU log-mel
 (own FFT, one frame at a time), then the encoder over an arena sized for the longest input so far,
 bind groups cached per dispatch: one submission with the fast kernels, one per layer on the
@@ -134,9 +134,9 @@ wait on a thread); starting the device while the GGUF header is read (≤ 3 ms l
 (RTX 4060) the Vulkan instance takes ~110 ms of Parakeet V3's ~296 ms load and the device ~35:
 reading the weights into memory meanwhile would hide part of it, at the cost of a copy and the
 weights' size in RAM. Whisper's and Moonshine's first call still compiles the decoder pipelines
-(first − warm: whisper-tiny ~5, moonshine-tiny ~12 ms on the RTX 4060). The GGUF's memory map
-measured on Linux and Windows, where it is on as on macOS. Weights served from the map without a
-copy, as transcribe.cpp does on Metal (an `MTLBuffer` over the map): load and footprint would lose the
+(first − warm: whisper-tiny ~5, moonshine-tiny ~12 ms on the RTX 4060). The GGUF's memory map on
+Windows, on there as on macOS but not measured. Weights served from the map without a copy, as
+transcribe.cpp does on Metal (an `MTLBuffer` over the map): load and footprint would lose the
 weights' copy (GigaAM 334 → ~90 MiB), but the kernels would have to read Q8_0 in the file's
 34-byte blocks and unpadded rows at 256-byte-aligned binding offsets.
 
@@ -598,6 +598,16 @@ The reference's `load_ms` covers less than wavo's load: not its first GGUF parse
 runs before the timer) and no Metal pipelines, which ggml compiles in the first call. Compare load
 plus first call.
 
+- 2026-11-11, GPU loads on Linux (Intel N100 on its iGPU's Vulkan, kernel 6.8, the models on
+  eMMC at ~200 MB/s): the GGUF memory-mapped as on macOS, with `madvise(MADV_WILLNEED)`, against
+  the `read`s of the merge base. Fresh processes, `wavo bench -n 1` on jfk, medians of 5, A/B
+  interleaved; cold after `posix_fadvise(POSIX_FADV_DONTNEED)` of the file, checked with
+  `mincore`. Load warm GigaAM 199.5 → 189.1, Parakeet V3 351.8 → 355.0, turbo 430.8 → 433.1 ms
+  (noise: the reads' best GigaAM load 183.6, the map's 186.4); cold 1334 → 1446, 3067 → 3391,
+  3690 → 3956 ms; first calls unchanged. Other hints on GigaAM, medians of 3: none,
+  `posix_fadvise(POSIX_FADV_WILLNEED)` and `MADV_SEQUENTIAL` cold 1436–1465 ms;
+  `MADV_POPULATE_READ` cold 1230 (1197–1389) but warm 206 against 195 ms (17.6 ms filling the page
+  tables). Rejected: Linux keeps the reads. Not tried: an NVMe disk.
 - 2026-11-10, GPU loads on an Apple M5, the GGUF memory-mapped on macOS (`mmap` and
   `F_RDADVISE` over the whole file through own `extern "C"` declarations, no crate) instead of
   `read`s into a 278 KB `Vec` per piece. Fresh processes, `wavo bench -n 1`, medians of 5, A/B
