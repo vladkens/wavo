@@ -105,6 +105,9 @@ pub struct Gguf {
   meta: HashMap<String, (u32, usize)>,
   tensors: HashMap<String, Info>,
   data: usize,
+  /// The file the header was read from, for `map`: the same one even if a new file was renamed
+  /// over the path since.
+  file: Option<File>,
   /// The whole file, where it maps: tensors are copied from it instead of read.
   map: Option<map::Map>,
 }
@@ -122,15 +125,17 @@ pub struct Tensor<'a> {
 impl Gguf {
   /// Reads the header only; tensor data is read when used.
   pub fn open(path: &Path) -> Result<Self> {
-    let len = std::fs::metadata(path)?.len() as usize;
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len() as usize;
     // The header is usually far below 1 MiB; read more of the file if it doesn't fit.
     let mut n = len.min(1 << 20);
     loop {
       let mut head = vec![0; n];
-      File::open(path)?.read_exact(&mut head)?;
+      file.seek(SeekFrom::Start(0))?;
+      file.read_exact(&mut head)?;
       match Self::parse(head, len, path.into()) {
         Err(_) if n < len => n = len.min(n * 4),
-        r => return r,
+        r => return r.map(|g| Self { file: Some(file), ..g }),
       }
     }
   }
@@ -169,7 +174,7 @@ impl Gguf {
     }
 
     let end = r.pos;
-    let mut g = Self { path, head, meta, tensors, data: 0, map: None };
+    let mut g = Self { path, head, meta, tensors, data: 0, file: None, map: None };
     let align = match g.value("general.alignment") {
       Ok((_, Value::Int(a))) => a as usize,
       _ => 32,
@@ -245,7 +250,7 @@ impl Gguf {
   /// then, and the whole file is read into the page cache at once rather than page by page as
   /// they are copied. Where it doesn't map, they are read from the file.
   pub fn map(&mut self) {
-    self.map = File::open(&self.path).ok().and_then(map::Map::new);
+    self.map = self.file.as_ref().and_then(map::Map::new);
   }
 
   /// The tensor `name`, which must have exactly the ggml-order `dims`.
@@ -308,7 +313,8 @@ impl Gguf {
       infos.insert(name.to_string(), Info { dims: dims.to_vec(), ty, offset: head.len() });
       head.extend_from_slice(data);
     }
-    Self { path: PathBuf::new(), head, meta: HashMap::new(), tensors: infos, data: 0, map: None }
+    let (path, meta, data) = (PathBuf::new(), HashMap::new(), 0);
+    Self { path, head, meta, tensors: infos, data, file: None, map: None }
   }
 }
 
@@ -325,7 +331,7 @@ mod map {
 
   #[cfg(not(target_os = "macos"))]
   impl Map {
-    pub fn new(_: std::fs::File) -> Option<Self> {
+    pub fn new(_: &std::fs::File) -> Option<Self> {
       None
     }
 
@@ -375,7 +381,7 @@ mod map {
 
     impl Map {
       /// The file mapped and read ahead, or `None` when it doesn't map: tensors are read then.
-      pub fn new(file: File) -> Option<Self> {
+      pub fn new(file: &File) -> Option<Self> {
         let (fd, len) = (file.as_raw_fd(), file.metadata().ok()?.len() as usize);
         // SAFETY: a new private read-only mapping, which aliases nothing of ours.
         let ptr = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ, MAP_PRIVATE, fd, 0) };
