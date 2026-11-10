@@ -87,8 +87,8 @@ Serve options:
 
 MODEL is a name below, its full name or a path to a .gguf file (for serve, a name); for
 sortformer, wavo run prints who speaks when (as text or --json), up to 4 speakers numbered
-from 1. AUDIO is
-wav, mp3, m4a, flac or ogg (Vorbis), downmixed to mono and resampled to 16 kHz.
+from 1. AUDIO is wav, mp3, m4a, flac or ogg (Vorbis), downmixed to mono and resampled to
+16 kHz.
 Models live in the Hugging Face cache (HF_HUB_CACHE or HF_HOME), shared with the hf CLI;
 only `wavo pull`, and `wavo run` and `wavo serve` for a missing model (after asking, or with
 -y), download.
@@ -340,8 +340,12 @@ fn run(args: &[&str]) -> Result<()> {
     meta => meta.with_context(|| format!("reading {audio}"))?,
   };
   ensure!(!meta.is_dir(), "{audio}: a folder, not an audio file");
-  let path = model_path(model, download, on)?;
-  let arch = models::architecture(&path);
+  // The family, from the name or a .gguf file's header, so that wrong options fail before a
+  // download is offered.
+  let arch = match hub::lookup(model) {
+    Ok(m) => Some(m.family.to_lowercase()),
+    Err(_) => models::architecture(Path::new(model)),
+  };
   let diarizer = arch.as_deref() == Some("sortformer");
   if diarizer {
     ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU only, not --backend ane");
@@ -358,6 +362,7 @@ fn run(args: &[&str]) -> Result<()> {
     "--diarize needs the time of each word, which {model} doesn't give: use Parakeet, GigaAM or \
      Whisper"
   );
+  let path = model_path(model, download, on)?;
   let speakers = match diarize && !diarizer {
     true => Some(model_path(DIARIZER, download, Backend::Gpu)?),
     false => None,
@@ -653,6 +658,16 @@ mod tests {
     assert!(error("talk.wav --jsn").starts_with("unknown or repeated option --jsn\nusage: "));
     assert!(error("talk.wav -n 5").starts_with("unknown or repeated option -n\n"));
     assert_eq!(error("talk.wav --json --srt"), "--json and --srt: choose one");
+    // Options that don't fit the model, before any download (Cargo.toml stands in for audio).
+    let only = "--diarize, --segment and --language are for speech-to-text models; sortformer \
+                only tells who speaks when";
+    assert_eq!(error("run sortformer Cargo.toml --segment 10"), only);
+    assert_eq!(error("run sortformer Cargo.toml --diarize"), only);
+    let srt = "sortformer prints its turns as text or --json, not --srt";
+    assert_eq!(error("run sortformer Cargo.toml --srt"), srt);
+    assert!(
+      error("run moonshine-tiny Cargo.toml --diarize").starts_with("--diarize needs the time")
+    );
     assert_eq!(error("serve --port 99999"), "--port takes a port");
     let unload = "--unload-after takes a duration such as 30s, 10m or 1h";
     assert_eq!(error("serve --unload-after -1"), unload);

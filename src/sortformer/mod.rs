@@ -10,7 +10,7 @@ mod encoder;
 mod stream;
 
 use encoder::Encoder;
-use stream::{CONTEXT, Params, State};
+use stream::{Params, SIL_FRAMES_PER_SPEAKER, State};
 
 use crate::conformer::{self, Attention};
 use crate::error::{Result, bail};
@@ -23,6 +23,8 @@ use crate::{Device, Turn, transformer};
 const SUBSAMPLING: usize = 8;
 /// Output frame length: 10 ms hop × subsampling 8.
 const FRAME_MS: u32 = 80;
+/// Output frames of context before and after a chunk.
+const CONTEXT: usize = 1;
 
 pub struct Sortformer {
   gpu: Gpu,
@@ -68,7 +70,7 @@ impl Sortformer {
       period: u("stream.spkcache_update_period")?,
     };
     // Each speaker keeps some frames of the compressed cache, past those of silence.
-    if speakers == 0 || params.chunk == 0 || params.cache / speakers <= 3 {
+    if speakers == 0 || params.chunk == 0 || params.cache / speakers <= SIL_FRAMES_PER_SPEAKER {
       bail!("unsupported stream: {speakers} speakers, cache {}", params.cache);
     }
 
@@ -83,8 +85,14 @@ impl Sortformer {
       rot: 0,
       gated: false,
     };
+    // Kernels keep a row of up to 1024 channels in shared memory, and heads in steps of 4.
+    let (d, heads) = (tf.d, tf.heads);
+    if d > 1024 || !d.is_multiple_of(heads) || !tf.head_dim().is_multiple_of(4) {
+      bail!("unsupported transformer shape: d_model {d}, {heads} heads");
+    }
+
     let gpu = Gpu::new(true)?;
-    let encoder = Encoder::new(&gpu, g, enc, ch, tf)?;
+    let encoder = Encoder::new(&gpu, g, enc, ch, tf, speakers)?;
     Ok(Self { gpu, frontend: Frontend::new(), encoder, params, speakers })
   }
 
@@ -108,7 +116,7 @@ impl Sortformer {
 
     let (p, d, sub) = (self.params, self.encoder.width(), SUBSAMPLING);
     let window = 2 * CONTEXT + p.chunk;
-    self.encoder.reserve(&self.gpu, window.max(p.cache + p.fifo + window));
+    self.encoder.reserve(&self.gpu, p.cache + p.fifo + window);
     let scale = (d as f32).sqrt();
     let mut state = State::new(d, self.speakers);
     let (mut start, mut end) = (0, 0);

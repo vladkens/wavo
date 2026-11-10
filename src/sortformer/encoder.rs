@@ -8,7 +8,7 @@
 use std::sync::{Mutex, PoisonError};
 
 use crate::conformer::{self, Buffers, Conformer};
-use crate::error::{Result, bail};
+use crate::error::Result;
 use crate::gguf::Gguf;
 use crate::gpu::{Buffer, Channels, Epilogue, Gpu, Groups, Linear, Pass, half, pos_rows};
 use crate::parakeet::encoder::Subsampling;
@@ -49,14 +49,17 @@ struct Arena {
 }
 
 impl Encoder {
-  /// Loads the network with the transformer `cfg` (post-LN, biases, no positions).
-  pub fn new(gpu: &Gpu, g: &Gguf, enc: conformer::Config, ch: usize, cfg: Config) -> Result<Self> {
-    let (d, f, ed, hd) = (cfg.d, cfg.d_ff, enc.d, cfg.head_dim());
-    if d > 1024 || !d.is_multiple_of(cfg.heads) || !hd.is_multiple_of(4) {
-      bail!("unsupported transformer shape: d_model {d}, {} heads", cfg.heads);
-    }
-
-    let speakers = g.get::<u32>("stt.sortformer.max_speakers")? as usize;
+  /// Loads the network with `ch` subsampling channels, the transformer `cfg` (post-LN, biases, no
+  /// positions) and a head of `speakers`.
+  pub fn new(
+    gpu: &Gpu,
+    g: &Gguf,
+    enc: conformer::Config,
+    ch: usize,
+    cfg: Config,
+    speakers: usize,
+  ) -> Result<Self> {
+    let (d, f, ed) = (cfg.d, cfg.d_ff, enc.d);
     let linear = |name: &str, dims: &[usize]| conformer::linear(gpu, g, &[name.into()], dims, true);
     let (blocks, subsampling, conformer) = std::thread::scope(|s| {
       let subsampling = s.spawn(|| Subsampling::new(gpu, g, ch, ed));
@@ -166,7 +169,7 @@ impl Encoder {
     let scores = gpu.scores_len(frames, c.heads, c.head_dim(), true).max(gpu.scores_len(
       frames,
       tf.heads,
-      tf.d / tf.heads,
+      tf.head_dim(),
       false,
     ));
     let bufs = Buffers {

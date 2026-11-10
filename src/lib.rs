@@ -66,7 +66,7 @@
 //! | `breeze-asr-25` | `Breeze-ASR-25` | 1.67 GB | Taiwanese Mandarin and English | cased, punctuated |
 //! | `moonshine-tiny` | `moonshine-tiny` | 0.04 GB | English | cased, punctuated |
 //! | `moonshine-base` | `moonshine-base` | 0.08 GB | English | cased, punctuated |
-//! | `sortformer` | `diar_streaming_sortformer_4spk-v2.1` | 0.14 GB | English | speaker turns |
+//! | `sortformer` | `diar_streaming_sortformer_4spk-v2.1` | 0.14 GB | any language | speaker turns |
 //!
 //! A model `<full name>` lives in the Hugging Face repository `<owner>/<full name>-gguf` as
 //! `<full name>-Q8_0.gguf`. The owner is `handy-computer`, transcribe.cpp's account, except for the

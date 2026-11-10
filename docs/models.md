@@ -76,7 +76,7 @@ Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. T
 | `breeze-asr-25` | 1.67GB | Taiwanese Mandarin and English | cased, punctuated | 0.5× |
 | `moonshine-tiny` | 0.04GB | English | cased, punctuated | 15.2× |
 | `moonshine-base` | 0.08GB | English | cased, punctuated | 10.2× |
-| `sortformer` | 0.14GB | English | speaker turns | – |
+| `sortformer` | 0.14GB | any language | speaker turns | – |
 
 Speed is how many times faster than `whisper-turbo`, on the same clips of the same machine. Trust the order, not the digits.
 

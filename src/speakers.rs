@@ -43,15 +43,16 @@ pub struct Utterance {
 
 impl Transcript {
   /// The transcript cut into utterances by speaker, given the [`Turn`]s of the same audio: each
-  /// word goes to the speaker whose turns overlap it most, from its first token's start to the
-  /// next word's start (at most 1 s), or when none does to the speaker of the nearest turn;
+  /// word goes to the speaker whose turns overlap it most, from the start of its first token that
+  /// is more than a space to the next word's start (at most 1 s), or when none does to the speaker
+  /// of the nearest turn;
   /// consecutive words of a speaker make an utterance. The utterances hold every token, in order.
   ///
-  /// A word starts at a token whose piece starts with `▁` or a space; words that start together
-  /// share their span. The attribution is only as fine as the token times: per word for Parakeet
-  /// and GigaAM; per segment for Whisper, whose tokens carry their segment's start, in languages
-  /// written with spaces; none for Moonshine, whose tokens all start at 0. An utterance's text is
-  /// its tokens' pieces, `▁` as a space, trimmed.
+  /// A word starts at a token whose piece starts with `▁` or a space, or that starts more than 1 s
+  /// after the token before; words that start together share their span. The attribution is only
+  /// as fine as the token times: per word for Parakeet and GigaAM; per segment for Whisper, whose
+  /// tokens carry their segment's start; none for Moonshine, whose tokens all start at 0. An
+  /// utterance's text is its tokens' pieces, `▁` as a space, trimmed.
   ///
   /// # Examples
   ///
@@ -67,8 +68,14 @@ impl Transcript {
   /// ```
   pub fn utterances(&self, turns: &[Turn]) -> Vec<Utterance> {
     let tokens = &self.tokens;
-    let firsts: Vec<usize> =
-      (0..tokens.len()).filter(|&i| i == 0 || tokens[i].piece.starts_with(['▁', ' '])).collect();
+    // A pause starts a word too: between Whisper's segments of text without spaces.
+    let firsts: Vec<usize> = (0..tokens.len())
+      .filter(|&i| {
+        i == 0
+          || tokens[i].piece.starts_with(['▁', ' '])
+          || tokens[i].start_ms > tokens[i - 1].start_ms.saturating_add(WORD_MS)
+      })
+      .collect();
     // Per word its tokens and start: that of its first token with more than a space (a space token
     // of a character vocabulary comes right after the word before).
     let words: Vec<(Range<usize>, u32)> = (firsts.iter().enumerate())
@@ -199,5 +206,10 @@ mod tests {
     let got: Vec<_> = said(&t, &turns).into_iter().map(|u| (u.0, u.1)).collect();
     assert_eq!(got, [(Some(0), "да".into()), (Some(1), "нет".into())]);
     assert_eq!(said(&t, &[turn(0, 0, 3000)])[0].1, "да нет");
+    // Whisper's segments of text without spaces: a pause starts a word.
+    let t = transcript(&[("我们", 0), ("走吧。", 0), ("好", 2000)]);
+    let turns = [turn(0, 0, 1500), turn(1, 1900, 3000)];
+    let got: Vec<_> = said(&t, &turns).into_iter().map(|u| (u.0, u.1)).collect();
+    assert_eq!(got, [(Some(0), "我们走吧。".into()), (Some(1), "好".into())]);
   }
 }

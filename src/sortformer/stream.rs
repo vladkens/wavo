@@ -6,7 +6,7 @@
 //! slots. Embeddings are pre-encode outputs `[frames][d]`, predictions `[frames][speakers]`.
 
 /// Frames of each speaker's share of the compressed cache kept for silence.
-const SIL_FRAMES_PER_SPEAKER: usize = 3;
+pub const SIL_FRAMES_PER_SPEAKER: usize = 3;
 /// A frame whose predictions sum below this is silence.
 const SIL_THRESHOLD: f32 = 0.2;
 /// Predictions are clamped to at least this before their logarithms.
@@ -16,9 +16,6 @@ const SCORES_BOOST_LATEST: f32 = 0.05;
 const STRONG_BOOST_RATE: f32 = 0.75;
 const WEAK_BOOST_RATE: f32 = 1.5;
 const MIN_POS_SCORES_RATE: f32 = 0.5;
-
-/// Frames of context before and after a chunk.
-pub const CONTEXT: usize = 1;
 
 /// The chunking, in 80 ms frames: the GGUF's `stt.sortformer.stream.*`.
 #[derive(Clone, Copy)]

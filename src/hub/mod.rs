@@ -59,10 +59,12 @@ pub struct ModelInfo {
   pub full_name: &'static str,
   /// Size of the Q8_0 GGUF file in bytes.
   pub size: u64,
-  /// The languages it transcribes, for people: `English`, `Russian`, `25 European languages`, …
+  /// The languages it transcribes, for people: `English`, `Russian`, `25 European languages`, …;
+  /// `any language` for the [diarization](Self::diarization) model.
   pub languages: &'static str,
   /// The languages it is meant for, for programs: `["he"]` for the Hebrew fine-tunes, `["zh",
-  /// "en"]` for Breeze-ASR-25, every language for the multilingual models. The codes are short
+  /// "en"]` for Breeze-ASR-25, every language for the multilingual models, none for the
+  /// [diarization](Self::diarization) model, which tells voices apart in any. The codes are short
   /// BCP-47, ISO 639-1 where one exists (`en`, `ru`), else ISO 639-3 (`haw`, `yue`); Whisper's
   /// keep its own `jw` for Javanese (ISO `jv`).
   ///
@@ -243,7 +245,7 @@ pub static MODELS: &[ModelInfo] = &[
   ModelInfo { name: "breeze-asr-25", owner: HC, full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", langs: ZH_EN, punctuated: true, family: "Whisper", maker: "MediaTek Research", card: "https://huggingface.co/MediaTek-Research/Breeze-ASR-25" },
   ModelInfo { name: "moonshine-tiny", owner: HC, full_name: "moonshine-tiny", size: 35_466_912, languages: "English", langs: EN, punctuated: true, family: "Moonshine", maker: "Useful Sensors", card: "https://huggingface.co/UsefulSensors/moonshine-tiny" },
   ModelInfo { name: "moonshine-base", owner: HC, full_name: "moonshine-base", size: 77_476_480, languages: "English", langs: EN, punctuated: true, family: "Moonshine", maker: "Useful Sensors", card: "https://huggingface.co/UsefulSensors/moonshine-base" },
-  ModelInfo { name: "sortformer", owner: HC, full_name: "diar_streaming_sortformer_4spk-v2.1", size: 139_310_336, languages: "English", langs: EN, punctuated: false, family: "Sortformer", maker: "NVIDIA", card: "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1" },
+  ModelInfo { name: "sortformer", owner: HC, full_name: "diar_streaming_sortformer_4spk-v2.1", size: 139_310_336, languages: "any language", langs: &[], punctuated: false, family: "Sortformer", maker: "NVIDIA", card: "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1" },
 ];
 
 /// The model a short or full name stands for.
@@ -626,7 +628,7 @@ mod tests {
   fn langs() {
     for m in MODELS {
       let codes = m.langs;
-      assert!(!codes.is_empty(), "{}", m.name);
+      assert_eq!(codes.is_empty(), m.diarization(), "{}", m.name);
       for c in codes {
         let ok = (2..=3).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_lowercase());
         assert!(ok, "{}: {c:?}", m.name);
