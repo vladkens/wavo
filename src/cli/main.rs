@@ -353,6 +353,7 @@ fn run(args: &[&str]) -> Result<()> {
     if turns.is_empty() {
       eprintln!("no speech found in {audio}");
     }
+
     let text = output::turns(&turns, format);
     return Ok(std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())?);
   }

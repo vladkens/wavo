@@ -181,6 +181,7 @@ fn log_pred_scores(preds: &[f32], n: usize) -> Vec<f32> {
     let rest = row.iter().fold(0.0f32, |s, &p| s + ln(1.0 - p));
     scores.extend(row.iter().map(|&p| ln(p) - ln(1.0 - p) + rest - half));
   }
+
   scores
 }
 

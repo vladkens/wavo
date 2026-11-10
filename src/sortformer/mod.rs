@@ -42,6 +42,7 @@ impl Sortformer {
     ] {
       g.check(key, &[want])?;
     }
+
     for (key, want) in [
       ("stt.frontend.sample_rate", 16000),
       ("stt.frontend.num_mels", MELS),
@@ -54,6 +55,7 @@ impl Sortformer {
     ] {
       g.check(key, &[want as u32])?;
     }
+
     g.check("stt.frontend.pre_emphasis", &[PRE_EMPHASIS])?;
     g.check("stt.sortformer.transformer.pre_ln", &[false])?;
 

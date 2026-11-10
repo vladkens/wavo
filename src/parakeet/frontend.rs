@@ -54,6 +54,7 @@ impl Frontend {
     if frames < 3 {
       return Vec::new();
     }
+
     let mut mel = self.log_mel(pcm, frames);
     // Unbiased statistics over all frames but the last.
     let n = frames - 1;

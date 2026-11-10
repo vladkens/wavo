@@ -202,6 +202,7 @@ impl Block {
             b.iter_mut().zip(own?).for_each(|(b, own)| *b += own);
           }
         }
+
         Mhsa::Relative {
           qkv: gpu.linear(&w.into_iter().collect::<Result<Vec<_>>>()?, &bias)?,
           pos: self::linear(gpu, g, &[p("attn.linear_pos")], &[d, d], false)?,

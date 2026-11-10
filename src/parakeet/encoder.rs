@@ -77,6 +77,7 @@ impl Subsampling {
       p.gemm(&b.yr, &self.conv3, &b.qk, rows * f2, Epilogue::Relu);
       p.depthwise(&b.qk, None, &self.conv5, &b.h, [t2, f2, ch], t0, n);
     }
+
     p.gemm(&b.h, &self.conv6, &b.qk, t * f, Epilogue::Relu);
     p.flatten(&b.qk, &b.h, t, f, ch);
     p.gemm(&b.h, &self.out, &b.x, t, Epilogue::Bias);

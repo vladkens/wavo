@@ -33,6 +33,7 @@ pub fn json(t: &Transcript, utterances: Option<&[Utterance]>) -> String {
     write!(out, "{sep}\n  {{\"id\": {id}, \"piece\": {piece}, \"start_ms\": {start}{speaker}}}")
       .unwrap();
   }
+
   out += if t.tokens.is_empty() { "]" } else { "\n]" };
   let Some(utterances) = utterances else { return out + "}" };
 
@@ -47,6 +48,7 @@ pub fn json(t: &Transcript, utterances: Option<&[Utterance]>) -> String {
     )
     .unwrap();
   }
+
   out + if utterances.is_empty() { "]}" } else { "\n]}" }
 }
 
