@@ -24,7 +24,7 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **Hebrew:** ivrit.ai's Whisper turbo and Yakov Kolani's Parakeet v3 fine-tunes, converted
       and published under `vladkens` on Hugging Face (#64).
 - [x] **GigaAM Multilingual:** Sber's Large CTC for Russian, English, Kazakh, Kyrgyz and Uzbek,
-      converted by `scripts/convert.sh` with the converter of transcribe.cpp's unmerged
+      converted by `scripts/convert.py` with the converter of transcribe.cpp's unmerged
       [PR #251](https://github.com/handy-computer/transcribe.cpp/pull/251) and published under
       `vladkens`.
 - [x] **Server:** `wavo serve`, OpenAI's transcription API on `std::net`.
