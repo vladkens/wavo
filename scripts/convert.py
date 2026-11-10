@@ -19,7 +19,9 @@ a JSON object whose `base` names the profile it copies and whose other keys repl
 CONVERTER runs a converter from another checkout of transcribe.cpp, such as an unmerged pull
 request's (3rd/ is gitignored: check it out beside 3rd/transcribe.cpp).
 
-Pin the source to the commit the model card names. Parakeet's `--revision` pins only a Transformers
+Pin the source to the commit the model card names. GigaAM's converter takes the weights from its
+own table by `--repo-id` (scripts/lib/gigaam_hf.py, the `gigaam` package's downloads): SOURCE only
+names them, so name the commit that table pins. Parakeet's `--revision` pins only a Transformers
 checkpoint (`"source_format": "hf_safetensors"`); NeMo loads a `.nemo` repository at its latest
 commit, so pass a local `.nemo` downloaded at the commit instead:
 
