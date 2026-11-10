@@ -26,7 +26,7 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **GigaAM Multilingual:** Sber's Large CTC for Russian, English, Kazakh, Kyrgyz and Uzbek,
       converted by `scripts/convert.py` with the converter of transcribe.cpp's unmerged
       [PR #251](https://github.com/handy-computer/transcribe.cpp/pull/251) and published under
-      `vladkens`.
+      `vladkens` (#97).
 - [x] **Server:** `wavo serve`, OpenAI's transcription API on `std::net`.
 - [x] **19. Parakeet Ultra** on the Parakeet family, correct and faster than transcribe.cpp:
       `jfk` on an M2 in 145 vs 203 ms (best of 20).

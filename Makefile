@@ -39,10 +39,8 @@ clean:
 # wavo
 .PHONY: test-unit test-portable models models-all samples samples-he reference fixtures compare bench-compare
 
-ALL_MODELS := gigaam-v3-e2e-rnnt gigaam-v3-e2e-ctc gigaam-v3-rnnt gigaam-v3-ctc gigaam-multilingual-large-ctc \
-	parakeet-tdt-0.6b-v2 parakeet-tdt-0.6b-v3 parakeet-tdt-0.6b-v3-he parakeet-ultra \
-	whisper-large-v3-turbo ivrit-whisper-large-v3-turbo whisper-tiny whisper-base whisper-small whisper-medium whisper-large-v3 whisper-tiny.en whisper-base.en whisper-small.en whisper-medium.en whisper-large whisper-large-v2 Breeze-ASR-25 \
-	moonshine-tiny moonshine-base
+# Every model's full name, from hub::MODELS.
+ALL_MODELS := $(shell sed -n 's/.*full_name: "\([^"]*\)".*/\1/p' src/hub/mod.rs)
 # `make models` and `make test` (and CI) take only the smoke models, by these names in
 # tests/models.rs: one per family, plus English-only Parakeet v2 next to multilingual v3.
 # `make test-all` covers them all. CI caches the downloads under a key made from this line, so
@@ -87,7 +85,7 @@ reference:
 	git -C 3rd/transcribe.cpp checkout --detach $(REFERENCE_REV)
 	cmake -S 3rd/transcribe.cpp -B 3rd/transcribe.cpp/build -DCMAKE_BUILD_TYPE=Release -DTRANSCRIBE_BUILD_TOOLS=ON \
 		"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=$(CURDIR)/3rd/transcribe.cpp/build/bin"
-	cmake --build 3rd/transcribe.cpp/build --config Release --target transcribe-cli transcribe-bench transcribe-quantize -j
+	cmake --build 3rd/transcribe.cpp/build --config Release --target transcribe-cli transcribe-bench -j
 
 # make fixtures MODEL=gigaam-v3-e2e-rnnt SAMPLES="ru ru-short ru-long" (see the script)
 fixtures:

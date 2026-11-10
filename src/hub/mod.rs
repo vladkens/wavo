@@ -706,7 +706,7 @@ mod tests {
   }
 
   /// Every other list of the models names exactly `MODELS`: the model table of the crate docs (in
-  /// order), `ALL_MODELS` in the Makefile and the tests in `tests/models.rs`.
+  /// order) and the tests in `tests/models.rs`.
   #[test]
   fn model_lists_match() {
     let read = |path: &str| fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path));
@@ -721,31 +721,15 @@ mod tests {
       MODELS.iter().map(|m| format!("{}` | `{}` | {}", m.name, m.full_name, row(m))).collect();
     assert_eq!(docs, expected, "model table in src/lib.rs");
 
-    // The published crate has neither file: these two checks run in the repository only, and
-    // fail there if either file is missing or unreadable.
-    let (makefile, tests) = match (read("Makefile"), read("tests/models.rs")) {
-      (Ok(makefile), Ok(tests)) => (makefile, tests),
-      (Err(a), Err(b)) if [&a, &b].iter().all(|e| e.kind() == std::io::ErrorKind::NotFound) => {
-        return;
-      }
-      (makefile, tests) => {
-        panic!("Makefile: {:?}, tests/models.rs: {:?}", makefile.err(), tests.err())
-      }
+    // The published crate lacks the file: this check runs in the repository only.
+    let tests = match read("tests/models.rs") {
+      Ok(tests) => tests,
+      Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+      Err(e) => panic!("tests/models.rs: {e}"),
     };
+
     let mut full: Vec<&str> = MODELS.iter().map(|m| m.full_name).collect();
     full.sort();
-    let mut make = Vec::new();
-    for line in makefile.lines().skip_while(|l| !l.starts_with("ALL_MODELS := ")) {
-      make.extend(
-        line.trim_start_matches("ALL_MODELS := ").split_whitespace().filter(|w| *w != "\\"),
-      );
-      if !line.ends_with('\\') {
-        break;
-      }
-    }
-    make.sort();
-    assert_eq!(make, full, "ALL_MODELS in the Makefile");
-
     let mut tested: Vec<&str> = (tests.lines())
       .filter_map(|l| l.trim_start().strip_prefix("check(\"")?.split('"').next())
       .collect();
