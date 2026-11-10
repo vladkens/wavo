@@ -42,7 +42,7 @@ Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. T
 | Swedish | 12.8 | **8.8** | – |
 | Thai | – | **13.7** | – |
 | Turkish | – | **9.0** | – |
-| Ukrainian | **5.6** | 7.3 | – |
+| Ukrainian | **5.6** | 7.3 | `parakeet-uk` 5.7 |
 | Uzbek | – | >100 | `gigaam-multilingual` **11.9** |
 | Vietnamese | – | **9.4** | – |
 
@@ -54,7 +54,7 @@ Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. T
 | `parakeet-v2` | 0.73GB | English | cased, punctuated | 7.6× |
 | `parakeet-ultra` (default) | 0.74GB | 25 European languages | cased, punctuated | 7× |
 | `parakeet-he` | 0.74GB | Hebrew | cased, punctuated | 8× |
-| `parakeet-uk` | 0.74GB | Ukrainian and English | cased, punctuated | – |
+| `parakeet-uk` | 0.74GB | Ukrainian and English | cased, punctuated | 6.6× |
 | `gigaam-v3` | 0.27GB | Russian | cased, punctuated | 13.1× |
 | `gigaam-v3-e2e-ctc` | 0.27GB | Russian | cased, punctuated | 16.3× |
 | `gigaam-v3-rnnt` | 0.27GB | Russian | lowercase, no punctuation | 13.5× |

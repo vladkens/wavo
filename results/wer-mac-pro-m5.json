@@ -4737,6 +4737,19 @@
       "rate": 10.33
     },
     {
+      "model": "parakeet-uk",
+      "backend": "gpu",
+      "dataset": "fleurs-uk",
+      "language": "uk",
+      "metric": "wer",
+      "clips": 750,
+      "missing": 0,
+      "audio_s": 8145.1,
+      "time_s": 57.72,
+      "speed": 141.1,
+      "rate": 5.66
+    },
+    {
       "model": "gigaam-multilingual",
       "backend": "gpu",
       "dataset": "fleurs-uz",
@@ -4787,6 +4800,45 @@
       "time_s": 202.84,
       "speed": 50.4,
       "rate": 194.3
+    },
+    {
+      "model": "parakeet-uk",
+      "backend": "gpu",
+      "dataset": "test-clean",
+      "language": "en",
+      "metric": "wer",
+      "clips": 2620,
+      "missing": 0,
+      "audio_s": 19452.5,
+      "time_s": 140.59,
+      "speed": 138.4,
+      "rate": 1.81
+    },
+    {
+      "model": "parakeet-uk",
+      "backend": "gpu",
+      "dataset": "test-other",
+      "language": "en",
+      "metric": "wer",
+      "clips": 2939,
+      "missing": 0,
+      "audio_s": 19229.5,
+      "time_s": 147.72,
+      "speed": 130.2,
+      "rate": 3.57
+    },
+    {
+      "model": "parakeet-uk",
+      "backend": "gpu",
+      "dataset": "fleurs-en",
+      "language": "en",
+      "metric": "wer",
+      "clips": 647,
+      "missing": 0,
+      "audio_s": 6387.9,
+      "time_s": 40.11,
+      "speed": 159.3,
+      "rate": 4.25
     }
   ]
 }
