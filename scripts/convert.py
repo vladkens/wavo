@@ -64,6 +64,7 @@ if profile:
     profile = json.loads(profile)
     base = converter.VARIANT_PROFILES[profile.pop("base")]
     converter.VARIANT_PROFILES[name] = {**base, **profile}
+
 sys.exit(converter.main([path, *args]))
 """
 
