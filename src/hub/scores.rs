@@ -8,6 +8,9 @@ pub(super) static WER: &[(&str, &[(&str, f32)])] = &[
   ("breeze-asr-25", &[
     ("en", 4.18), ("zh", 8.06),
   ]),
+  ("gigaam-multilingual", &[
+    ("en", 10.08), ("kk", 9.3), ("ky", 10.33), ("ru", 6.72), ("uz", 11.89),
+  ]),
   ("gigaam-v3", &[
     ("ru", 4.52),
   ]),
@@ -136,6 +139,7 @@ pub(super) static WER: &[(&str, &[(&str, f32)])] = &[
 #[rustfmt::skip]
 pub(super) static SPEED: &[(&str, f32)] = &[
   ("breeze-asr-25", 0.5),
+  ("gigaam-multilingual", 8.1),
   ("gigaam-v3", 13.1),
   ("gigaam-v3-ctc", 16.2),
   ("gigaam-v3-e2e-ctc", 16.3),

@@ -1,8 +1,8 @@
 {
-  "wavo": "wavo 0.4.0",
+  "wavo": "wavo 0.5.0",
   "machine": "mac-pro-m5",
   "chip": "Apple M5",
-  "date": "2026-11-08",
+  "date": "2026-11-10",
   "rows": [
     {
       "model": "gigaam-v3",
@@ -2096,19 +2096,6 @@
     {
       "model": "whisper-turbo",
       "backend": "gpu",
-      "dataset": "fleurs-uz",
-      "language": "uz",
-      "metric": "wer",
-      "clips": 862,
-      "missing": 0,
-      "audio_s": 10214.9,
-      "time_s": 499.14,
-      "speed": 20.5,
-      "rate": 118.47
-    },
-    {
-      "model": "whisper-turbo",
-      "backend": "gpu",
       "dataset": "fleurs-vi",
       "language": "vi",
       "metric": "wer",
@@ -3393,19 +3380,6 @@
     {
       "model": "whisper-tiny",
       "backend": "gpu",
-      "dataset": "fleurs-uz",
-      "language": "uz",
-      "metric": "wer",
-      "clips": 862,
-      "missing": 0,
-      "audio_s": 10214.9,
-      "time_s": 80.07,
-      "speed": 127.6,
-      "rate": 198.62
-    },
-    {
-      "model": "whisper-tiny",
-      "backend": "gpu",
       "dataset": "fleurs-vi",
       "language": "vi",
       "metric": "wer",
@@ -4456,19 +4430,6 @@
     {
       "model": "whisper-base",
       "backend": "gpu",
-      "dataset": "fleurs-uz",
-      "language": "uz",
-      "metric": "wer",
-      "clips": 862,
-      "missing": 0,
-      "audio_s": 10214.9,
-      "time_s": 202.84,
-      "speed": 50.4,
-      "rate": 233.23
-    },
-    {
-      "model": "whisper-base",
-      "backend": "gpu",
       "dataset": "fleurs-vi",
       "language": "vi",
       "metric": "wer",
@@ -4686,6 +4647,146 @@
       "time_s": 187.18,
       "speed": 59.1,
       "rate": 12.65
+    },
+    {
+      "model": "gigaam-multilingual",
+      "backend": "gpu",
+      "dataset": "fleurs-ru",
+      "language": "ru",
+      "metric": "wer",
+      "clips": 775,
+      "missing": 0,
+      "audio_s": 8993.8,
+      "time_s": 45.66,
+      "speed": 197.0,
+      "rate": 6.72
+    },
+    {
+      "model": "gigaam-multilingual",
+      "backend": "gpu",
+      "dataset": "fleurs-ru no digits",
+      "language": "ru",
+      "metric": "wer",
+      "clips": 620,
+      "missing": 0,
+      "rate": 2.99
+    },
+    {
+      "model": "gigaam-multilingual",
+      "backend": "gpu",
+      "dataset": "test-clean",
+      "language": "en",
+      "metric": "wer",
+      "clips": 2620,
+      "missing": 0,
+      "audio_s": 19452.5,
+      "time_s": 118.01,
+      "speed": 164.8,
+      "rate": 4.39
+    },
+    {
+      "model": "gigaam-multilingual",
+      "backend": "gpu",
+      "dataset": "test-other",
+      "language": "en",
+      "metric": "wer",
+      "clips": 2939,
+      "missing": 0,
+      "audio_s": 19229.5,
+      "time_s": 122.97,
+      "speed": 156.4,
+      "rate": 8.24
+    },
+    {
+      "model": "gigaam-multilingual",
+      "backend": "gpu",
+      "dataset": "fleurs-en",
+      "language": "en",
+      "metric": "wer",
+      "clips": 647,
+      "missing": 0,
+      "audio_s": 6387.9,
+      "time_s": 34.22,
+      "speed": 186.7,
+      "rate": 10.08
+    },
+    {
+      "model": "gigaam-multilingual",
+      "backend": "gpu",
+      "dataset": "fleurs-kk",
+      "language": "kk",
+      "metric": "wer",
+      "clips": 856,
+      "missing": 0,
+      "audio_s": 13804.3,
+      "time_s": 68.96,
+      "speed": 200.2,
+      "rate": 9.3
+    },
+    {
+      "model": "gigaam-multilingual",
+      "backend": "gpu",
+      "dataset": "fleurs-ky",
+      "language": "ky",
+      "metric": "wer",
+      "clips": 977,
+      "missing": 0,
+      "audio_s": 11686.5,
+      "time_s": 59.75,
+      "speed": 195.6,
+      "rate": 10.33
+    },
+    {
+      "model": "gigaam-multilingual",
+      "backend": "gpu",
+      "dataset": "fleurs-uz",
+      "language": "uz",
+      "metric": "wer",
+      "clips": 862,
+      "missing": 0,
+      "audio_s": 10214.9,
+      "time_s": 52.33,
+      "speed": 195.2,
+      "rate": 11.89
+    },
+    {
+      "model": "whisper-turbo",
+      "backend": "gpu",
+      "dataset": "fleurs-uz",
+      "language": "uz",
+      "metric": "wer",
+      "clips": 862,
+      "missing": 0,
+      "audio_s": 10214.9,
+      "time_s": 499.14,
+      "speed": 20.5,
+      "rate": 118.9
+    },
+    {
+      "model": "whisper-tiny",
+      "backend": "gpu",
+      "dataset": "fleurs-uz",
+      "language": "uz",
+      "metric": "wer",
+      "clips": 862,
+      "missing": 0,
+      "audio_s": 10214.9,
+      "time_s": 80.07,
+      "speed": 127.6,
+      "rate": 200.48
+    },
+    {
+      "model": "whisper-base",
+      "backend": "gpu",
+      "dataset": "fleurs-uz",
+      "language": "uz",
+      "metric": "wer",
+      "clips": 862,
+      "missing": 0,
+      "audio_s": 10214.9,
+      "time_s": 202.84,
+      "speed": 50.4,
+      "rate": 194.3
     }
   ]
 }

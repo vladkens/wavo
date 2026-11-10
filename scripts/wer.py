@@ -251,6 +251,9 @@ def normalize(text: str, lang: str) -> str:
     if lang in ("zh", "yue"):  # one script for both sides: models write traditional or simplified
         text = zhconv.convert(text, "zh-cn")
 
+    if lang == "uz":  # oʻ, gʻ and the tutuq belgisi: references write ʻ and ʼ, models often '
+        text = re.sub("[ʻʼ‘’'`]", "", text)
+
     text = unicodedata.normalize("NFKC", text).casefold().replace("ё", "е")
     kept = (c if unicodedata.category(c)[0] not in "PS" else " " for c in text)
     return " ".join("".join(kept).split())

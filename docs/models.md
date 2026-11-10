@@ -2,7 +2,7 @@
 
 ## Which model for your language
 
-Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. The last column is for models trained for one language. For Chinese, Japanese and Thai it's wrong characters per 100. `whisper-large-v3` is the most accurate on Russian, 4.1, and gives 4.2 on English, at half the speed of `whisper-turbo`. `whisper-turbo` is measured on all 82 of its languages in FLEURS, which the library has; on some, such as Amharic, Hausa or Sindhi, it makes more errors than there are words.
+Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. The last column is for models trained for one language or a few. For Chinese, Japanese and Thai it's wrong characters per 100. `whisper-large-v3` is the most accurate on Russian, 4.1, and gives 4.2 on English, at half the speed of `whisper-turbo`. `gigaam-multilingual` spells numbers out, which FLEURS writes as digits: on the Russian clips without digits it gives 3.0, against 3.3 for `gigaam-v3`. `whisper-turbo` is measured on all 82 of its languages in FLEURS, which the library has; on some, such as Amharic, Hausa or Sindhi, it makes more errors than there are words.
 
 | Language | `parakeet-ultra` | `whisper-turbo` | One language |
 |---|---:|---:|---|
@@ -25,7 +25,9 @@ Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. T
 | Indonesian | – | **7.5** | – |
 | Italian | **2.3** | 2.7 | – |
 | Japanese | – | **4.9** | – |
+| Kazakh | – | 20.3 | `gigaam-multilingual` **9.3** |
 | Korean | – | **14.4** | – |
+| Kyrgyz | – | – | `gigaam-multilingual` **10.3** |
 | Latvian | **17.9** | 19.2 | – |
 | Lithuanian | **17.1** | 25.0 | – |
 | Maltese | **17.0** | 72.8 | – |
@@ -41,6 +43,7 @@ Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. T
 | Thai | – | **13.7** | – |
 | Turkish | – | **9.0** | – |
 | Ukrainian | **5.6** | 7.3 | – |
+| Uzbek | – | >100 | `gigaam-multilingual` **11.9** |
 | Vietnamese | – | **9.4** | – |
 
 ## All models
@@ -55,7 +58,7 @@ Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. T
 | `gigaam-v3-e2e-ctc` | 0.27GB | Russian | cased, punctuated | 16.3× |
 | `gigaam-v3-rnnt` | 0.27GB | Russian | lowercase, no punctuation | 13.5× |
 | `gigaam-v3-ctc` | 0.27GB | Russian | lowercase, no punctuation | 16.2× |
-| `gigaam-multilingual` | 0.71GB | Russian, English, Kazakh, Kyrgyz and Uzbek | lowercase, no punctuation | – |
+| `gigaam-multilingual` | 0.71GB | Russian, English, Kazakh, Kyrgyz and Uzbek | lowercase, no punctuation | 8.1× |
 | `whisper-turbo` | 0.89GB | 100 languages | cased, punctuated | 1× |
 | `whisper-turbo-he` | 0.89GB | Hebrew | cased, punctuated | 1× |
 | `whisper-tiny` | 0.05GB | 99 languages | cased, punctuated | 9.6× |
