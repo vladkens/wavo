@@ -250,6 +250,17 @@ fn swiglu(@builtin(global_invocation_id) id: vec3<u32>) {
   }
 }
 
+// ReLU in place over x[0..p.t].
+
+@group(0) @binding(0) var<storage, read_write> rl_x: array<f32>;
+
+@compute @workgroup_size(256)
+fn relu(@builtin(global_invocation_id) id: vec3<u32>) {
+  if (id.x < p.t) {
+    rl_x[id.x] = max(rl_x[id.x], 0.0);
+  }
+}
+
 // The index of the largest of x[0..p.t], the lowest one on a tie, as the bits of am_out[0]: the
 // maximum, then the largest −i where it occurs (exact in f32 below 2^24).
 

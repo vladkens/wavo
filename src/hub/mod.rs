@@ -87,9 +87,11 @@ pub struct ModelInfo {
   /// assert_eq!(he, ["parakeet-he", "whisper-turbo-he"]);
   /// ```
   pub langs: &'static [&'static str],
-  /// Whether the text comes cased and punctuated; `false` is lowercase without punctuation.
+  /// Whether the text comes cased and punctuated; `false` is lowercase without punctuation, and
+  /// for a [diarization](Self::diarization) model, which writes no text.
   pub punctuated: bool,
-  /// The model family, as the crate docs name it: `Parakeet`, `GigaAM`, `Whisper` or `Moonshine`.
+  /// The model family, as the crate docs name it: `Parakeet`, `GigaAM`, `Whisper` or `Moonshine`,
+  /// or `Sortformer` for the speaker diarization model.
   pub family: &'static str,
   /// Who made the model, such as `NVIDIA` or `ivrit.ai`; for a fine-tune, who tuned it.
   pub maker: &'static str,
@@ -108,6 +110,18 @@ impl ModelInfo {
   /// The file name in [`repo`](Self::repo), such as `parakeet-tdt-0.6b-v3-Q8_0.gguf`.
   pub fn file(&self) -> String {
     format!("{}-Q8_0.gguf", self.full_name)
+  }
+
+  /// Whether it is a speaker diarization model, for [`Diarizer::load`](crate::Diarizer::load)
+  /// rather than [`Model::load`](crate::Model::load): `sortformer`.
+  ///
+  /// ```
+  /// let speech_to_text = wavo::hub::MODELS.iter().filter(|m| !m.diarization());
+  /// assert!(speech_to_text.clone().any(|m| m.name == "parakeet-v3"));
+  /// assert!(speech_to_text.clone().all(|m| m.name != "sortformer"));
+  /// ```
+  pub fn diarization(&self) -> bool {
+    self.family == "Sortformer"
   }
 
   /// Whether the model's family runs on the Neural Engine (Parakeet, GigaAM).
@@ -229,6 +243,7 @@ pub static MODELS: &[ModelInfo] = &[
   ModelInfo { name: "breeze-asr-25", owner: HC, full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", langs: ZH_EN, punctuated: true, family: "Whisper", maker: "MediaTek Research", card: "https://huggingface.co/MediaTek-Research/Breeze-ASR-25" },
   ModelInfo { name: "moonshine-tiny", owner: HC, full_name: "moonshine-tiny", size: 35_466_912, languages: "English", langs: EN, punctuated: true, family: "Moonshine", maker: "Useful Sensors", card: "https://huggingface.co/UsefulSensors/moonshine-tiny" },
   ModelInfo { name: "moonshine-base", owner: HC, full_name: "moonshine-base", size: 77_476_480, languages: "English", langs: EN, punctuated: true, family: "Moonshine", maker: "Useful Sensors", card: "https://huggingface.co/UsefulSensors/moonshine-base" },
+  ModelInfo { name: "sortformer", owner: HC, full_name: "diar_streaming_sortformer_4spk-v2.1", size: 139_310_336, languages: "English", langs: EN, punctuated: false, family: "Sortformer", maker: "NVIDIA", card: "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1" },
 ];
 
 /// The model a short or full name stands for.
@@ -629,7 +644,8 @@ mod tests {
   #[test]
   fn catalog_fields() {
     for m in MODELS {
-      assert!(["Parakeet", "GigaAM", "Whisper", "Moonshine"].contains(&m.family), "{}", m.name);
+      let families = ["Parakeet", "GigaAM", "Whisper", "Moonshine", "Sortformer"];
+      assert!(families.contains(&m.family), "{}", m.name);
       assert!(!m.maker.is_empty() && !m.languages.is_empty(), "{}", m.name);
       let repo: Vec<&str> =
         m.card.strip_prefix("https://huggingface.co/").unwrap_or("").split('/').collect();
@@ -714,7 +730,11 @@ mod tests {
   fn model_lists_match() {
     let read = |path: &str| fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path));
     let row = |m: &ModelInfo| {
-      let output = if m.punctuated { "cased, punctuated" } else { "lowercase, no punctuation" };
+      let output = match (m.diarization(), m.punctuated) {
+        (true, _) => "speaker turns",
+        (_, true) => "cased, punctuated",
+        _ => "lowercase, no punctuation",
+      };
       format!("{:.2} GB | {} | {output} |", m.size as f64 / 1e9, m.languages)
     };
 

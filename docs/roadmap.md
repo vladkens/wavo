@@ -39,6 +39,9 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       `POST /detect-language`; for Parakeet v3 and ultra, the language of Parakeet's text
       (whatlang) (#77).
 
+- [ ] **21. Speaker diarization:** NVIDIA's streaming Sortformer 4spk v2.1, `wavo::Diarizer` and
+      `wavo run --diarize`. [Plan](plans/20261110-diarization.md)
+
 Open:
 
 - **Moonshine:** fast (phase 16), the language fine-tunes (17), the streaming variants one-shot

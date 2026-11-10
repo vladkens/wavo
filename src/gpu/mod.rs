@@ -252,6 +252,7 @@ struct Portable {
   rope: Pipeline,
   group_norm: Pipeline,
   swiglu: Pipeline,
+  relu: Pipeline,
   argmax: Pipeline,
   mark: Pipeline,
   gemm_module: wgpu::ShaderModule,
@@ -294,6 +295,7 @@ impl Portable {
       rope: pipeline(device, &ops, "rotary", &[]),
       group_norm: pipeline(device, &ops, "group_norm", &[]),
       swiglu: pipeline(device, &ops, "swiglu", &[]),
+      relu: pipeline(device, &ops, "relu", &[]),
       argmax: pipeline(device, &ops, "argmax", &[]),
       mark: pipeline(device, &ops, "mark", &[]),
       gemm_module: gemm,
@@ -1640,6 +1642,11 @@ impl<'a> Pass<'a> {
   /// SwiGLU in place over one row `h` `[x | gate]` of 2·`ch`: `h[..ch]` = SiLU(gate) · x.
   pub fn swiglu(&mut self, h: &Buffer, ch: usize) {
     self.run(&self.gpu.kernels.swiglu, &[h], &[0, ch as u32], [ch.div_ceil(256), 1, 1]);
+  }
+
+  /// ReLU in place over `x[..n]`.
+  pub fn relu(&mut self, x: &Buffer, n: usize) {
+    self.run(&self.gpu.kernels.relu, &[x], &[n as u32], [n.div_ceil(256), 1, 1]);
   }
 
   /// The index of the largest of `x[..n]` (the lowest on a tie), as the bits of `out[0]`.

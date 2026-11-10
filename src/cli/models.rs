@@ -10,6 +10,10 @@ pub const DEFAULT: &str = "parakeet-ultra";
 
 /// The model's line in the help: its languages, then what sets it apart.
 pub fn about(m: &ModelInfo) -> String {
+  if m.diarization() {
+    return "who speaks when, up to 4 speakers".into();
+  }
+
   let lower = if m.punctuated { "" } else { ", lowercase without punctuation" };
   let ctc = if m.full_name.ends_with("-ctc") { ", CTC head" } else { "" };
   format!("{}{lower}{ctc}", m.languages)
@@ -110,5 +114,6 @@ mod tests {
     assert_eq!(about("gigaam-v3-e2e-ctc"), "Russian, CTC head");
     assert_eq!(about("gigaam-v3-ctc"), "Russian, lowercase without punctuation, CTC head");
     assert_eq!(about("whisper-turbo"), "100 languages");
+    assert_eq!(about("sortformer"), "who speaks when, up to 4 speakers");
   }
 }

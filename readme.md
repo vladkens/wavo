@@ -24,6 +24,7 @@
 - 🦀 Pure Rust library: no CMake, C++ toolchain, Python or ONNX Runtime to install
 - 📦 `pull` / `list` / `rm` models, shared with the Hugging Face cache that `hf` uses
 - 📝 Plain text, JSON with a start time for every token, or SRT subtitles
+- 🗣️ Who speaks when: `--diarize` puts a speaker on every line, up to 4 speakers
 - 🔌 `wavo serve`: a local server for apps built on OpenAI's transcription API
 
 ## 📥 Installation
@@ -91,6 +92,8 @@ wavo pull parakeet-ultra              # download a model
 wavo pull gigaam-v3 whisper-turbo     # or several at once
 wavo run talk.wav --json              # text, its language and every token with its start time
 wavo run talk.wav --srt > talk.srt    # subtitles
+wavo run talk.wav --diarize           # Speaker 1: ... lines, also with --json and --srt
+wavo run sortformer talk.wav          # only who speaks when
 wavo run whisper-turbo talk.mp3 --language he  # Whisper: set the language, not detect it
 wavo list                             # downloaded models
 wavo rm parakeet-ultra                # delete one
@@ -104,6 +107,7 @@ wavo run talk.wav --device radeon     # another GPU, by part of its name or its 
 - Long recordings are split at pauses by themselves. `--segment SECS` sets the piece length.
 - `wavo run` asks before downloading a model. `-y` skips the question.
 - Whisper detects the language. `--language CODE` sets it.
+- `--diarize` tells up to 4 speakers apart with NVIDIA's Sortformer (0.14GB), downloaded like any model. Speakers are numbered in the order they first talk. In subtitles a cue holds one speaker, or two short lines of a dialogue.
 - Models live in the Hugging Face cache, shared with `hf download`.
 - On a Mac, `wavo pull` prepares Parakeet and GigaAM for the Neural Engine, once, in 15–30s.
 - `--backend gpu` stays on the GPU even where the Neural Engine is ready.

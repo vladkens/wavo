@@ -12,7 +12,7 @@ use crate::gpu::{Buffer, Channels, ConvNorm, Epilogue, Gpu, Linear, Pass, pos_ro
 pub enum Attention {
   /// Rotary embedding on q and k.
   Rotary,
-  /// Transformer-XL relative positions with learned biases u and v, no layer biases.
+  /// Transformer-XL relative positions with learned biases u and v.
   Relative,
 }
 
@@ -171,8 +171,8 @@ struct Block {
 enum Mhsa {
   /// `linear_q` stacked over `linear_k`: both take the rotated input.
   Rotary { qk: Linear, v: Linear },
-  /// `[q | k | v]` with biases `[pos_bias_u | 0 | 0]` and q again with `pos_bias_v`, and
-  /// `linear_pos`.
+  /// `[q | k | v]` with biases `[pos_bias_u | 0 | 0]` and q again with `pos_bias_v`, each plus
+  /// the layer's own bias when it has them, and `linear_pos`.
   Relative { qkv: Linear, pos: Linear },
 }
 
@@ -195,7 +195,13 @@ impl Block {
       Attention::Relative => {
         let w = ["q", "k", "v"].map(|n| g.tensor(&p(&format!("attn.linear_{n}.weight")), &[d, d]));
         let uv = |n: &str| f32s(&format!("attn.pos_bias_{n}"), &[c.head_dim(), c.heads]);
-        let bias = [uv("u")?, vec![0.0; 2 * d], uv("v")?].concat();
+        let mut bias = [uv("u")?, vec![0.0; 2 * d], uv("v")?].concat();
+        if c.bias {
+          let own = ["q", "k", "v", "q"].map(|n| f32s(&format!("attn.linear_{n}.bias"), &[d]));
+          for (b, own) in bias.chunks_mut(d).zip(own) {
+            b.iter_mut().zip(own?).for_each(|(b, own)| *b += own);
+          }
+        }
         Mhsa::Relative {
           qkv: gpu.linear(&w.into_iter().collect::<Result<Vec<_>>>()?, &bias)?,
           pos: self::linear(gpu, g, &[p("attn.linear_pos")], &[d, d], false)?,

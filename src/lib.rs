@@ -14,7 +14,8 @@
 //!
 //! wavo runs the open ASR models that [transcribe.cpp] publishes as GGUF files on Hugging Face:
 //! NVIDIA's Parakeet, Sber's GigaAM, OpenAI's Whisper and Useful Sensors' Moonshine, with the same
-//! text and timestamps as transcribe.cpp. The encoder runs on the GPU through wgpu (Metal on Apple
+//! text and timestamps as transcribe.cpp, and NVIDIA's Sortformer, which tells who speaks when
+//! ([below](#speakers)). The encoder runs on the GPU through wgpu (Metal on Apple
 //! Silicon, Vulkan on Linux and Windows, DX12 on Windows without a Vulkan driver) with wavo's own
 //! kernels, or for Parakeet and GigaAM on the Neural Engine of an Apple Silicon Mac through Core ML
 //! ([below](#neural-engine)); the audio frontend runs on the CPU, and so does the decoder except
@@ -65,6 +66,7 @@
 //! | `breeze-asr-25` | `Breeze-ASR-25` | 1.67 GB | Taiwanese Mandarin and English | cased, punctuated |
 //! | `moonshine-tiny` | `moonshine-tiny` | 0.04 GB | English | cased, punctuated |
 //! | `moonshine-base` | `moonshine-base` | 0.08 GB | English | cased, punctuated |
+//! | `sortformer` | `diar_streaming_sortformer_4spk-v2.1` | 0.14 GB | English | speaker turns |
 //!
 //! A model `<full name>` lives in the Hugging Face repository `<owner>/<full name>-gguf` as
 //! `<full name>-Q8_0.gguf`. The owner is `handy-computer`, transcribe.cpp's account, except for the
@@ -122,6 +124,29 @@
 //!   eprintln!("{}/{}: {}", piece.index + 1, piece.count, piece.transcript.text);
 //!   ControlFlow::Continue(())
 //! })?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Speakers
+//!
+//! [`Diarizer::load`] takes the GGUF of `sortformer`, NVIDIA's streaming Sortformer, a speaker
+//! diarization model: [`Diarizer::diarize`] tells who speaks when in audio of any length, as
+//! [`Turn`]s of up to 4 speakers numbered in the order they first talk. [`Transcript::utterances`]
+//! then gives each word of a transcript of the same audio its speaker:
+//!
+//! ```no_run
+//! # fn main() -> wavo::Result<()> {
+//! let model = wavo::Model::load("parakeet-tdt-0.6b-v3-Q8_0.gguf")?;
+//! let diarizer = wavo::Diarizer::load("diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf")?;
+//! let pcm = vec![0.0f32; 16_000 * 60]; // a minute
+//! let turns = diarizer.diarize(&pcm)?;
+//! let transcript = model.transcribe_long(&pcm, &wavo::Options::default(), |_| {
+//!   std::ops::ControlFlow::Continue(())
+//! })?;
+//! for u in transcript.utterances(&turns) {
+//!   println!("{:>6} ms  Speaker {}: {}", u.start_ms, u.speaker.map_or(0, |s| s + 1), u.text);
+//! }
 //! # Ok(())
 //! # }
 //! ```
@@ -246,6 +271,8 @@ pub mod hub;
 mod moonshine;
 mod parakeet;
 mod sentencepiece;
+mod sortformer;
+mod speakers;
 mod split;
 mod transformer;
 mod whisper;
@@ -256,6 +283,7 @@ use std::path::Path;
 use error::bail;
 pub use error::{Error, Result};
 pub use gpu::{Api, Device, DeviceKind, Kernels};
+pub use speakers::{Turn, Utterance};
 pub use split::split;
 
 /// Every GPU adapter wavo can run a model on, through Vulkan, Metal or DX12, starting with the
@@ -502,7 +530,8 @@ impl Model {
   ///
   /// - [`Error::Io`]: the file can't be read.
   /// - [`Error::Model`]: not a GGUF, an architecture other than `gigaam`, `parakeet`, `whisper` and
-  ///   `moonshine`, or a missing or mismatched tensor or metadata key.
+  ///   `moonshine` (a `sortformer` file is for [`Diarizer::load`]), or a missing or mismatched
+  ///   tensor or metadata key.
   /// - [`Error::Adapter`], [`Error::Device`]: no GPU, or not one the model can run on.
   ///
   /// # Examples
@@ -561,6 +590,10 @@ impl Model {
       "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g, ane, gpu)?)),
       "whisper" => Family::Whisper(Box::new(whisper::Whisper::load(&g, gpu)?)),
       "moonshine" => Family::Moonshine(Box::new(moonshine::Moonshine::load(&g, gpu)?)),
+      "sortformer" => bail!(
+        "general.architecture is \"sortformer\", a speaker diarization model: load it with \
+         wavo::Diarizer::load"
+      ),
       arch => bail!(
         "general.architecture is {arch:?}, only gigaam, parakeet, whisper and moonshine are supported"
       ),
@@ -1005,6 +1038,80 @@ fn softmax(logits: &[f32]) -> Vec<f32> {
   exp.into_iter().map(|e| (e / sum) as f32).collect()
 }
 
+/// A speaker diarization model loaded on the GPU: who speaks when (see [Speakers](crate#speakers)).
+///
+/// Load it once with [`Diarizer::load`], then call [`Diarizer::diarize`] for each recording. It is
+/// `Send` and `Sync`: share it between threads, and concurrent calls take turns.
+pub struct Diarizer(Box<sortformer::Sortformer>);
+
+impl Diarizer {
+  /// Loads a diarization model from its GGUF file: `sortformer`'s
+  /// `diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf` (see the [model table](crate#models)). It
+  /// runs on the GPU, as [`Model::load`] picks it.
+  ///
+  /// # Errors
+  ///
+  /// - [`Error::Io`]: the file can't be read.
+  /// - [`Error::Model`]: not a GGUF, an architecture other than `sortformer` (a speech-to-text
+  ///   model is for [`Model::load`]), or a missing or mismatched tensor or metadata key.
+  /// - [`Error::Adapter`], [`Error::Device`]: no GPU, or not one the model can run on.
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// let diarizer = wavo::Diarizer::load("diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf")?;
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+    let g = gguf::Gguf::open(path.as_ref())?;
+    match g.get::<&str>("general.architecture")? {
+      "sortformer" => Ok(Self(Box::new(sortformer::Sortformer::load(&g)?))),
+      arch => bail!(
+        "general.architecture is {arch:?}, only sortformer diarizes; Model::load takes \
+                     speech-to-text models"
+      ),
+    }
+  }
+
+  /// Who speaks when in 16 kHz mono PCM samples in [-1, 1], of any length: the [`Turn`]s of each
+  /// speaker, sorted by start, then speaker. Speakers are numbered from 0 in the order they first
+  /// talk; past the model's [`speakers`](Self::speakers), voices share numbers. Turns start and end
+  /// on the model's 80 ms frames, and those of two speakers overlap where both talk. Silence,
+  /// noise and audio of 10 ms or less give none.
+  ///
+  /// The model runs over the audio in chunks of 15 s with a cache of each speaker's voice, so its
+  /// time grows linearly with the audio and its GPU memory stays that of one chunk: an hour takes
+  /// about 22 s on an Apple M2.
+  ///
+  /// # Errors
+  ///
+  /// The GPU failed: [`Error::Gpu`], [`Error::Poll`], [`Error::Readback`] or [`Error::Map`].
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// # let diarizer = wavo::Diarizer::load("diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf")?;
+  /// # let pcm = vec![0.0f32; 16_000];
+  /// for turn in diarizer.diarize(&pcm)? {
+  ///   println!("{:>6}–{:>6} ms  Speaker {}", turn.start_ms, turn.end_ms, turn.speaker + 1);
+  /// }
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn diarize(&self, pcm: &[f32]) -> Result<Vec<Turn>> {
+    self.0.diarize(pcm)
+  }
+
+  /// The most speakers the model tells apart: 4 for `sortformer`.
+  pub fn speakers(&self) -> usize {
+    self.0.speakers()
+  }
+
+  /// The GPU the model runs on, as [`Model::device`] reports it.
+  pub fn device(&self) -> &Device {
+    self.0.device()
+  }
+}
+
 fn neural_engine(path: &Path, arch: &str) -> Result<ane::Model> {
   if program(arch).is_none() {
     return Err(Error::NeuralEngine(format!("{arch} models have no Neural Engine program")));
@@ -1071,6 +1178,7 @@ mod tests {
   fn model_and_device_are_send_and_sync() {
     fn check<T: Send + Sync>() {}
     check::<super::Model>();
+    check::<super::Diarizer>();
     check::<super::Device>();
   }
 }

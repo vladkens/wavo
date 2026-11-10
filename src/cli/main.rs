@@ -56,6 +56,9 @@ Run options:
                                Moonshine; at most 15 on the Neural Engine)
   --language CODE              the language of the speech (en, he, ...) for multilingual
                                Whisper models, instead of detecting it
+  --diarize                    tell who speaks with the sortformer model (downloaded as
+                               MODEL is): Speaker 1: ... lines, a speaker per token and
+                               the utterances in --json, a cue per speaker in --srt
   -y, --yes                    download a missing model without asking
   --backend auto|gpu|ane       where the encoder runs: auto (the default) takes the Neural
                                Engine for Parakeet and GigaAM once `wavo pull` prepared
@@ -81,7 +84,8 @@ Serve options:
   first use, one at a time. POST /asr, POST /detect-language and GET /status answer as
   whisper-asr-webservice does, for Bazarr's subtitles, with the first model.
 
-MODEL is a name below, its full name or a path to a .gguf file (for serve, a name). AUDIO is
+MODEL is a name below, its full name or a path to a .gguf file (for serve, a name); for
+sortformer, wavo run prints who speaks when, up to 4 speakers numbered from 1. AUDIO is
 wav, mp3, m4a, flac or ogg (Vorbis), downmixed to mono and resampled to 16 kHz.
 Models live in the Hugging Face cache (HF_HUB_CACHE or HF_HOME), shared with the hf CLI;
 only `wavo pull`, and `wavo run` and `wavo serve` for a missing model (after asking, or with
@@ -280,10 +284,14 @@ fn devices() -> Result<()> {
   Ok(())
 }
 
+/// The diarization model of `--diarize`.
+const DIARIZER: &str = "sortformer";
+
 fn run(args: &[&str]) -> Result<()> {
   const USAGE: &str = "usage: wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS] \
-                       [--language CODE] [--backend B] [--device D] [-y]";
+                       [--language CODE] [--diarize] [--backend B] [--device D] [-y]";
   let (mut format, mut segment, mut download, mut rest) = (None, None, Download::Ask, Vec::new());
+  let mut diarize = false;
   let mut options = wavo::Options::default();
   let (mut on, mut gpu) = (Backend::Auto, None);
   let mut args = args.iter();
@@ -304,6 +312,7 @@ fn run(args: &[&str]) -> Result<()> {
         options.language = Some(code.to_string());
       }
       "-y" | "--yes" => download = Download::Yes,
+      "--diarize" if !diarize => diarize = true,
       _ if arg.starts_with('-') => bail!("unknown or repeated option {arg}\n{USAGE}"),
       _ => rest.push(arg),
     }
@@ -330,9 +339,24 @@ fn run(args: &[&str]) -> Result<()> {
   };
   ensure!(!meta.is_dir(), "{audio}: a folder, not an audio file");
   let path = model_path(model, download, on)?;
+  let diarizer = models::architecture(&path).is_some_and(|a| a == "sortformer");
+  let speakers = match diarize && !diarizer {
+    true => Some(model_path(DIARIZER, download, Backend::Gpu)?),
+    false => None,
+  };
   let bar = spinner(); // cleared on errors too
   bar.set_message("decoding the audio");
   let pcm = audio::read(audio)?;
+  if diarizer {
+    let turns = diarize_with(&path, &pcm, &bar)?;
+    bar.finish_and_clear();
+    if turns.is_empty() {
+      eprintln!("no speech found in {audio}");
+    }
+    let text = output::turns(&turns, format);
+    return Ok(std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())?);
+  }
+
   bar.set_message("loading the model");
   let model = load(&path, on)?;
   if let Some(warning) = model.device().warning() {
@@ -348,14 +372,33 @@ fn run(args: &[&str]) -> Result<()> {
     eprintln!("no speech recognized in {audio}");
   }
 
-  let (tokens, ms) = (&transcript.tokens, (pcm.len() / 16) as u32);
-  let text = match format {
-    Some("--json") => output::json(&transcript) + "\n",
-    Some(_) => output::srt(&output::cues(tokens, &starts, ms, models::timed(&path))),
-    None if transcript.text.is_empty() => String::new(),
-    None => format!("{}\n", transcript.text),
+  let utterances = match speakers {
+    Some(diarizer) => {
+      let bar = spinner();
+      Some(transcript.utterances(&diarize_with(&diarizer, &pcm, &bar)?))
+    }
+    None => None,
+  };
+
+  let (tokens, ms, timed) = (&transcript.tokens, (pcm.len() / 16) as u32, models::timed(&path));
+  let text = match (format, &utterances) {
+    (Some("--json"), _) => output::json(&transcript, utterances.as_deref()) + "\n",
+    (Some(_), Some(u)) => output::srt(&output::speaker_cues(tokens, &starts, u, ms, timed)),
+    (Some(_), None) => output::srt(&output::cues(tokens, &starts, ms, timed)),
+    (None, Some(u)) => output::by_speaker(u),
+    (None, None) if transcript.text.is_empty() => String::new(),
+    (None, None) => format!("{}\n", transcript.text),
   };
   Ok(std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())?)
+}
+
+/// The turns of `pcm` by the diarization model at `path`, with progress on `bar`.
+fn diarize_with(path: &Path, pcm: &[f32], bar: &ProgressBar) -> Result<Vec<wavo::Turn>> {
+  bar.set_message("loading the diarization model");
+  let diarizer =
+    wavo::Diarizer::load(path).with_context(|| format!("loading {}", path.display()))?;
+  bar.set_message("telling the speakers apart");
+  Ok(diarizer.diarize(pcm)?)
 }
 
 /// A model by name, for the commands that manage the cache.
@@ -522,12 +565,21 @@ fn bench(model: &str, audio: &str, opts: &[&str]) -> Result<()> {
   let (pcm, path) = (audio::read(audio)?, model_path(model, Download::Never, on)?);
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
   let t = Instant::now();
-  let model = load(&path, on)?;
+  // A diarization model's call is `diarize`.
+  let (model, diarizer) = match models::architecture(&path).as_deref() {
+    Some("sortformer") => (None, Some(wavo::Diarizer::load(&path)?)),
+    _ => (Some(load(&path, on)?), None),
+  };
   let load = ms(t);
-  eprintln!("device: {}", model.device());
+  let device = model.as_ref().map(|m| m.device()).or(diarizer.as_ref().map(|d| d.device()));
+  eprintln!("device: {}", device.unwrap());
   let mut calls = (0..=n).map(|_| {
     let t = Instant::now();
-    model.transcribe(&pcm).map(|_| ms(t))
+    match (&model, &diarizer) {
+      (Some(m), _) => m.transcribe(&pcm).map(|_| ms(t)),
+      (_, Some(d)) => d.diarize(&pcm).map(|_| ms(t)),
+      _ => unreachable!(),
+    }
   });
   let first = calls.next().unwrap()?;
   let mut warm = calls.collect::<Result<Vec<_>, _>>()?;

@@ -9,6 +9,9 @@
 # alone. Writes nothing if the reference fails, cuts a decode short (`run:` not `ok`: truncated or
 # repeating) or prints anything else.
 #
+# A diarization model's block is the reference's `speaker segments: N` line and its N lines like
+# `  [   0.32 ->    2.40] S1`, speaker by speaker, as it prints them.
+#
 # A SAMPLE `CLIP+lang=CODE` runs CLIP.wav with the language set (`-l CODE`): the transcript of
 # `Options::language`.
 #
@@ -39,6 +42,15 @@ for s in "$@"; do
   "$cli" -m "$model" --timestamps "$timestamps" ${lang:+-l "${lang#+lang=}"} "$wav" \
     > "$tmp/raw" 2> /dev/null || { echo "$s: transcribe-cli failed" >&2; exit 1; }
   grep -qx 'run: ok' "$tmp/raw" || { echo "$s: $(grep '^run: ' "$tmp/raw")" >&2; exit 1; }
+  if grep -q '^speaker segments: ' "$tmp/raw"; then
+    awk '/^speaker segments: /{t=1; print; next} t && /^  \[/{print; next} {t=0}' "$tmp/raw" \
+      > "$tmp/block"
+    n=$(sed -n 's/^speaker segments: //p' "$tmp/block")
+    [ "$(wc -l < "$tmp/block")" -eq $((n + 1)) ] \
+      || { echo "$s: unexpected output from transcribe-cli" >&2; exit 1; }
+    mv "$tmp/block" "$tmp/blocks/$s"
+    continue
+  fi
   # From `text:` to `realtime:` every line must be known, so the filter below drops no part of
   # the transcript, such as a second line of text.
   awk '/^text: /{r=1; next} /^  realtime: /{r=0}

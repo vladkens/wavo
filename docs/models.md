@@ -76,10 +76,11 @@ Wrong words per 100 on the FLEURS test set, lower is better, the best in bold. T
 | `breeze-asr-25` | 1.67GB | Taiwanese Mandarin and English | cased, punctuated | 0.5× |
 | `moonshine-tiny` | 0.04GB | English | cased, punctuated | 15.2× |
 | `moonshine-base` | 0.08GB | English | cased, punctuated | 10.2× |
+| `sortformer` | 0.14GB | English | speaker turns | – |
 
 Speed is how many times faster than `whisper-turbo`, on the same clips of the same machine. Trust the order, not the digits.
 
-Moonshine gives no timestamps. Full names, such as `parakeet-tdt-0.6b-v3`, and a path to a `.gguf` work too.
+Moonshine gives no timestamps. `sortformer` writes no text: it tells up to 4 speakers apart for `--diarize`. Full names, such as `parakeet-tdt-0.6b-v3`, and a path to a `.gguf` work too.
 
 ## Credits
 
@@ -101,3 +102,4 @@ wavo's kernels and algorithms are built from the ideas and code of these project
 - [ivrit-ai/whisper-large-v3-turbo](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo) © ivrit.ai, Apache-2.0
 - [parakeet-tdt-0.6b-v3-he](https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he) © Yakov Kolani, CC-BY-4.0
 - [parakeet-tdt-0.6b-v3-uk](https://huggingface.co/ihnatov-yuri/parakeet-tdt-0.6b-v3-uk) © Yurii Ihnatov, CC-BY-4.0
+- [Streaming Sortformer 4spk v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) © NVIDIA, NVIDIA Open Model License

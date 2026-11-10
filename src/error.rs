@@ -12,7 +12,9 @@ pub enum Error {
   #[error(transparent)]
   Io(#[from] std::io::Error),
   /// The file is not a model wavo supports: not a GGUF, an architecture other than `gigaam`,
-  /// `parakeet`, `whisper` and `moonshine`, or a missing or mismatched tensor or metadata key.
+  /// `parakeet`, `whisper` and `moonshine` (`sortformer` for
+  /// [`Diarizer::load`](crate::Diarizer::load)), or a missing or mismatched tensor or metadata
+  /// key.
   #[error("invalid model: {0}")]
   Model(String),
   /// No GPU adapter (Metal, Vulkan, or DX12 on Windows) is available.

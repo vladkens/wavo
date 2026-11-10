@@ -2,7 +2,8 @@
 //! Log-mel features as transcribe.cpp computes them for Parakeet (`src/transcribe-mel.cpp`):
 //! pre-emphasis in f64 before 256 zeros of padding on each side, symmetric Hann(400) centred in an
 //! f64 FFT of 512, power cast to f32, Slaney filterbank, `ln(mel + 2⁻²⁴)`, then each mel bin
-//! normalized over all frames but the last, which is zero. The GGUF's dither is never applied.
+//! normalized over all frames but the last, which is zero. Sortformer takes the log-mel without
+//! the normalization. The GGUF's dither is never applied.
 
 use std::f64::consts::PI;
 use std::ops::Range;
@@ -53,6 +54,25 @@ impl Frontend {
     if frames < 3 {
       return Vec::new();
     }
+    let mut mel = self.log_mel(pcm, frames);
+    // Unbiased statistics over all frames but the last.
+    let n = frames - 1;
+    for m in 0..MELS {
+      let column = || (0..n).map(|t| mel[t * MELS + m] as f64);
+      let mean = column().sum::<f64>() / n as f64;
+      let var = column().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (n - 1) as f64;
+      let inv = 1.0 / (var.sqrt() + 1e-5f32 as f64);
+      for t in 0..n {
+        mel[t * MELS + m] = ((mel[t * MELS + m] as f64 - mean) * inv) as f32;
+      }
+      mel[n * MELS + m] = 0.0;
+    }
+    mel
+  }
+
+  /// The log-mel of the first `frames` frames, time-major `[frames][MELS]`, up to
+  /// `pcm.len() / 160 + 1` of them; `pcm` is not empty.
+  pub fn log_mel(&self, pcm: &[f32], frames: usize) -> Vec<f32> {
     let mut padded = vec![0f64; pcm.len() + N_FFT];
     padded[N_FFT / 2] = pcm[0] as f64;
     for (y, x) in padded[N_FFT / 2 + 1..].iter_mut().zip(pcm.windows(2)) {
@@ -77,18 +97,7 @@ impl Frontend {
         mel.push((e + LOG_EPS).ln());
       }
     }
-    // Unbiased statistics over all frames but the last.
-    let n = frames - 1;
-    for m in 0..MELS {
-      let column = || (0..n).map(|t| mel[t * MELS + m] as f64);
-      let mean = column().sum::<f64>() / n as f64;
-      let var = column().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (n - 1) as f64;
-      let inv = 1.0 / (var.sqrt() + 1e-5f32 as f64);
-      for t in 0..n {
-        mel[t * MELS + m] = ((mel[t * MELS + m] as f64 - mean) * inv) as f32;
-      }
-      mel[n * MELS + m] = 0.0;
-    }
+
     mel
   }
 }
