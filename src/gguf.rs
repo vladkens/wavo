@@ -1,6 +1,6 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! GGUF v3 reader: metadata from the header, F32/F16/Q8_0 tensors streamed from the file, or on
-//! macOS from its memory map.
+//! GGUF v3 reader: metadata from the header, F32/F16/Q8_0 tensors streamed from the file or its
+//! memory map.
 
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -318,18 +318,29 @@ impl Gguf {
   }
 }
 
-/// A read-only memory map of the whole file while a model loads, on macOS: the weights are copied
-/// from the page cache into their buffers, with no read into a buffer between, and a file the page
-/// cache lacks is read at the disk's pace (`F_RDADVISE`) instead of page by page (see
-/// docs/perf.md). Elsewhere `Map::new` gives `None` and tensors are read from the file.
+/// A read-only memory map of the whole file while a model loads: the weights are copied from the
+/// page cache into their buffers, with no read into a buffer between, and a file the page cache
+/// lacks is read ahead in large requests (macOS `F_RDADVISE`, Linux `MADV_WILLNEED`, Windows
+/// `PrefetchVirtualMemory`) instead of page by page as it is copied (see docs/perf.md). Where it
+/// doesn't map, `Map::new` gives `None` and tensors are read from the file.
 mod map {
-  #[cfg(target_os = "macos")]
-  pub use macos::Map;
+  #[cfg(any(target_os = "macos", all(target_os = "linux", target_pointer_width = "64")))]
+  pub use unix::Map;
+  #[cfg(windows)]
+  pub use windows::Map;
 
-  #[cfg(not(target_os = "macos"))]
+  #[cfg(not(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64"),
+    windows
+  )))]
   pub enum Map {}
 
-  #[cfg(not(target_os = "macos"))]
+  #[cfg(not(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64"),
+    windows
+  )))]
   impl Map {
     pub fn new(_: &std::fs::File) -> Option<Self> {
       None
@@ -340,8 +351,9 @@ mod map {
     }
   }
 
-  #[cfg(target_os = "macos")]
-  mod macos {
+  /// macOS and 64-bit Linux, where `off_t` is an `i64`.
+  #[cfg(any(target_os = "macos", all(target_os = "linux", target_pointer_width = "64")))]
+  mod unix {
     use std::ffi::c_void;
     use std::fs::File;
     use std::os::fd::AsRawFd;
@@ -356,14 +368,21 @@ mod map {
         off: i64,
       ) -> *mut c_void;
       fn munmap(addr: *mut c_void, len: usize) -> i32;
+      #[cfg(target_os = "macos")]
       fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+      #[cfg(target_os = "linux")]
+      fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
     }
 
     const PROT_READ: i32 = 1;
     const MAP_PRIVATE: i32 = 2;
+    #[cfg(target_os = "macos")]
     const F_RDADVISE: i32 = 44;
+    #[cfg(target_os = "linux")]
+    const MADV_WILLNEED: i32 = 3;
 
     /// `struct radvisory` of `<sys/fcntl.h>`.
+    #[cfg(target_os = "macos")]
     #[repr(C)]
     struct Radvisory {
       offset: i64,
@@ -391,12 +410,20 @@ mod map {
 
         // A hint only, in pieces of at most 1 GiB (`count` is an `int`): when it fails, the pages
         // are read as they are first touched.
+        #[cfg(target_os = "macos")]
         for offset in (0..len).step_by(1 << 30) {
           let count = (len - offset).min(1 << 30) as i32;
           let advice = Radvisory { offset: offset as i64, count };
           // SAFETY: `fcntl` reads `advice` during the call only.
           unsafe { fcntl(fd, F_RDADVISE, &advice as *const Radvisory) };
         }
+
+        // A hint only: the kernel starts reading the whole file into the page cache.
+        // SAFETY: the range is the mapping's.
+        #[cfg(target_os = "linux")]
+        unsafe {
+          madvise(ptr, len, MADV_WILLNEED)
+        };
         Some(Self { ptr, len })
       }
 
@@ -411,6 +438,106 @@ mod map {
       fn drop(&mut self) {
         // SAFETY: mapped by `new`; no slice of it outlives `self`.
         unsafe { munmap(self.ptr, self.len) };
+      }
+    }
+  }
+
+  #[cfg(windows)]
+  mod windows {
+    use std::ffi::c_void;
+    use std::fs::File;
+    use std::os::windows::io::AsRawHandle;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+      fn CreateFileMappingW(
+        file: *mut c_void,
+        attributes: *const c_void,
+        protect: u32,
+        size_high: u32,
+        size_low: u32,
+        name: *const u16,
+      ) -> *mut c_void;
+      fn MapViewOfFile(
+        mapping: *mut c_void,
+        access: u32,
+        offset_high: u32,
+        offset_low: u32,
+        len: usize,
+      ) -> *mut c_void;
+      fn UnmapViewOfFile(addr: *const c_void) -> i32;
+      fn CloseHandle(handle: *mut c_void) -> i32;
+      fn PrefetchVirtualMemory(
+        process: *mut c_void,
+        n: usize,
+        ranges: *const Range,
+        flags: u32,
+      ) -> i32;
+    }
+
+    const PAGE_READONLY: u32 = 2;
+    const FILE_MAP_READ: u32 = 4;
+    /// `GetCurrentProcess()`'s pseudo handle.
+    const CURRENT_PROCESS: *mut c_void = -1isize as *mut c_void;
+
+    /// `WIN32_MEMORY_RANGE_ENTRY` of `<memoryapi.h>`.
+    #[repr(C)]
+    struct Range {
+      addr: *mut c_void,
+      len: usize,
+    }
+
+    pub struct Map {
+      ptr: *mut c_void,
+      len: usize,
+    }
+
+    // SAFETY: the view is read-only and lives until `drop`.
+    unsafe impl Send for Map {}
+    unsafe impl Sync for Map {}
+
+    impl Map {
+      /// The file mapped and read ahead, or `None` when it doesn't map (an empty file doesn't):
+      /// tensors are read then.
+      pub fn new(file: &File) -> Option<Self> {
+        let len = file.metadata().ok()?.len() as usize;
+        let handle = file.as_raw_handle();
+        // SAFETY: a read-only mapping of an open file; the view keeps it alive once the
+        // mapping's handle is closed.
+        let ptr = unsafe {
+          let mapping =
+            CreateFileMappingW(handle, std::ptr::null(), PAGE_READONLY, 0, 0, std::ptr::null());
+          if mapping.is_null() {
+            return None;
+          }
+
+          let ptr = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+          CloseHandle(mapping);
+          ptr
+        };
+        if ptr.is_null() {
+          return None;
+        }
+
+        // A hint only: the system reads the whole file into memory in large requests.
+        let range = Range { addr: ptr, len };
+        // SAFETY: `range` is the view's and read during the call only.
+        unsafe { PrefetchVirtualMemory(CURRENT_PROCESS, 1, &range, 0) };
+        Some(Self { ptr, len })
+      }
+
+      pub fn bytes(&self) -> &[u8] {
+        // SAFETY: mapped for `len` bytes until `drop`. Model files don't change while they
+        // load: Windows refuses to truncate a mapped file, and a read error faults where a read
+        // would fail.
+        unsafe { std::slice::from_raw_parts(self.ptr.cast(), self.len) }
+      }
+    }
+
+    impl Drop for Map {
+      fn drop(&mut self) {
+        // SAFETY: mapped by `new`; no slice of it outlives `self`.
+        unsafe { UnmapViewOfFile(self.ptr) };
       }
     }
   }
@@ -597,14 +724,15 @@ mod tests {
     assert_eq!(pieces, [(0, 16), (16, 16), (32, 2)]);
   }
 
-  /// From a file, as models load on the GPU: through its memory map on macOS.
+  /// From a file, as models load on the GPU: through its memory map.
   #[test]
   fn reads_tensors_from_files() {
     let path = std::env::temp_dir().join(format!("wavo-gguf-{}.gguf", std::process::id()));
     std::fs::write(&path, sample()).unwrap();
     let mut g = Gguf::open(&path).unwrap();
     g.map();
-    assert_eq!(g.map.is_some(), cfg!(target_os = "macos"));
+    let linux = cfg!(all(target_os = "linux", target_pointer_width = "64"));
+    assert_eq!(g.map.is_some(), cfg!(any(target_os = "macos", windows)) || linux);
     assert_eq!(g.get::<u32>("a.n").unwrap(), 7);
     assert_eq!(g.tensor("w", &[2, 1]).unwrap().to_f32().unwrap(), [1.5, -2.0]);
     let mut pieces = Vec::new();

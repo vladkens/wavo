@@ -436,9 +436,9 @@ impl Model {
   /// The file is one of the Q8_0 GGUFs transcribe.cpp publishes (see the
   /// [model table](crate#models)); the family comes from its `general.architecture`. Parakeet and
   /// GigaAM load on the Neural Engine (in about 0.1 s) when this program has
-  /// [prepared](Model::prepare) the file on a Mac that has one, and on the GPU otherwise. On macOS
-  /// the GPU's load memory-maps the file: replace a model file by renaming a new one over it, not
-  /// by rewriting it in place.
+  /// [prepared](Model::prepare) the file on a Mac that has one, and on the GPU otherwise. The GPU's
+  /// load memory-maps the file: replace a model file by renaming a new one over it, not by
+  /// rewriting it in place.
   ///
   /// # Errors
   ///

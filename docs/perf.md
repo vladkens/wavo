@@ -16,11 +16,11 @@ Numbers a / b / c follow that clip order.
 
 ## How each family runs
 
-**GigaAM.** Load reads the GGUF header and streams each tensor (on macOS from the file's memory
-map, read into the page cache at once with `F_RDADVISE`; elsewhere from the file) into weight
-buffers mapped on unified memory (no staging copy), on a discrete GPU into wgpu staging buffers whose
-copies are submitted every 16 MB while the rest loads; weights stay Q8_0/F16 on the GPU, Q8_0
-scales as f16. Apart from those copies, load runs nothing on the GPU but the fast-kernel probes,
+**GigaAM.** Load reads the GGUF header and streams each tensor from the file's memory map, read
+into the page cache at once (`F_RDADVISE` on macOS, `MADV_WILLNEED` on Linux,
+`PrefetchVirtualMemory` on Windows), into weight buffers mapped on unified memory (no staging
+copy), on a discrete GPU into wgpu staging buffers whose copies are submitted every 16 MB while
+the rest loads; weights stay Q8_0/F16 on the GPU, Q8_0 scales as f16. Apart from those copies, load runs nothing on the GPU but the fast-kernel probes,
 in one submission. Metal caches compiled pipelines across runs by shader source, so new shaders
 cost 0.2–0.4 s once. Per call: CPU log-mel
 (own FFT, one frame at a time), then the encoder over an arena sized for the longest input so far,
@@ -135,8 +135,8 @@ wait on a thread); starting the device while the GGUF header is read (≤ 3 ms l
 reading the weights into memory meanwhile would hide part of it, at the cost of a copy and the
 weights' size in RAM. Whisper's and Moonshine's first call still compiles the decoder pipelines
 (first − warm: whisper-tiny ~5, moonshine-tiny ~12 ms on the RTX 4060). The GGUF's memory map
-on Linux and Windows, which still read it. Weights served from the map without a copy, as
-transcribe.cpp does on Metal (an `MTLBuffer` over the map): load and footprint would lose the
+measured on Linux and Windows, where it is on as on macOS. Weights served from the map without a
+copy, as transcribe.cpp does on Metal (an `MTLBuffer` over the map): load and footprint would lose the
 weights' copy (GigaAM 334 → ~90 MiB), but the kernels would have to read Q8_0 in the file's
 34-byte blocks and unpadded rows at 256-byte-aligned binding offsets.
 
