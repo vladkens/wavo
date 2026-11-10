@@ -340,6 +340,10 @@ fn run(args: &[&str]) -> Result<()> {
   ensure!(!meta.is_dir(), "{audio}: a folder, not an audio file");
   let path = model_path(model, download, on)?;
   let diarizer = models::architecture(&path).is_some_and(|a| a == "sortformer");
+  ensure!(
+    !diarizer || on != Backend::NeuralEngine,
+    "{model} runs on the GPU only, not --backend ane"
+  );
   let speakers = match diarize && !diarizer {
     true => Some(model_path(DIARIZER, download, Backend::Gpu)?),
     false => None,
@@ -568,6 +572,9 @@ fn bench(model: &str, audio: &str, opts: &[&str]) -> Result<()> {
   let t = Instant::now();
   // A diarization model's call is `diarize`.
   let (model, diarizer) = match models::architecture(&path).as_deref() {
+    Some("sortformer") if on == Backend::NeuralEngine => {
+      bail!("{model} runs on the GPU only, not --backend ane")
+    }
     Some("sortformer") => (None, Some(wavo::Diarizer::load(&path)?)),
     _ => (Some(load(&path, on)?), None),
   };

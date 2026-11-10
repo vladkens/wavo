@@ -47,8 +47,9 @@ impl Transcript {
   /// next word's start (at most 1 s), or when none does to the speaker of the nearest turn;
   /// consecutive words of a speaker make an utterance. The utterances hold every token, in order.
   ///
-  /// A word starts at a token whose piece starts with `▁` or a space. The attribution is only as
-  /// fine as the token times: per token for Parakeet and GigaAM; per segment for Whisper, whose
+  /// A word starts at a token whose piece starts with `▁` or a space, or that starts more than 1 s
+  /// after the token before; words that start together share their span. The attribution is only
+  /// as fine as the token times: per word for Parakeet and GigaAM; per segment for Whisper, whose
   /// tokens carry their segment's start; none for Moonshine, whose tokens all start at 0.
   ///
   /// # Examples
@@ -66,8 +67,15 @@ impl Transcript {
   pub fn utterances(&self, turns: &[Turn]) -> Vec<Utterance> {
     let tokens = &self.tokens;
     let blank = |i: usize| tokens[i].piece.trim_matches([' ', '▁']).is_empty();
-    let firsts: Vec<usize> =
-      (0..tokens.len()).filter(|&i| i == 0 || tokens[i].piece.starts_with(['▁', ' '])).collect();
+    // A pause also starts a word: where `transcribe_long` joins pieces of a character vocabulary,
+    // and between segments of text without spaces.
+    let firsts: Vec<usize> = (0..tokens.len())
+      .filter(|&i| {
+        i == 0
+          || tokens[i].piece.starts_with(['▁', ' '])
+          || tokens[i].start_ms > tokens[i - 1].start_ms.saturating_add(WORD_MS)
+      })
+      .collect();
     // Per word its tokens and start: that of its first token with more than a space (a space token
     // of a character vocabulary comes right after the word before).
     let words: Vec<(Range<usize>, u32)> = (firsts.iter().enumerate())
@@ -78,27 +86,35 @@ impl Transcript {
       })
       .collect();
 
-    let mut out: Vec<Utterance> = Vec::new();
-    for (k, (range, start)) in words.iter().cloned().enumerate() {
-      let next = words.get(k + 1).map_or(u32::MAX, |w| w.1);
-      let end = next.min(start.saturating_add(WORD_MS)).max(start + 1);
-      let speaker = speaker(turns, start, end);
-      match out.last_mut() {
-        Some(u) if u.speaker == speaker => (u.end_ms, u.tokens.end) = (end, range.end),
-        _ => out.push(Utterance {
-          speaker,
-          start_ms: start,
-          end_ms: end,
-          tokens: range,
-          ..Default::default()
-        }),
+    // Each word lasts until the next start after its own: words that start together (a Whisper
+    // segment's) share their span, and so their speaker.
+    let mut ends = vec![0; words.len()];
+    let mut later = u32::MAX;
+    for k in (0..words.len()).rev() {
+      let start = words[k].1;
+      if let Some(next) = words.get(k + 1).filter(|w| w.1 != start) {
+        later = next.1;
       }
+
+      ends[k] = later.min(start.saturating_add(WORD_MS)).max(start + 1);
     }
 
-    for u in &mut out {
-      let text: String =
-        tokens[u.tokens.clone()].iter().map(|t| t.piece.replace('▁', " ")).collect();
-      u.text = text.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+    let mut out: Vec<Utterance> = Vec::new();
+    for ((range, start), end) in words.into_iter().zip(ends) {
+      let speaker = speaker(turns, start, end);
+      // Words join with one space, also those a pause starts.
+      let pieces: String =
+        tokens[range.clone()].iter().map(|t| t.piece.replace('▁', " ")).collect();
+      let text = pieces.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+      match out.last_mut() {
+        Some(u) if u.speaker == speaker => {
+          (u.end_ms, u.tokens.end) = (end, range.end);
+          if !text.is_empty() {
+            u.text = if u.text.is_empty() { text } else { format!("{} {text}", u.text) };
+          }
+        }
+        _ => out.push(Utterance { speaker, start_ms: start, end_ms: end, text, tokens: range }),
+      }
     }
 
     out
@@ -180,10 +196,23 @@ mod tests {
     let turns = [turn(0, 0, 2000), turn(1, 2900, 4000)];
     let got: Vec<_> = said(&t, &turns).into_iter().map(|u| (u.0, u.1)).collect();
     assert_eq!(got, [(Some(0), "Ask not.".into()), (Some(1), "Next".into())]);
+    // Text without spaces: a segment per speaker.
+    let t = transcript(&[("我们", 0), ("走吧。", 0), ("好", 2000)]);
+    let got: Vec<_> = said(&t, &turns).into_iter().map(|u| (u.0, u.1)).collect();
+    assert_eq!(got, [(Some(0), "我们走吧。".into()), (Some(1), "好".into())]);
+    // Three words of one segment, the last as long as the segment: all the first speaker's.
+    let t = transcript(&[(" A", 0), (" b", 0), (" c.", 0), (" Next", 3000)]);
+    let turns = [turn(0, 0, 700), turn(1, 700, 4000)];
+    let got: Vec<_> = said(&t, &turns).into_iter().map(|u| (u.0, u.1)).collect();
+    assert_eq!(got, [(Some(0), "A b c.".into()), (Some(1), "Next".into())]);
     // A character vocabulary: a space token starts each word.
     let t = transcript(&[("д", 0), ("а", 40), (" ", 80), ("н", 2000), ("е", 2040), ("т", 2080)]);
     let turns = [turn(0, 0, 500), turn(1, 1800, 2500)];
     let got: Vec<_> = said(&t, &turns).into_iter().map(|u| (u.0, u.1)).collect();
     assert_eq!(got, [(Some(0), "да".into()), (Some(1), "нет".into())]);
+    // Pieces of `transcribe_long` joined without a space token: the pause starts a word.
+    let t = transcript(&[("д", 0), ("а", 40), ("н", 2000), ("е", 2040), ("т", 2080)]);
+    assert_eq!(said(&t, &turns).into_iter().map(|u| u.1).collect::<Vec<_>>(), ["да", "нет"]);
+    assert_eq!(said(&t, &[turn(0, 0, 3000)])[0].1, "да нет");
   }
 }
