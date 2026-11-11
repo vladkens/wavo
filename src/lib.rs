@@ -97,7 +97,8 @@
 //!
 //! Load a model once and call `transcribe` as often as needed; loading takes about 0.1–0.2 s on
 //! an Apple M2. [`Model::device`] names the GPU and API it runs on, for a log line or a settings
-//! screen, and [`devices`] lists the GPUs before any model is loaded.
+//! screen, [`devices`] lists the GPUs before any model is loaded, and [`Backend::GpuAt`] loads on
+//! one of them.
 //!
 //! # Long audio
 //!
@@ -261,7 +262,11 @@ pub use split::split;
 /// one [`Model::load`] picks on the GPU (see [`Model::device`] for how), and last the Mac's
 /// Neural Engine when it has one that Core ML can use (Apple Silicon, macOS 15 or later, not in a
 /// virtual machine): Parakeet and GigaAM run there once [prepared](Model::prepare). The adapters'
-/// [`kernels`](Device::kernels) are those their features allow.
+/// [`kernels`](Device::kernels) are those their features allow. [`Backend::GpuAt`] loads a model
+/// on the adapter at an index of this list.
+///
+/// On Windows each GPU appears twice, through Vulkan and through DX12, when it has drivers for
+/// both.
 ///
 /// Only the adapters' info and features are read: no device is created and no kernel compiles, so
 /// it takes milliseconds and works without a model, for example to warn about a
@@ -419,8 +424,25 @@ pub enum Backend {
   #[default]
   Auto,
   /// The GPU through wgpu, on every platform: the same text, tokens and timestamps as
-  /// transcribe.cpp.
+  /// transcribe.cpp. wavo picks the adapter as [`Model::device`] describes.
   Gpu,
+  /// The GPU adapter at this index of [`devices`], such as an integrated GPU on a laptop where
+  /// [`Gpu`](Self::Gpu) picks the discrete one. `GpuAt(0)` is the adapter `Gpu` picks. The index
+  /// holds while the adapters and drivers stay the same. An index past the GPUs, or the Neural
+  /// Engine's (the last entry of `devices` on a Mac that has one), fails the load with
+  /// [`Error::Gpu`].
+  ///
+  /// ```no_run
+  /// use wavo::{Backend, DeviceKind, Model};
+  ///
+  /// // The first integrated GPU, else the default one.
+  /// let devices = wavo::devices()?;
+  /// let integrated = devices.iter().position(|d| d.kind == DeviceKind::IntegratedGpu);
+  /// let on = integrated.map_or(Backend::Gpu, Backend::GpuAt);
+  /// let model = Model::load_with("gigaam-v3-e2e-rnnt-Q8_0.gguf", on)?;
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  GpuAt(usize),
   /// Apple's Neural Engine through Core ML, on Apple Silicon with macOS 15 or later, for Parakeet
   /// and GigaAM once [prepared](Model::prepare). It runs in F16 with 8-bit weights in a fixed
   /// 15 s window: now and then a word, a comma or a capital letter differs from the GPU's, and some
@@ -482,9 +504,10 @@ impl Model {
   ///
   /// # Errors
   ///
-  /// Those of [`Model::load`], and [`Error::NeuralEngine`] for [`Backend::NeuralEngine`] when this
+  /// Those of [`Model::load`]; [`Error::NeuralEngine`] for [`Backend::NeuralEngine`] when this
   /// machine has no Neural Engine, the family has no Neural Engine program, the file isn't
-  /// [prepared](Model::prepare), or Core ML fails to load it.
+  /// [prepared](Model::prepare), or Core ML fails to load it; [`Error::Gpu`] for
+  /// [`Backend::GpuAt`] with an index past the GPUs [`devices`] lists.
   ///
   /// # Examples
   ///
@@ -503,8 +526,12 @@ impl Model {
     let languages = g.optional_array::<&str>("general.languages")?;
     let languages = languages.into_iter().map(str::to_string).collect();
     let arch = g.get::<&str>("general.architecture")?;
+    let gpu = match backend {
+      Backend::GpuAt(i) => Some(i),
+      _ => None,
+    };
     let ane = match backend {
-      Backend::Gpu => None,
+      Backend::Gpu | Backend::GpuAt(_) => None,
       Backend::NeuralEngine => Some(neural_engine(path, arch)?),
       // A file that isn't prepared in this program, or that Core ML fails to load, runs on the
       // GPU: a first load in this program would compile for the Neural Engine for 10–30 s.
@@ -515,10 +542,10 @@ impl Model {
     };
 
     let family = match arch {
-      "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g, ane)?)),
-      "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g, ane)?)),
-      "whisper" => Family::Whisper(Box::new(whisper::Whisper::load(&g)?)),
-      "moonshine" => Family::Moonshine(Box::new(moonshine::Moonshine::load(&g)?)),
+      "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g, ane, gpu)?)),
+      "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g, ane, gpu)?)),
+      "whisper" => Family::Whisper(Box::new(whisper::Whisper::load(&g, gpu)?)),
+      "moonshine" => Family::Moonshine(Box::new(moonshine::Moonshine::load(&g, gpu)?)),
       arch => bail!(
         "general.architecture is {arch:?}, only gigaam, parakeet, whisper and moonshine are supported"
       ),
@@ -850,8 +877,8 @@ impl Model {
   /// [`SoftwareGpu`](DeviceKind::SoftwareGpu), such as WARP or llvmpipe, when no hardware driver
   /// is installed.
   ///
-  /// One model runs on one device for its lifetime. To use several GPUs, load several models;
-  /// choosing the GPU is not supported yet.
+  /// [`Backend::GpuAt`] picks another adapter of [`devices`] instead. One model runs on one
+  /// device for its lifetime; to use several GPUs, load a model on each.
   ///
   /// # Examples
   ///

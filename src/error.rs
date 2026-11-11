@@ -31,7 +31,9 @@ pub enum Error {
   #[error("GPU poll: {0}")]
   Poll(#[from] wgpu::PollError),
   /// An error the GPU reported during a call (out of memory, a lost device), or work the driver
-  /// dropped unfinished: some drivers cancel GPU work that runs for more than about 20 s.
+  /// dropped unfinished: some drivers cancel GPU work that runs for more than about 20 s. Also a
+  /// [`Backend::GpuAt`](crate::Backend::GpuAt) index past the GPUs that
+  /// [`devices`](crate::devices) lists.
   #[error("GPU: {0}")]
   Gpu(String),
   /// The audio is longer than 1.5 times [`Model::max_audio_ms`](crate::Model::max_audio_ms) for

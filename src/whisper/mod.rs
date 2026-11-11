@@ -55,7 +55,8 @@ struct Arena {
 }
 
 impl Whisper {
-  pub fn load(g: &Gguf) -> Result<Self> {
+  /// Runs on the GPU at `gpu`, an index of `crate::devices`, else the default one.
+  pub fn load(g: &Gguf, gpu: Option<usize>) -> Result<Self> {
     let u = |key: &str| g.get::<u32>(&format!("stt.whisper.{key}")).map(|v| v as usize);
     for (key, want) in [
       ("stt.frontend.type", "mel"),
@@ -130,7 +131,7 @@ impl Whisper {
       bail!("special token ids out of the vocabulary");
     }
 
-    let gpu = Gpu::new(true)?;
+    let gpu = Gpu::new(true, gpu)?;
     let mels = u("encoder.num_mel_bins")?;
     let frontend = Frontend::new(g, mels)?;
     let encoder = Encoder::load(&gpu, g, encoder::Config { mels, frames: SAMPLES / HOP / 2 }, enc)?;

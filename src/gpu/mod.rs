@@ -102,6 +102,11 @@ pub enum Kernels {
 
 /// The GPU adapters for [`crate::devices`], the one `adapter()` picks first.
 pub fn devices() -> Result<Vec<Device>> {
+  Ok(adapters()?.iter().map(|a| Device::new(&a.get_info(), kernels(a))).collect())
+}
+
+/// Every adapter, the one `adapter()` picks first, in the order of [`devices`].
+fn adapters() -> Result<Vec<wgpu::Adapter>> {
   let first = adapter()?;
   let info = first.get_info();
   let mut desc = wgpu::InstanceDescriptor::new_without_display_handle().with_env();
@@ -113,7 +118,20 @@ pub fn devices() -> Result<Vec<Device>> {
     rest.remove(i);
   }
 
-  Ok(std::iter::once(first).chain(rest).map(|a| Device::new(&a.get_info(), kernels(&a))).collect())
+  Ok(std::iter::once(first).chain(rest).collect())
+}
+
+/// The adapter at `index` of [`devices`], else the one `adapter()` picks.
+fn adapter_at(index: Option<usize>) -> Result<wgpu::Adapter> {
+  let Some(i) = index else { return adapter() };
+  let mut all = adapters()?;
+  if i >= all.len() {
+    let n = all.len();
+    let msg = format!("no GPU at index {i} of wavo::devices(): it lists {n} GPUs, 0 to {}", n - 1);
+    return Err(Error::Gpu(msg));
+  }
+
+  Ok(all.swap_remove(i))
 }
 
 /// The kernels `adapter`'s features allow, before their probes.
@@ -420,11 +438,12 @@ impl Epilogue {
 }
 
 impl Gpu {
-  /// The device with the fast kernels that pass their probes, or only the portable ones.
-  pub fn new(fast: bool) -> Result<Self> {
+  /// The device on the adapter at `index` of [`devices`] (by default the one `adapter()` picks),
+  /// with the fast kernels that pass their probes, or only the portable ones.
+  pub fn new(fast: bool, index: Option<usize>) -> Result<Self> {
     let value = std::env::var_os("WAVO_KERNELS").filter(|_| fast);
     let forced = Forced::parse(value.as_ref().map(|v| v.to_string_lossy()).as_deref())?;
-    let adapter = adapter()?;
+    let adapter = adapter_at(index)?;
     if let Some(forced) = forced {
       forced.check(&adapter)?;
     }
@@ -1628,7 +1647,7 @@ mod tests {
   fn gpus() -> &'static [Gpu; 2] {
     static GPUS: OnceLock<[Gpu; 2]> = OnceLock::new();
     GPUS.get_or_init(|| {
-      let fast = Gpu::new(true).unwrap();
+      let fast = Gpu::new(true, None).unwrap();
       let f = &fast.fast;
       let ops = [&f.layer_norm, &f.conv_glu, &f.attention, &f.relative];
       // With 16×16 matrices only the GEMM and flash attention.
@@ -1642,7 +1661,7 @@ mod tests {
         let tensor = size == 8 && tensor_gpu(&adapter);
         assert_eq!(f.tensor.is_some(), tensor, "the tensor GEMM failed its probe");
       }
-      [Gpu::new(false).unwrap(), fast]
+      [Gpu::new(false, None).unwrap(), fast]
     })
   }
 
