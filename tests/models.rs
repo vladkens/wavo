@@ -413,6 +413,12 @@ fn gigaam_v3_ctc() {
   too_long("gigaam-v3-ctc", "ru-long");
 }
 
+#[test]
+fn gigaam_multilingual_large_ctc() {
+  check("gigaam-multilingual-large-ctc", &["ru", "ru-short", "ru-long", "jfk"]);
+  too_long("gigaam-multilingual-large-ctc", "ru-long");
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn gigaam_v3_e2e_rnnt_ane() {
@@ -435,6 +441,12 @@ fn gigaam_v3_rnnt_ane() {
 #[test]
 fn gigaam_v3_ctc_ane() {
   check_ane("gigaam-v3-ctc", 40, GIGAAM);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn gigaam_multilingual_large_ctc_ane() {
+  check_ane("gigaam-multilingual-large-ctc", 40, &["ru", "ru-short", "ru-long", "jfk"]);
 }
 
 #[test]

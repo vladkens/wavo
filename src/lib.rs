@@ -47,6 +47,7 @@
 //! | `gigaam-v3-e2e-ctc` | `gigaam-v3-e2e-ctc` | 0.27 GB | Russian | cased, punctuated |
 //! | `gigaam-v3-rnnt` | `gigaam-v3-rnnt` | 0.27 GB | Russian | lowercase, no punctuation |
 //! | `gigaam-v3-ctc` | `gigaam-v3-ctc` | 0.27 GB | Russian | lowercase, no punctuation |
+//! | `gigaam-multilingual` | `gigaam-multilingual-large-ctc` | 0.71 GB | Russian, English, Kazakh, Kyrgyz and Uzbek | lowercase, no punctuation |
 //! | `whisper-turbo` | `whisper-large-v3-turbo` | 0.89 GB | 100 languages | cased, punctuated |
 //! | `whisper-turbo-he` | `ivrit-whisper-large-v3-turbo` | 0.89 GB | Hebrew | cased, punctuated |
 //! | `whisper-tiny` | `whisper-tiny` | 0.05 GB | 99 languages | cased, punctuated |
@@ -66,7 +67,8 @@
 //!
 //! A model `<full name>` lives in the Hugging Face repository `<owner>/<full name>-gguf` as
 //! `<full name>-Q8_0.gguf`. The owner is `handy-computer`, transcribe.cpp's account, except for the
-//! Hebrew models: transcribe.cpp doesn't publish them, so their conversions are under `vladkens`.
+//! Hebrew models and GigaAM Multilingual: transcribe.cpp doesn't publish them, so their conversions
+//! are under `vladkens`.
 //!
 //! # Transcribe
 //!

@@ -75,8 +75,8 @@ FLEURS = f"https://huggingface.co/datasets/google/fleurs/resolve/{FLEURS_REV}/da
 FOLDERS = (
     "af_za am_et ar_eg as_in az_az be_by bg_bg bn_in bs_ba ca_es cs_cz cy_gb da_dk de_de "
     "el_gr en_us es_419 et_ee fa_ir fi_fi fr_fr gl_es gu_in ha_ng he_il hi_in hr_hr hu_hu "
-    "hy_am id_id is_is it_it ja_jp ka_ge kk_kz km_kh kn_in ko_kr lb_lu ln_cd lo_la lt_lt "
-    "lv_lv mi_nz mk_mk ml_in mn_mn mr_in ms_my mt_mt my_mm ne_np nl_nl oc_fr pa_in pl_pl "
+    "hy_am id_id is_is it_it ja_jp ka_ge kk_kz km_kh kn_in ko_kr ky_kg lb_lu ln_cd lo_la "
+    "lt_lt lv_lv mi_nz mk_mk ml_in mn_mn mr_in ms_my mt_mt my_mm ne_np nl_nl oc_fr pa_in pl_pl "
     "ps_af pt_br ro_ro ru_ru sd_in sk_sk sl_si sn_zw so_so sr_rs sv_se sw_ke ta_in te_in "
     "tg_tj th_th tr_tr uk_ua ur_pk uz_uz vi_vn yo_ng "
 )
@@ -250,6 +250,9 @@ def normalize(text: str, lang: str) -> str:
 
     if lang in ("zh", "yue"):  # one script for both sides: models write traditional or simplified
         text = zhconv.convert(text, "zh-cn")
+
+    if lang == "uz":  # oʻ, gʻ and the tutuq belgisi: references write ʻ and ʼ, models often '
+        text = re.sub("[ʻʼ‘’'`]", "", text)
 
     text = unicodedata.normalize("NFKC", text).casefold().replace("ё", "е")
     kept = (c if unicodedata.category(c)[0] not in "PS" else " " for c in text)

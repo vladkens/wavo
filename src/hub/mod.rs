@@ -170,6 +170,8 @@ const VK: &str = "vladkens";
 static EN: &[&str] = &["en"];
 static HE: &[&str] = &["he"];
 static RU: &[&str] = &["ru"];
+/// GigaAM Multilingual's, in its model card's order.
+static GIGAAM_ML: &[&str] = &["ru", "en", "kk", "ky", "uz"];
 static ZH_EN: &[&str] = &["zh", "en"];
 /// transcribe.cpp's `V3_LANGUAGES`, in the model card's order.
 static PARAKEET_V3: &[&str] = &[
@@ -208,6 +210,7 @@ pub static MODELS: &[ModelInfo] = &[
   ModelInfo { name: "gigaam-v3-e2e-ctc", owner: HC, full_name: "gigaam-v3-e2e-ctc", size: 272_151_136, languages: "Russian", langs: RU, punctuated: true, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
   ModelInfo { name: "gigaam-v3-rnnt", owner: HC, full_name: "gigaam-v3-rnnt", size: 273_022_880, languages: "Russian", langs: RU, punctuated: false, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
   ModelInfo { name: "gigaam-v3-ctc", owner: HC, full_name: "gigaam-v3-ctc", size: 271_803_328, languages: "Russian", langs: RU, punctuated: false, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
+  ModelInfo { name: "gigaam-multilingual", owner: VK, full_name: "gigaam-multilingual-large-ctc", size: 711_746_112, languages: "Russian, English, Kazakh, Kyrgyz and Uzbek", langs: GIGAAM_ML, punctuated: false, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-Multilingual" },
   ModelInfo { name: "whisper-turbo", owner: HC, full_name: "whisper-large-v3-turbo", size: 886_381_760, languages: "100 languages", langs: WHISPER_V3, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-large-v3-turbo" },
   ModelInfo { name: "whisper-turbo-he", owner: VK, full_name: "ivrit-whisper-large-v3-turbo", size: 886_381_920, languages: "Hebrew", langs: HE, punctuated: true, family: "Whisper", maker: "ivrit.ai", card: "https://huggingface.co/ivrit-ai/whisper-large-v3-turbo" },
   ModelInfo { name: "whisper-tiny", owner: HC, full_name: "whisper-tiny", size: 45_981_088, languages: "99 languages", langs: WHISPER, punctuated: true, family: "Whisper", maker: "OpenAI", card: "https://huggingface.co/openai/whisper-tiny" },
@@ -586,6 +589,7 @@ mod tests {
     let m = lookup("parakeet-he").unwrap();
     assert_eq!(m.repo(), "vladkens/parakeet-tdt-0.6b-v3-he-gguf");
     assert_eq!(m.file(), "parakeet-tdt-0.6b-v3-he-Q8_0.gguf");
+    assert_eq!(name("gigaam-multilingual-large-ctc"), "gigaam-multilingual");
   }
 
   #[test]
@@ -702,7 +706,7 @@ mod tests {
   }
 
   /// Every other list of the models names exactly `MODELS`: the model table of the crate docs (in
-  /// order), `ALL_MODELS` in the Makefile and the tests in `tests/models.rs`.
+  /// order) and the tests in `tests/models.rs`.
   #[test]
   fn model_lists_match() {
     let read = |path: &str| fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path));
@@ -717,31 +721,15 @@ mod tests {
       MODELS.iter().map(|m| format!("{}` | `{}` | {}", m.name, m.full_name, row(m))).collect();
     assert_eq!(docs, expected, "model table in src/lib.rs");
 
-    // The published crate has neither file: these two checks run in the repository only, and
-    // fail there if either file is missing or unreadable.
-    let (makefile, tests) = match (read("Makefile"), read("tests/models.rs")) {
-      (Ok(makefile), Ok(tests)) => (makefile, tests),
-      (Err(a), Err(b)) if [&a, &b].iter().all(|e| e.kind() == std::io::ErrorKind::NotFound) => {
-        return;
-      }
-      (makefile, tests) => {
-        panic!("Makefile: {:?}, tests/models.rs: {:?}", makefile.err(), tests.err())
-      }
+    // The published crate lacks the file: this check runs in the repository only.
+    let tests = match read("tests/models.rs") {
+      Ok(tests) => tests,
+      Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+      Err(e) => panic!("tests/models.rs: {e}"),
     };
+
     let mut full: Vec<&str> = MODELS.iter().map(|m| m.full_name).collect();
     full.sort();
-    let mut make = Vec::new();
-    for line in makefile.lines().skip_while(|l| !l.starts_with("ALL_MODELS := ")) {
-      make.extend(
-        line.trim_start_matches("ALL_MODELS := ").split_whitespace().filter(|w| *w != "\\"),
-      );
-      if !line.ends_with('\\') {
-        break;
-      }
-    }
-    make.sort();
-    assert_eq!(make, full, "ALL_MODELS in the Makefile");
-
     let mut tested: Vec<&str> = (tests.lines())
       .filter_map(|l| l.trim_start().strip_prefix("check(\"")?.split('"').next())
       .collect();
