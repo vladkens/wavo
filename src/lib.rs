@@ -393,7 +393,9 @@ pub struct Token {
   pub id: u32,
   /// Vocabulary piece: a SentencePiece piece (`▁` marks a word start), a character, or for byte
   /// tokens (Whisper's, and SentencePiece's `<0xHH>` fallback) the text the token completes (its
-  /// bytes may end inside a character, leaving the piece empty).
+  /// bytes may end inside a character, leaving the piece empty). With a character vocabulary
+  /// (GigaAM `ctc` and `rnnt`), [`Model::transcribe_long`] puts a space before the piece of the
+  /// first token of each part of the audio after the first, where it joins their texts.
   pub piece: String,
   /// Start time in milliseconds from the start of the audio: the encoder frame where the token
   /// was emitted times the frame length (40 ms for GigaAM, 80 ms for Parakeet); for Whisper the
@@ -701,9 +703,10 @@ impl Model {
   /// (an empty one is skipped), and the tokens follow each other with `start_ms` from the start of
   /// `pcm`. Audio that fits in one piece gives the same transcript as `transcribe_with`.
   ///
-  /// Each piece's first token starts a word, though with a character vocabulary it has no `▁` or
-  /// space: GigaAM `ctc` and `rnnt` spell words letter by letter with a space token between them,
-  /// and none falls between two pieces.
+  /// Each piece's first token starts a word. With a character vocabulary it has no `▁` or space
+  /// of its own (GigaAM `ctc` and `rnnt` spell words letter by letter with a space token between
+  /// them, and none falls between two pieces), so the first token of each piece after the first
+  /// gets the space between the texts at the start of its [`piece`](Token::piece).
   ///
   /// The pieces run one after another on the calling thread. After each, `on_piece` gets it as a
   /// [`Piece`]: its index, the number of pieces, its start and its transcript, for progress or to
@@ -758,6 +761,7 @@ impl Model {
   ) -> Result<Transcript> {
     let ranges = split(pcm, window_ms);
     let (count, mut out) = (ranges.len(), Transcript::default());
+    let chars = matches!(&self.family, Family::Gigaam(m) if m.chars());
     // Samples per language among the pieces with text.
     let mut heard: Vec<(String, usize)> = Vec::new();
     for (index, r) in ranges.into_iter().enumerate() {
@@ -780,7 +784,7 @@ impl Model {
         }
       }
 
-      split::append(&mut out, transcript);
+      split::append(&mut out, transcript, chars);
     }
 
     // The first of the most heard.

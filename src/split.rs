@@ -65,13 +65,19 @@ pub fn split(pcm: &[f32], max_ms: u32) -> Vec<Range<usize>> {
 }
 
 /// Appends the transcript of the next piece, its token times already from the start of the
-/// audio: texts joined with a space, an empty one skipped.
-pub(crate) fn append(out: &mut Transcript, part: Transcript) {
-  if !part.text.is_empty() {
-    out.text += if out.text.is_empty() { "" } else { " " };
-    out.text += &part.text;
+/// audio: texts joined with a space, an empty one skipped. With a character vocabulary (`chars`),
+/// whose words have no `▁`, the space also starts the piece's first token unless it is a space.
+pub(crate) fn append(out: &mut Transcript, mut part: Transcript, chars: bool) {
+  if !part.text.is_empty() && !out.text.is_empty() {
+    out.text.push(' ');
+    if let (true, Some(first)) = (chars, part.tokens.first_mut())
+      && !first.piece.starts_with(' ')
+    {
+      first.piece.insert(0, ' ');
+    }
   }
 
+  out.text += &part.text;
   out.tokens.extend(part.tokens);
 }
 
@@ -162,18 +168,35 @@ mod tests {
   }
 
   #[test]
-  fn append_joins_texts_and_skips_empty_ones() {
-    let part = |text: &str, ids: &[u32]| Transcript {
+  fn append_joins_texts_and_starts_each_piece_with_a_word() {
+    let part = |text: &str, pieces: &[&str]| Transcript {
       text: text.into(),
-      tokens: ids.iter().map(|&id| crate::Token { id, ..Default::default() }).collect(),
+      tokens: (pieces.iter().enumerate())
+        .map(|(i, &piece)| crate::Token { id: i as u32, piece: piece.into(), ..Default::default() })
+        .collect(),
       language: None,
     };
-    let mut t = Transcript::default();
-    for p in [part("a b", &[1, 2]), part("", &[]), part("c", &[3])] {
-      append(&mut t, p);
-    }
+    let join = |chars, parts: &[(&str, &[&str])]| {
+      let mut t = Transcript::default();
+      parts.iter().for_each(|&(text, pieces)| append(&mut t, part(text, pieces), chars));
+      let ids: Vec<u32> = t.tokens.iter().map(|t| t.id).collect();
+      let pieces: Vec<String> = t.tokens.into_iter().map(|t| t.piece).collect();
+      (t.text, pieces, ids)
+    };
 
-    assert_eq!(t.text, "a b c");
-    assert_eq!(t.tokens.iter().map(|t| t.id).collect::<Vec<_>>(), [1, 2, 3]);
+    // Characters (GigaAM ctc and rnnt): an empty piece is skipped, a space token that the text
+    // drops stays alone.
+    let (text, pieces, ids) = join(
+      true,
+      &[("ab c", &["a", "b", " ", "c"]), ("", &[]), ("de", &["d", "e"]), ("f", &[" ", "f"])],
+    );
+    assert_eq!(text, "ab c de f");
+    assert_eq!(pieces, ["a", "b", " ", "c", " d", "e", " ", "f"]);
+    assert_eq!(ids, [0, 1, 2, 3, 0, 1, 0, 1]);
+
+    // Other vocabularies keep their pieces: `▁`, a leading space, or none (Chinese).
+    let (text, pieces, _) = join(false, &[("a", &["▁a"]), ("b", &[" b"]), ("中文", &["中", "文"])]);
+    assert_eq!(text, "a b 中文");
+    assert_eq!(pieces, ["▁a", " b", "中", "文"]);
   }
 }

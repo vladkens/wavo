@@ -35,6 +35,8 @@ pub struct Gigaam {
   frontend: Frontend,
   head: Head,
   tok: Tokenizer,
+  /// A character vocabulary (`ctc`, `rnnt`): words have no `▁`, a space token goes between them.
+  chars: bool,
 }
 
 /// The encoder's checked metadata.
@@ -86,6 +88,7 @@ impl Gigaam {
     let cfg = config(g)?;
     let u = |key: &str| g.get::<u32>(&format!("stt.gigaam.{key}")).map(|v| v as usize);
     let tok = Tokenizer::new(&g.array("tokenizer.ggml.tokens")?);
+    let chars = g.get::<&str>("tokenizer.ggml.model")? == "char";
     let blank = g.get::<u32>("tokenizer.ggml.blank_token_id")? as usize;
     let classes = if cfg.rnnt { u("joint.num_classes")? } else { u("head.num_classes")? };
     if tok.len() != classes || blank >= classes {
@@ -105,7 +108,11 @@ impl Gigaam {
       let (name, dims) = &cfg.head;
       Encoder::new(gpu, g, cfg.conformer, cfg.mels, cfg.theta, (name, dims))
     })?;
-    Ok(Self { backend, frontend, head, tok })
+    Ok(Self { backend, frontend, head, tok, chars })
+  }
+
+  pub fn chars(&self) -> bool {
+    self.chars
   }
 
   pub fn device(&self) -> &crate::Device {

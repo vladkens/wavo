@@ -183,7 +183,8 @@ fn too_long(name: &str, sample: &str) {
 
 /// `transcribe_long` on a clip repeated past 40 s, in pieces of up to 15 s: the callback gets
 /// each piece in order, with its start and the transcript `transcribe` gives its audio, shifted
-/// there; the pieces make the transcript; and `Break` cancels after the first piece.
+/// there; the pieces make the transcript, the tokens' pieces spelling its words (a character
+/// vocabulary's first token of a piece gets a space); and `Break` cancels after the first piece.
 fn long(name: &str, sample: &str) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
   let model = wavo::Model::load_with(model_path(name), wavo::Backend::Gpu).unwrap();
@@ -213,7 +214,16 @@ fn long(name: &str, sample: &str) {
     tokens.extend(piece.tokens);
   }
 
-  assert_eq!((got.text, got.tokens), (text.join(" "), tokens), "{name} {sample}: joined");
+  let spelled: String = got.tokens.iter().map(|t| t.piece.replace('▁', " ")).collect();
+  let words: Vec<&str> = spelled.split_whitespace().collect();
+  assert_eq!(words, got.text.split_whitespace().collect::<Vec<_>>(), "{name} {sample}: spelled");
+  let bare = |t: wavo::Token| {
+    let piece = t.piece.strip_prefix(' ').unwrap_or(&t.piece).to_string();
+    (t.id, t.start_ms, piece)
+  };
+  let (got_tokens, tokens): (Vec<_>, Vec<_>) =
+    (got.tokens.into_iter().map(bare).collect(), tokens.into_iter().map(bare).collect());
+  assert_eq!((got.text, got_tokens), (text.join(" "), tokens), "{name} {sample}: joined");
   let mut calls = 0;
   let cancelled = model.transcribe_long(&pcm, &options, |_| {
     calls += 1;
@@ -417,6 +427,7 @@ fn gigaam_v3_ctc() {
 fn gigaam_multilingual_large_ctc() {
   check("gigaam-multilingual-large-ctc", &["ru", "ru-short", "ru-long", "jfk"]);
   too_long("gigaam-multilingual-large-ctc", "ru-long");
+  long("gigaam-multilingual-large-ctc", "ru");
 }
 
 #[cfg(target_os = "macos")]
