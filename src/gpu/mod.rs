@@ -2267,8 +2267,8 @@ mod tests {
         assert_eq!(l.ty, 7);
         for m in [1, 37] {
           let a = random(m * k, 3);
-          let fast = gpu.tile_rows(n.next_multiple_of(64), m).is_some();
-          let ar: Vec<f32> = if fast { a.iter().map(half).collect() } else { a.clone() };
+          // Portable and fast GEMM both round a to f16. gemv below does not.
+          let ar: Vec<f32> = a.iter().map(half).collect();
           let c = random(m * cols + 1, 4);
           let ab = up(gpu, &a);
           for e in [Epilogue::Bias, Epilogue::Silu] {
@@ -2348,6 +2348,8 @@ mod tests {
             Type::Q4_0 => 4,
             Type::Q4_1 => 5,
             Type::Q5_1 => 6,
+            // An unaligned Q4_K row is not packed. conv stores the zero-padded F32 matrix.
+            Type::Q4_K => 0,
           };
           assert_eq!(l.ty, expect_ty, "{ty:?}");
           assert_eq!(l.scales.is_some(), packed);
