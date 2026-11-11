@@ -100,9 +100,10 @@ pub enum Kernels {
   CoreMl,
 }
 
-/// The GPU adapters for [`crate::devices`], the one `adapter()` picks first.
-pub fn devices() -> Result<Vec<Device>> {
-  Ok(adapters(usize::MAX)?.iter().map(|a| Device::new(&a.get_info(), kernels(a))).collect())
+/// The GPU adapters for [`crate::devices`], the one `adapter()` picks first, at least up to
+/// index `upto` (see `adapters`).
+pub fn devices(upto: usize) -> Result<Vec<Device>> {
+  Ok(adapters(upto)?.iter().map(|a| Device::new(&a.get_info(), kernels(a))).collect())
 }
 
 /// The adapters in the order of [`devices`], at least up to index `upto`: the one `adapter()`
@@ -1811,7 +1812,7 @@ mod tests {
     // `gpus` checks that every fast kernel the features allow passes its probe.
     assert_eq!(device.kernels, Kernels::Portable);
     assert_eq!(*gpus()[1].info(), Device { kernels: gpus()[1].info().kernels, ..device.clone() });
-    assert_eq!(devices().unwrap()[0], *gpus()[1].info());
+    assert_eq!(devices(0).unwrap()[0], *gpus()[1].info());
   }
 
   #[test]

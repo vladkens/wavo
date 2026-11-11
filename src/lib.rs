@@ -286,7 +286,15 @@ pub use split::split;
 /// ```
 pub fn devices() -> Result<Vec<Device>> {
   let ane = ane::available().then(|| ane::device().clone());
-  Ok(gpu::devices()?.into_iter().chain(ane).collect())
+  Ok(gpu::devices(usize::MAX)?.into_iter().chain(ane).collect())
+}
+
+/// The first GPUs of [`devices`]: those of the API wavo tries first (Vulkan or Metal, else
+/// DX12), without starting DX12 after them, which takes tens of milliseconds on Windows. For the
+/// CLI's `--device`; not part of the API.
+#[doc(hidden)]
+pub fn first_gpus() -> Result<Vec<Device>> {
+  gpu::devices(0)
 }
 
 /// Holds a lock on the file at `path`, created when missing, until the file is dropped: the hub's

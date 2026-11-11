@@ -220,20 +220,25 @@ fn backend(arg: Option<&&str>) -> Result<Backend> {
 }
 
 /// The backend for `--backend` and `--device`: a device other than `auto` is a GPU of
-/// `wavo::devices()`, by its number there, or the first whose name contains it.
+/// `wavo::devices()`, by its number there, or the first whose name contains it. The GPUs of the
+/// first API come first: DX12's are listed only when none of those matches.
 fn target(on: Backend, device: Option<&str>) -> Result<Backend> {
   let Some(arg) = device.filter(|d| !d.eq_ignore_ascii_case("auto")) else { return Ok(on) };
   ensure!(
     on != Backend::NeuralEngine,
     "--device picks a GPU, and --backend ane runs on the Neural Engine: drop one of them"
   );
-  let gpus = gpus()?;
   let name = |d: &wavo::Device| d.name.to_lowercase().contains(&arg.to_lowercase());
-  let i = match arg.parse::<usize>() {
+  let find = |gpus: &[wavo::Device]| match arg.parse::<usize>() {
     Ok(i) => (i < gpus.len()).then_some(i),
     Err(_) => gpus.iter().position(name),
   };
-  let Some(i) = i else {
+  if let Some(i) = find(&wavo::first_gpus().context("listing the GPUs")?) {
+    return Ok(Backend::GpuAt(i));
+  }
+
+  let gpus = gpus()?;
+  let Some(i) = find(&gpus) else {
     bail!(
       "no GPU matches --device {arg}; choose auto, a number or part of a name:\n{}",
       numbered(&gpus)
