@@ -327,7 +327,8 @@ pub struct Piece<'a> {
   /// Where the piece starts, in milliseconds from the start of the audio.
   pub start_ms: u32,
   /// The piece's transcript, with token `start_ms` from the start of the whole audio: it is
-  /// joined to the previous pieces' as it is.
+  /// joined to the previous pieces' as it is, but for the space a character vocabulary's first
+  /// token then gets (see [`Token::piece`]).
   pub transcript: &'a Transcript,
 }
 
