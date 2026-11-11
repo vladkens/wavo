@@ -91,7 +91,7 @@ impl Sortformer {
       bail!("unsupported transformer shape: d_model {d}, {heads} heads");
     }
 
-    let gpu = Gpu::new(true)?;
+    let gpu = Gpu::new(true, None)?;
     let encoder = Encoder::new(&gpu, g, enc, ch, tf, speakers)?;
     Ok(Self { gpu, frontend: Frontend::new(), encoder, params, speakers })
   }
