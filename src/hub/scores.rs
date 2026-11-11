@@ -32,6 +32,9 @@ pub(super) static WER: &[(&str, &[(&str, f32)])] = &[
   ("parakeet-he", &[
     ("he", 23.15),
   ]),
+  ("parakeet-uk", &[
+    ("en", 4.25), ("uk", 5.66),
+  ]),
   ("parakeet-ultra", &[
     ("bg", 11.12), ("cs", 11.09), ("da", 15.95), ("de", 4.53), ("el", 32.24), ("en", 4.16),
     ("es", 3.03), ("et", 14.46), ("fi", 11.21), ("fr", 4.63), ("hr", 11.35), ("hu", 13.15),
@@ -147,6 +150,7 @@ pub(super) static SPEED: &[(&str, f32)] = &[
   ("moonshine-base", 10.2),
   ("moonshine-tiny", 15.2),
   ("parakeet-he", 8.0),
+  ("parakeet-uk", 6.6),
   ("parakeet-ultra", 6.7),
   ("parakeet-v2", 7.6),
   ("parakeet-v3", 6.9),

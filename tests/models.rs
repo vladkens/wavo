@@ -491,6 +491,17 @@ fn parakeet_tdt_v3_he() {
 }
 
 #[test]
+fn parakeet_tdt_v3_uk() {
+  check("parakeet-tdt-0.6b-v3-uk", &["uk-short", "uk-long", "jfk"]);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn parakeet_tdt_v3_uk_ane() {
+  check_ane("parakeet-tdt-0.6b-v3-uk", 80, &["uk-short", "uk-long", "jfk"]);
+}
+
+#[test]
 fn whisper_large_v3_turbo() {
   check("whisper-large-v3-turbo", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
 }

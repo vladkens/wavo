@@ -170,6 +170,7 @@ const VK: &str = "vladkens";
 static EN: &[&str] = &["en"];
 static HE: &[&str] = &["he"];
 static RU: &[&str] = &["ru"];
+static UK_EN: &[&str] = &["uk", "en"];
 /// GigaAM Multilingual's, in its model card's order.
 static GIGAAM_ML: &[&str] = &["ru", "en", "kk", "ky", "uz"];
 static ZH_EN: &[&str] = &["zh", "en"];
@@ -206,6 +207,7 @@ pub static MODELS: &[ModelInfo] = &[
   ModelInfo { name: "parakeet-v2", owner: HC, full_name: "parakeet-tdt-0.6b-v2", size: 729_574_912, languages: "English", langs: EN, punctuated: true, family: "Parakeet", maker: "NVIDIA", card: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2" },
   ModelInfo { name: "parakeet-ultra", owner: HC, full_name: "parakeet-ultra", size: 740_363_168, languages: "25 European languages", langs: PARAKEET_V3, punctuated: true, family: "Parakeet", maker: "Moondream", card: "https://huggingface.co/moondream/parakeet-ultra" },
   ModelInfo { name: "parakeet-he", owner: VK, full_name: "parakeet-tdt-0.6b-v3-he", size: 740_915_360, languages: "Hebrew", langs: HE, punctuated: true, family: "Parakeet", maker: "Yakov Kolani", card: "https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he" },
+  ModelInfo { name: "parakeet-uk", owner: VK, full_name: "parakeet-tdt-0.6b-v3-uk", size: 739_508_512, languages: "Ukrainian and English", langs: UK_EN, punctuated: true, family: "Parakeet", maker: "Yurii Ihnatov", card: "https://huggingface.co/ihnatov-yuri/parakeet-tdt-0.6b-v3-uk" },
   ModelInfo { name: "gigaam-v3", owner: HC, full_name: "gigaam-v3-e2e-rnnt", size: 273_724_832, languages: "Russian", langs: RU, punctuated: true, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
   ModelInfo { name: "gigaam-v3-e2e-ctc", owner: HC, full_name: "gigaam-v3-e2e-ctc", size: 272_151_136, languages: "Russian", langs: RU, punctuated: true, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
   ModelInfo { name: "gigaam-v3-rnnt", owner: HC, full_name: "gigaam-v3-rnnt", size: 273_022_880, languages: "Russian", langs: RU, punctuated: false, family: "GigaAM", maker: "Sber", card: "https://huggingface.co/ai-sage/GigaAM-v3" },
@@ -590,6 +592,7 @@ mod tests {
     assert_eq!(m.repo(), "vladkens/parakeet-tdt-0.6b-v3-he-gguf");
     assert_eq!(m.file(), "parakeet-tdt-0.6b-v3-he-Q8_0.gguf");
     assert_eq!(name("gigaam-multilingual-large-ctc"), "gigaam-multilingual");
+    assert_eq!(name("parakeet-tdt-0.6b-v3-uk"), "parakeet-uk");
   }
 
   #[test]

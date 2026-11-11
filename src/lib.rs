@@ -43,6 +43,7 @@
 //! | `parakeet-v2` | `parakeet-tdt-0.6b-v2` | 0.73 GB | English | cased, punctuated |
 //! | `parakeet-ultra` | `parakeet-ultra` | 0.74 GB | 25 European languages | cased, punctuated |
 //! | `parakeet-he` | `parakeet-tdt-0.6b-v3-he` | 0.74 GB | Hebrew | cased, punctuated |
+//! | `parakeet-uk` | `parakeet-tdt-0.6b-v3-uk` | 0.74 GB | Ukrainian and English | cased, punctuated |
 //! | `gigaam-v3` | `gigaam-v3-e2e-rnnt` | 0.27 GB | Russian | cased, punctuated |
 //! | `gigaam-v3-e2e-ctc` | `gigaam-v3-e2e-ctc` | 0.27 GB | Russian | cased, punctuated |
 //! | `gigaam-v3-rnnt` | `gigaam-v3-rnnt` | 0.27 GB | Russian | lowercase, no punctuation |
@@ -67,8 +68,8 @@
 //!
 //! A model `<full name>` lives in the Hugging Face repository `<owner>/<full name>-gguf` as
 //! `<full name>-Q8_0.gguf`. The owner is `handy-computer`, transcribe.cpp's account, except for the
-//! Hebrew models and GigaAM Multilingual: transcribe.cpp doesn't publish them, so their conversions
-//! are under `vladkens`.
+//! Hebrew models, the Ukrainian Parakeet and GigaAM Multilingual: transcribe.cpp doesn't publish
+//! them, so their conversions are under `vladkens`.
 //!
 //! # Transcribe
 //!
