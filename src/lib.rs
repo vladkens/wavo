@@ -394,8 +394,9 @@ pub struct Token {
   /// Vocabulary piece: a SentencePiece piece (`▁` marks a word start), a character, or for byte
   /// tokens (Whisper's, and SentencePiece's `<0xHH>` fallback) the text the token completes (its
   /// bytes may end inside a character, leaving the piece empty). With a character vocabulary
-  /// (GigaAM `ctc` and `rnnt`), [`Model::transcribe_long`] puts a space before the piece of the
-  /// first token of each part of the audio after the first, where it joins their texts.
+  /// (GigaAM `ctc` and `rnnt`), audio transcribed in pieces ([`Model::transcribe_long`], and
+  /// [`Model::transcribe`] on the Neural Engine past its window) gets a space before the piece of
+  /// the first token of each part after the first, where their texts are joined.
   pub piece: String,
   /// Start time in milliseconds from the start of the audio: the encoder frame where the token
   /// was emitted times the frame length (40 ms for GigaAM, 80 ms for Parakeet); for Whisper the
