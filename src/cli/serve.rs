@@ -5,7 +5,8 @@
 //! one at a time. Requests share each model, and their calls take turns on the GPU. `POST /asr`,
 //! `POST /detect-language` and `GET /status` answer as whisper-asr-webservice does, for Bazarr's
 //! subtitles. With `--unload-after`, a model idle that long is freed, and its next request loads
-//! it again from the cache.
+//! it again from the cache. Every model runs on the device `--backend` and `--device` chose at
+//! start.
 
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -82,7 +83,7 @@ struct Reply {
 
 pub fn serve(args: &[&str]) -> Result<()> {
   let (mut host, mut port, mut key, mut download) = ("127.0.0.1", 8000, None, Download::Ask);
-  let (mut on, mut unload) = (Backend::Auto, None);
+  let (mut on, mut gpu, mut unload) = (Backend::Auto, None, None);
   let mut names = Vec::new();
   let mut args = args.iter().copied();
   while let Some(arg) = args.next() {
@@ -91,6 +92,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
       "--port" => port = args.next().and_then(|p| p.parse().ok()).context("--port takes a port")?,
       "--api-key" => key = Some(args.next().context("--api-key takes a key")?.to_string()),
       "--backend" => on = crate::backend(args.next().as_ref())?,
+      "--device" => gpu = Some(crate::device(args.next().as_ref())?),
       "--unload-after" => {
         let after = args.next().and_then(duration);
         unload = Some(after.context("--unload-after takes a duration such as 30s, 10m or 1h")?);
@@ -101,6 +103,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
     }
   }
 
+  let on = crate::target(on, gpu)?;
   let key = key.or_else(|| std::env::var("WAVO_API_KEY").ok()).filter(|k| !k.is_empty());
   if names.is_empty() {
     names.push(hub::lookup(models::DEFAULT)?);

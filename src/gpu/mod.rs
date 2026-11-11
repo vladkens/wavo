@@ -100,20 +100,47 @@ pub enum Kernels {
   CoreMl,
 }
 
-/// The GPU adapters for [`crate::devices`], the one `adapter()` picks first.
-pub fn devices() -> Result<Vec<Device>> {
-  let first = adapter()?;
+/// The GPU adapters for [`crate::devices`], the one `adapter()` picks first, at least up to
+/// index `upto` (see `adapters`).
+pub fn devices(upto: usize) -> Result<Vec<Device>> {
+  Ok(adapters(upto)?.iter().map(|a| Device::new(&a.get_info(), kernels(a))).collect())
+}
+
+/// The adapters in the order of [`devices`], at least up to index `upto`: the one `adapter()`
+/// picks, the others of its instance (Vulkan and Metal, or DX12 only), then DX12's when `upto`
+/// is past them. Enumerating on the picked adapter's instance saves a second Vulkan instance,
+/// and DX12's only starts when needed: each takes tens of milliseconds on Windows.
+fn adapters(upto: usize) -> Result<Vec<wgpu::Adapter>> {
+  let (instance, first) = picked()?;
   let info = first.get_info();
-  let mut desc = wgpu::InstanceDescriptor::new_without_display_handle().with_env();
-  desc.backends &= wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12;
-  let backends = desc.backends;
-  let mut rest = pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(backends));
+  let mut all = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
   // One of them: two identical GPUs may report the same info.
-  if let Some(i) = rest.iter().position(|a| a.get_info() == info) {
-    rest.remove(i);
+  if let Some(i) = all.iter().position(|a| a.get_info() == info) {
+    all.remove(i);
   }
 
-  Ok(std::iter::once(first).chain(rest).map(|a| Device::new(&a.get_info(), kernels(&a))).collect())
+  all.insert(0, first);
+  if upto >= all.len() && info.backend != wgpu::Backend::Dx12 {
+    let dx12 = self::instance(wgpu::Backends::DX12);
+    all.extend(pollster::block_on(dx12.enumerate_adapters(wgpu::Backends::DX12)));
+  }
+
+  Ok(all)
+}
+
+/// The adapter at `index` of [`devices`], else the one `adapter()` picks.
+fn adapter_at(index: Option<usize>) -> Result<wgpu::Adapter> {
+  let i = match index {
+    None | Some(0) => return adapter(),
+    Some(i) => i,
+  };
+  let mut all = adapters(i)?;
+  if i >= all.len() {
+    let n = all.len();
+    return Err(Error::Gpu(format!("no GPU at index {i}: wavo::devices() lists {n}")));
+  }
+
+  Ok(all.swap_remove(i))
 }
 
 /// The kernels `adapter`'s features allow, before their probes.
@@ -420,11 +447,12 @@ impl Epilogue {
 }
 
 impl Gpu {
-  /// The device with the fast kernels that pass their probes, or only the portable ones.
-  pub fn new(fast: bool) -> Result<Self> {
+  /// The device on the adapter at `index` of [`devices`] (by default the one `adapter()` picks),
+  /// with the fast kernels that pass their probes, or only the portable ones.
+  pub fn new(fast: bool, index: Option<usize>) -> Result<Self> {
     let value = std::env::var_os("WAVO_KERNELS").filter(|_| fast);
     let forced = Forced::parse(value.as_ref().map(|v| v.to_string_lossy()).as_deref())?;
-    let adapter = adapter()?;
+    let adapter = adapter_at(index)?;
     if let Some(forced) = forced {
       forced.check(&adapter)?;
     }
@@ -1041,17 +1069,28 @@ const COOP: wgpu::Features = wgpu::Features::SUBGROUP
 /// `WGPU_BACKEND` (e.g. `dx12`) and wgpu's other `WGPU_*` variables override the choice, within
 /// these three: `Api` names no other.
 fn adapter() -> Result<wgpu::Adapter> {
+  Ok(picked()?.1)
+}
+
+/// `adapter()`'s adapter and the instance it came from.
+fn picked() -> Result<(wgpu::Instance, wgpu::Adapter)> {
   let request = |backends| {
-    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle().with_env();
-    desc.backends &= backends;
-    let instance = wgpu::Instance::new(desc);
-    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    let instance = instance(backends);
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
       power_preference: wgpu::PowerPreference::HighPerformance,
       ..Default::default()
-    }))
+    }))?;
+    Ok::<_, wgpu::RequestAdapterError>((instance, adapter))
   };
   let primary = request(wgpu::Backends::VULKAN | wgpu::Backends::METAL);
   Ok(primary.or_else(|e| request(wgpu::Backends::DX12).map_err(|_| e))?)
+}
+
+/// An instance of `backends`, within those wgpu's `WGPU_*` variables allow.
+fn instance(backends: wgpu::Backends) -> wgpu::Instance {
+  let mut desc = wgpu::InstanceDescriptor::new_without_display_handle().with_env();
+  desc.backends &= backends;
+  wgpu::Instance::new(desc)
 }
 
 /// F of the F×F cooperative matrices the fast kernels use on `adapter`, which needs 32-lane
@@ -1628,7 +1667,7 @@ mod tests {
   fn gpus() -> &'static [Gpu; 2] {
     static GPUS: OnceLock<[Gpu; 2]> = OnceLock::new();
     GPUS.get_or_init(|| {
-      let fast = Gpu::new(true).unwrap();
+      let fast = Gpu::new(true, None).unwrap();
       let f = &fast.fast;
       let ops = [&f.layer_norm, &f.conv_glu, &f.attention, &f.relative];
       // With 16×16 matrices only the GEMM and flash attention.
@@ -1642,8 +1681,13 @@ mod tests {
         let tensor = size == 8 && tensor_gpu(&adapter);
         assert_eq!(f.tensor.is_some(), tensor, "the tensor GEMM failed its probe");
       }
-      [Gpu::new(false).unwrap(), fast]
+      [Gpu::new(false, None).unwrap(), fast]
     })
+  }
+
+  #[test]
+  fn index_past_the_gpus() {
+    assert!(matches!(Gpu::new(false, Some(usize::MAX)), Err(Error::Gpu(_))));
   }
 
   fn random(n: usize, seed: u32) -> Vec<f32> {
@@ -1768,7 +1812,7 @@ mod tests {
     // `gpus` checks that every fast kernel the features allow passes its probe.
     assert_eq!(device.kernels, Kernels::Portable);
     assert_eq!(*gpus()[1].info(), Device { kernels: gpus()[1].info().kernels, ..device.clone() });
-    assert_eq!(devices().unwrap()[0], *gpus()[1].info());
+    assert_eq!(devices(0).unwrap()[0], *gpus()[1].info());
   }
 
   #[test]

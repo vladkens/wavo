@@ -72,10 +72,15 @@ pub enum Backend<E> {
 }
 
 impl<E> Backend<E> {
-  /// `ane` when given, else a GPU and the encoder `encoder` loads on it.
-  pub fn new(ane: Option<Model>, encoder: impl FnOnce(&Gpu) -> Result<E>) -> Result<Self> {
+  /// `ane` when given, else the GPU at `gpu`, an index of `crate::devices` (by default the first),
+  /// and the encoder `encoder` loads on it.
+  pub fn new(
+    ane: Option<Model>,
+    gpu: Option<usize>,
+    encoder: impl FnOnce(&Gpu) -> Result<E>,
+  ) -> Result<Self> {
     let Some(model) = ane else {
-      let gpu = Gpu::new(true)?;
+      let gpu = Gpu::new(true, gpu)?;
       let e = encoder(&gpu)?;
       return Ok(Self::Gpu(Box::new((gpu, e))));
     };

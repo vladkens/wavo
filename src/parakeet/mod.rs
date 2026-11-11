@@ -89,8 +89,8 @@ fn config(g: &Gguf) -> Result<(conformer::Config, usize, usize)> {
 }
 
 impl Parakeet {
-  /// Runs the encoder on `ane` when given, else on the GPU.
-  pub fn load(g: &Gguf, ane: Option<crate::ane::Model>) -> Result<Self> {
+  /// Runs the encoder on `ane` when given, else on the GPU at `gpu` (see `ane::Backend::new`).
+  pub fn load(g: &Gguf, ane: Option<crate::ane::Model>, gpu: Option<usize>) -> Result<Self> {
     let (cfg, ch, joint) = config(g)?;
     let kestrel = match g.optional::<&str>("stt.parakeet.encoder.length_masking")? {
       None | Some("none") => false,
@@ -112,7 +112,7 @@ impl Parakeet {
     // The decoder loads on the CPU while the GPU starts and the encoder uploads.
     let (backend, decoder) = std::thread::scope(|s| {
       let decoder = s.spawn(|| Decoder::new(g, vocab.len(), blank));
-      let backend = Backend::new(ane, |gpu| Encoder::new(gpu, g, cfg, ch, joint))?;
+      let backend = Backend::new(ane, gpu, |gpu| Encoder::new(gpu, g, cfg, ch, joint))?;
       Ok::<_, Error>((backend, decoder.join().unwrap()?))
     })?;
     let tok = Tokenizer::new(&vocab);

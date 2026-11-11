@@ -36,9 +36,10 @@ Commands:
   list                         list downloaded models
   rm MODEL                     delete a downloaded model
   bench MODEL AUDIO [-n N]     time the model load, the first call and N more calls (10);
-                               takes --backend too
+                               takes --backend and --device too
   serve [MODEL...] [OPTIONS]   serve the models (parakeet-ultra by default; the first
                                answers unknown model names) over OpenAI's transcription API
+  devices                      list the GPUs, numbered for --device
   debug                        print the system, its GPUs and the models, for a bug report
 
 Quick start:
@@ -59,12 +60,17 @@ Run options:
   --backend auto|gpu|ane       where the encoder runs: auto (the default) takes the Neural
                                Engine for Parakeet and GigaAM once `wavo pull` prepared
                                them on a Mac, else the GPU
+  --device auto|N|NAME         the GPU to run on: its number in wavo devices or part of its
+                               name, ignoring case (the first that matches); auto: wavo's
+                               default GPU (0 in wavo devices), or the Neural Engine as
+                               --backend picks
 
 Serve options:
   --host ADDR                  the address to listen on (127.0.0.1)
   --port PORT                  the port to listen on (8000)
   --api-key KEY                require `Authorization: Bearer KEY` (or set WAVO_API_KEY)
   --backend auto|gpu|ane       where the encoder runs, as in run
+  --device auto|N|NAME         the GPU every model runs on, as in run, chosen at start
   --unload-after DURATION      free a model's memory after DURATION without requests (30s,
                                10m, 1h; 0 right after they stop); its next request loads it
                                again. Without it, the models given stay loaded
@@ -111,7 +117,8 @@ fn broken_pipe(e: &anyhow::Error) -> bool {
 }
 
 /// Win over a file of the same name in `wavo FILE`.
-const COMMANDS: &[&str] = &["help", "run", "pull", "list", "ls", "rm", "bench", "serve", "debug"];
+const COMMANDS: &[&str] =
+  &["help", "run", "pull", "list", "ls", "rm", "bench", "serve", "devices", "debug"];
 
 fn cli(args: &[&str]) -> Result<()> {
   let help = matches!(args, [] | ["help"]) || args.iter().any(|a| matches!(*a, "-h" | "--help"));
@@ -124,14 +131,15 @@ fn cli(args: &[&str]) -> Result<()> {
     ["rm", name] => rm(name)?,
     ["bench", model, audio, opts @ ..] => bench(model, audio, opts)?,
     ["serve", args @ ..] => serve::serve(args)?,
+    ["devices"] => devices()?,
     ["debug"] => debug::print()?,
     // wavo AUDIO, also with run options first (wavo -y AUDIO), and whatever looks like a file,
     // so that a mistyped one fails as missing
     [arg, ..] if arg.starts_with('-') || !COMMANDS.contains(arg) && file_like(arg) => run(args)?,
     ["pull"] => bail!("usage: wavo pull MODEL..."),
     ["rm", ..] => bail!("usage: wavo rm MODEL"),
-    ["bench", ..] => bail!("usage: wavo bench MODEL AUDIO [-n N] [--backend B]"),
-    [command @ ("list" | "ls" | "debug"), ..] => bail!("usage: wavo {command}"),
+    ["bench", ..] => bail!(BENCH),
+    [command @ ("list" | "ls" | "devices" | "debug"), ..] => bail!("usage: wavo {command}"),
     [arg, ..] if hub::lookup(arg).is_ok() => {
       bail!("{arg} is a model, not a command; to transcribe with it: wavo run {}", args.join(" "))
     }
@@ -163,8 +171,8 @@ enum Download {
 
 /// A model by name, downloaded when `download` allows, or a `.gguf` path.
 fn model_path(arg: &str, download: Download, on: Backend) -> Result<PathBuf> {
-  // `--backend gpu` skips preparing for the Neural Engine after a download.
-  let hub = Hub::new().prepare(on != Backend::Gpu);
+  // `--backend gpu` and `--device` skip preparing for the Neural Engine after a download.
+  let hub = Hub::new().prepare(!matches!(on, Backend::Gpu | Backend::GpuAt(_)));
   let e = match hub.resolve(arg) {
     Ok(path) => return Ok(path),
     Err(e) => e,
@@ -211,16 +219,78 @@ fn backend(arg: Option<&&str>) -> Result<Backend> {
   })
 }
 
+/// The backend for `--backend` and `--device`: a device other than `auto` is a GPU of
+/// `wavo::devices()`, by its number there, or the first whose name contains it. The GPUs of the
+/// first API come first: DX12's are listed only when none of those matches.
+fn target(on: Backend, device: Option<&str>) -> Result<Backend> {
+  let Some(arg) = device.filter(|d| !d.eq_ignore_ascii_case("auto")) else { return Ok(on) };
+  ensure!(
+    on != Backend::NeuralEngine,
+    "--device picks a GPU, and --backend ane runs on the Neural Engine: drop one of them"
+  );
+  let name = |d: &wavo::Device| d.name.to_lowercase().contains(&arg.to_lowercase());
+  let find = |gpus: &[wavo::Device]| match arg.parse::<usize>() {
+    Ok(i) => (i < gpus.len()).then_some(i),
+    Err(_) => gpus.iter().position(name),
+  };
+  if let Some(i) = find(&wavo::first_gpus().context("listing the GPUs")?) {
+    return Ok(Backend::GpuAt(i));
+  }
+
+  let gpus = gpus()?;
+  let Some(i) = find(&gpus) else {
+    bail!(
+      "no GPU matches --device {arg}; choose auto, a number or part of a name:\n{}",
+      numbered(&gpus)
+    )
+  };
+
+  Ok(Backend::GpuAt(i))
+}
+
+/// The value of `--device`.
+fn device<'a>(arg: Option<&&'a str>) -> Result<&'a str> {
+  let arg = arg.copied().filter(|a| !a.is_empty());
+  arg.context("--device takes auto, a number from wavo devices or part of a GPU's name")
+}
+
+/// The GPUs of `wavo::devices()`, which lists the Neural Engine last.
+fn gpus() -> Result<Vec<wavo::Device>> {
+  let mut devices = wavo::devices().context("listing the GPUs")?;
+  devices.retain(|d| d.kind != wavo::DeviceKind::NeuralEngine);
+  Ok(devices)
+}
+
+/// The GPUs, one per line with its number for `--device`; the first is `--device auto`'s.
+fn numbered(gpus: &[wavo::Device]) -> String {
+  let line = |(i, d)| format!("{i:>3}  {d}{}", if i == 0 { "  (auto)" } else { "" });
+  gpus.iter().enumerate().map(line).collect::<Vec<_>>().join("\n")
+}
+
+/// `wavo devices`: the GPUs, then the Neural Engine, which `--backend ane` takes.
+fn devices() -> Result<()> {
+  let devices = wavo::devices().context("listing the GPUs")?;
+  let (gpus, ane): (Vec<_>, Vec<_>) =
+    devices.into_iter().partition(|d| d.kind != wavo::DeviceKind::NeuralEngine);
+  out!("{}", numbered(&gpus))?;
+  for d in ane {
+    out!("  -  {d}  (--backend ane)")?;
+  }
+
+  Ok(())
+}
+
 fn run(args: &[&str]) -> Result<()> {
   const USAGE: &str = "usage: wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS] \
-                       [--language CODE] [--backend B] [-y]";
+                       [--language CODE] [--backend B] [--device D] [-y]";
   let (mut format, mut segment, mut download, mut rest) = (None, None, Download::Ask, Vec::new());
   let mut options = wavo::Options::default();
-  let mut on = Backend::Auto;
+  let (mut on, mut gpu) = (Backend::Auto, None);
   let mut args = args.iter();
   while let Some(&arg) = args.next() {
     match arg {
       "--backend" => on = backend(args.next())?,
+      "--device" => gpu = Some(device(args.next())?),
       "--json" | "--srt" if format.is_none() => format = Some(arg),
       "--json" | "--srt" if format != Some(arg) => bail!("--json and --srt: choose one"),
       "--segment" if segment.is_none() => {
@@ -253,6 +323,7 @@ fn run(args: &[&str]) -> Result<()> {
     _ => bail!(USAGE),
   };
   // Before anything is asked or downloaded.
+  let on = target(on, gpu)?;
   let meta = match std::fs::metadata(audio) {
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!("no such file: {audio}"),
     meta => meta.with_context(|| format!("reading {audio}"))?,
@@ -430,9 +501,11 @@ fn rm(arg: &str) -> Result<()> {
   Ok(())
 }
 
+const BENCH: &str = "usage: wavo bench MODEL AUDIO [-n N] [--backend B] [--device D]";
+
 /// Load time, first call and warm median/min over `-n` calls (10), in milliseconds.
 fn bench(model: &str, audio: &str, opts: &[&str]) -> Result<()> {
-  let (mut n, mut on, mut opts) = (10, Backend::Auto, opts.iter());
+  let (mut n, mut on, mut gpu, mut opts) = (10, Backend::Auto, None, opts.iter());
   while let Some(&opt) = opts.next() {
     match opt {
       "-n" => {
@@ -440,10 +513,12 @@ fn bench(model: &str, audio: &str, opts: &[&str]) -> Result<()> {
         n = calls.context("-n takes a whole number of calls, at least 1")?;
       }
       "--backend" => on = backend(opts.next())?,
-      _ => bail!("usage: wavo bench MODEL AUDIO [-n N] [--backend B]"),
+      "--device" => gpu = Some(device(opts.next())?),
+      _ => bail!(BENCH),
     }
   }
 
+  let on = target(on, gpu)?;
   let (pcm, path) = (audio::read(audio)?, model_path(model, Download::Never, on)?);
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
   let t = Instant::now();
@@ -492,7 +567,7 @@ mod tests {
     );
     assert_eq!(error("frobnicate"), "unknown command: wavo frobnicate; see wavo --help");
     assert_eq!(error("pull"), "usage: wavo pull MODEL...");
-    assert_eq!(error("bench gigaam-v3"), "usage: wavo bench MODEL AUDIO [-n N] [--backend B]");
+    assert_eq!(error("bench gigaam-v3"), BENCH);
     assert_eq!(error("list x"), "usage: wavo list");
     assert_eq!(
       error("bench gigaam-v3 talk.wav -n 0"),
@@ -506,6 +581,13 @@ mod tests {
     assert_eq!(error("serve --unload-after -1"), unload);
     assert!(error("serve --jsn").starts_with("unknown option --jsn\nusage: wavo serve "));
     assert_eq!(error("serve dir/m.gguf"), "expected a model name, not a path: dir/m.gguf");
+    let ane = "--device picks a GPU, and --backend ane runs on the Neural Engine: drop one of them";
+    assert_eq!(error("bench gigaam-v3 talk.wav --device 1 --backend ane"), ane);
+    assert_eq!(error("serve --backend ane --device nvidia"), ane);
+    let device = "--device takes auto, a number from wavo devices or part of a GPU's name";
+    assert_eq!(error("talk.wav --device"), device);
+    assert_eq!(cli(&["talk.wav", "--device", ""]).unwrap_err().to_string(), device);
+    assert_eq!(error("devices x"), "usage: wavo devices");
   }
 
   #[test]

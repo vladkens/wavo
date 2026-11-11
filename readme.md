@@ -97,6 +97,8 @@ wavo rm parakeet-ultra                # delete one
 wavo bench gigaam-v3 talk.wav         # load time and speed on your machine
 wavo debug                            # your system, GPUs and models, to paste into an issue
 wavo run talk.wav --backend gpu       # the GPU even where the Neural Engine is ready
+wavo devices                          # the GPUs, numbered for --device
+wavo run talk.wav --device radeon     # another GPU, by part of its name or its number
 ```
 
 - Long recordings are split at pauses by themselves. `--segment SECS` sets the piece length.

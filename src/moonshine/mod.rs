@@ -45,7 +45,8 @@ struct Arena {
 }
 
 impl Moonshine {
-  pub fn load(g: &Gguf) -> Result<Self> {
+  /// Runs on the GPU at `gpu`, an index of `crate::devices`, else the default one.
+  pub fn load(g: &Gguf, gpu: Option<usize>) -> Result<Self> {
     let u = |key: &str| g.get::<u32>(&format!("stt.moonshine.{key}")).map(|v| v as usize);
     for (key, want) in [
       ("stt.frontend.type", "raw"),
@@ -106,7 +107,7 @@ impl Moonshine {
     let (theta, rot) = (g.get::<f32>("stt.moonshine.rope_theta")?, enc.rot);
     let freqs = (0..rot / 2).map(|i| theta.powf(-1.0 / rot as f32 * (2 * i) as f32)).collect();
 
-    let gpu = Gpu::new(true)?;
+    let gpu = Gpu::new(true, gpu)?;
     let eps = g.get::<f32>("stt.moonshine.conv_stem.groupnorm_eps")?;
     let encoder = Encoder::load(&gpu, g, enc, eps)?;
     let decoder = Decoder::load(&gpu, g, dec, vocab, context)?;

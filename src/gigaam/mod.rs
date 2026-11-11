@@ -83,8 +83,8 @@ fn config(g: &Gguf) -> Result<Config> {
 }
 
 impl Gigaam {
-  /// Runs the encoder on `ane` when given, else on the GPU.
-  pub fn load(g: &Gguf, ane: Option<crate::ane::Model>) -> Result<Self> {
+  /// Runs the encoder on `ane` when given, else on the GPU at `gpu` (see `ane::Backend::new`).
+  pub fn load(g: &Gguf, ane: Option<crate::ane::Model>, gpu: Option<usize>) -> Result<Self> {
     let cfg = config(g)?;
     let u = |key: &str| g.get::<u32>(&format!("stt.gigaam.{key}")).map(|v| v as usize);
     let tok = Tokenizer::new(&g.array("tokenizer.ggml.tokens")?);
@@ -104,7 +104,7 @@ impl Gigaam {
       Head::Ctc { blank }
     };
     let frontend = Frontend::new(g, cfg.mels)?;
-    let backend = Backend::new(ane, |gpu| {
+    let backend = Backend::new(ane, gpu, |gpu| {
       let (name, dims) = &cfg.head;
       Encoder::new(gpu, g, cfg.conformer, cfg.mels, cfg.theta, (name, dims))
     })?;
