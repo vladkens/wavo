@@ -394,9 +394,9 @@ pub struct Token {
   /// Vocabulary piece: a SentencePiece piece (`▁` marks a word start), a character, or for byte
   /// tokens (Whisper's, and SentencePiece's `<0xHH>` fallback) the text the token completes (its
   /// bytes may end inside a character, leaving the piece empty). With a character vocabulary
-  /// (GigaAM `ctc` and `rnnt`), audio transcribed in pieces ([`Model::transcribe_long`], and
-  /// [`Model::transcribe`] on the Neural Engine past its window) gets a space before the piece of
-  /// the first token of each part after the first, where their texts are joined.
+  /// (GigaAM `ctc` and `rnnt`), where audio transcribed in pieces ([`Model::transcribe_long`], and
+  /// [`Model::transcribe`] on the Neural Engine past its window) has their texts joined, the space
+  /// between them starts the piece of the next one's first token, unless that token is a space.
   pub piece: String,
   /// Start time in milliseconds from the start of the audio: the encoder frame where the token
   /// was emitted times the frame length (40 ms for GigaAM, 80 ms for Parakeet); for Whisper the
@@ -706,8 +706,9 @@ impl Model {
   ///
   /// Each piece's first token starts a word. With a character vocabulary it has no `▁` or space
   /// of its own (GigaAM `ctc` and `rnnt` spell words letter by letter with a space token between
-  /// them, and none falls between two pieces), so the first token of each piece after the first
-  /// gets the space between the texts at the start of its [`piece`](Token::piece).
+  /// them, and none falls between two pieces), so where the texts are joined, the space between
+  /// them starts the [`piece`](Token::piece) of the next piece's first token, unless that token
+  /// is a space.
   ///
   /// The pieces run one after another on the calling thread. After each, `on_piece` gets it as a
   /// [`Piece`]: its index, the number of pieces, its start and its transcript, for progress or to
