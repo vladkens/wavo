@@ -679,8 +679,10 @@ impl Gpu {
   fn probe(&self, size: usize, compiled: FastPipelines) -> Fast {
     let (gemm, [layer_norm, conv_glu, attention, relative]) = compiled;
     let n_gemm = gemm.len();
-    // Per kernel: bindings, the output's, params and subgroups.
-    let mut probes: Vec<_> = gemm.into_iter().map(|k| (Some(k), 5, 2, 6, 4.0)).collect();
+    // Per kernel: bindings, the output's, params and subgroups. The fast GEMM
+    // shader's immediate struct is eight words; Q4 and Q5 read `src_k`, and wgpu
+    // rejects a dispatch that leaves a read slot unset.
+    let mut probes: Vec<_> = gemm.into_iter().map(|k| (Some(k), 5, 2, 8, 4.0)).collect();
     probes.extend([
       (layer_norm, 6, 3, 4, 4.0),
       (conv_glu, 6, 5, 6, 4.0),
