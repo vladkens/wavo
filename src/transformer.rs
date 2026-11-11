@@ -21,6 +21,8 @@ pub struct Config {
   pub bias: bool,
   /// Dims per head that rotate (Moonshine), 0 for learned positions (Whisper's decoder).
   pub rot: usize,
+  /// The rotating pairs are (i, i + rot / 2), GPT-NeoX's (the diarizer), not (2i, 2i + 1).
+  pub neox: bool,
   /// The decoder FFN is SwiGLU: fc1 gives `[x | gate]`, 2·d_ff wide.
   pub gated: bool,
 }
@@ -79,19 +81,21 @@ pub struct Buffers {
   pub s: Buffer,
 }
 
+/// The encoder blocks: `load` reads Whisper's and Moonshine's, the diarizer builds its own.
 pub struct Encoder {
   pub cfg: Config,
-  blocks: Vec<Block>,
-  norm: Channels,
+  pub blocks: Vec<Block>,
+  pub norm: Channels,
 }
 
-struct Block {
-  norm_attn: Channels,
-  qkv: Linear,
-  out: Linear,
-  norm_ffn: Channels,
-  fc1: Linear,
-  fc2: Linear,
+/// `qkv` is `[q | k | v]`.
+pub struct Block {
+  pub norm_attn: Channels,
+  pub qkv: Linear,
+  pub out: Linear,
+  pub norm_ffn: Channels,
+  pub fc1: Linear,
+  pub fc2: Linear,
 }
 
 impl Encoder {
@@ -120,7 +124,7 @@ impl Encoder {
       p.layer_norm(&b.x, &k.norm_attn, &b.y, t, d, None);
       p.gemm(&b.y, &k.qkv, &b.qkv, t, Epilogue::Bias);
       if let Some(table) = rope {
-        p.rope(table, &b.qkv, t, 0, [heads, hd, self.cfg.rot]);
+        p.rope(table, &b.qkv, t, 0, [heads, hd, self.cfg.rot], self.cfg.neox);
       }
       p.attention(&b.qkv, None, None, &b.s, &b.y, t, heads, hd);
       p.gemm(&b.y, &k.out, &b.x, t, Epilogue::Residual(1.0));
@@ -262,7 +266,7 @@ impl Decoder {
       p.layer_norm_row(&b.x, &l.norm_self, &b.y, d);
       p.gemv(&b.y, &l.qkv, &b.qkv, Epilogue::Bias, 0);
       if let Some(table) = rope {
-        p.rope(table, &b.qkv, 1, pos, [heads, hd, self.cfg.rot]);
+        p.rope(table, &b.qkv, 1, pos, [heads, hd, self.cfg.rot], self.cfg.neox);
       }
       // k and v (2·d floats from d) into the cache at `pos`.
       p.pack(&b.qkv, [d, 0], own, 1, d, [self.context, pos]);

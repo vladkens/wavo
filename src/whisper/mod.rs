@@ -91,6 +91,7 @@ impl Whisper {
         d_ff: key("ffn_dim")?,
         bias: true,
         rot: 0,
+        neox: false,
         gated: false,
       })
     };

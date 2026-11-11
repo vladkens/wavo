@@ -3,27 +3,24 @@
 Done: 2026-11-10, PR #100
 
 Who spoke when, and speaker-attributed transcripts, approved by the person on 2026-11-10. The
-model is NVIDIA's streaming Sortformer 4spk v2.1, the diarizer transcribe.cpp ports at
-`REFERENCE_REV` (`src/arch/sortformer/`, `scripts/convert-sortformer.py`,
-`docs/models/diar_streaming_sortformer_4spk-v2.1.md`), published by `handy-computer` as
-`diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf` (139 MB) under the NVIDIA Open Model License
-(commercial use and redistribution allowed with the licence and a notice). Nemotron 3 Diarization
-(8 speakers, OpenMDW) is another architecture (a 31-layer RoPE transformer) that transcribe.cpp
-doesn't port: out of scope until it has a reference.
+model is NVIDIA's Nemotron 3 Diarization (up to 8 speakers, OpenMDW 1.1), the diarizer
+parakeet.cpp runs (`src/diarization*.cpp`), in its author's GGUF
+`mudler/Nemotron-3-Diarization-GGUF` (`nemotron-3-diarization-q8_0.gguf`, 109 MB). parakeet.cpp is
+the reference.
 
 ## Model
 
-- A FastConformer (17 layers, d 512, 8× conv subsampling of 128 mels, relative positions, biases,
-  BatchNorm conv, x·√d before the blocks), a projection to 192, 18 post-LN transformer layers
-  (8 heads, ReLU FFN 768, no positions), then ReLU, fc1, ReLU and a 4-way sigmoid: per 80 ms
-  frame the probability that each of 4 speakers talks, in order of first appearance.
-- Frontend: Parakeet's log-mel without normalization, ⌈n / 160⌉ frames, those from ⌊n / 160⌋ on
-  zero.
-- Streaming (`stream.cpp`): chunks of the GGUF's `chunk_len` (188 frames, 15 s) with one frame
-  of context each side; per chunk the subsampling runs on the chunk's mel window, the rest over
-  `[speaker cache | FIFO | chunk]`, and the speaker cache (188 frames) is compressed to the frames
-  that best represent each speaker (AOSC). Audio of any length, in linear time.
-- Turns: per speaker, each run of frames with probability > 0.5.
+- 8 mel frames stacked and projected to 512, a LayerNorm, 31 pre-LN transformer layers (8 heads,
+  fused qkv without bias, rotary positions in GPT-NeoX pairs, GELU FFN 2048), a final LayerNorm;
+  the head: a projection to 192, a conv1d (kernel 3) to 8 frames of 192 per frame, ReLU, a hidden
+  layer with ReLU and an 8-way sigmoid: per 10 ms frame the probability that each of 8 speakers
+  talks, in order of first appearance.
+- Frontend: Parakeet's log-mel without normalization, ⌊n / 160⌋ frames.
+- Streaming (`diarization_streaming.cpp`): chunks of 264 embedding frames (21.12 s), no context;
+  per chunk the stacking runs on the chunk's mel, the rest over `[speaker cache | chunk]`, and the
+  speaker cache (264 frames) is compressed to the frames that best represent each speaker (AOSC),
+  the model's silence embedding in empty slots. Audio of any length, in linear time.
+- Turns: per speaker, each run of frames with probability ≥ 0.5.
 
 ## API (for the person's review in the PR)
 
@@ -31,36 +28,36 @@ doesn't port: out of scope until it has a reference.
 - `wavo::Turn { speaker, start_ms, end_ms }`, sorted by start.
 - `Transcript::utterances(&turns) -> Vec<Utterance { speaker, start_ms, end_ms, text, tokens }>`:
   each word goes to the speaker whose turns overlap it most, consecutive words of a speaker join.
-- `hub::MODELS` gains `sortformer`; `ModelInfo::diarization()` tells it apart.
+- `hub::MODELS` gains `nemotron-diarization`; `ModelInfo::diarization()` tells it apart.
 
 ## CLI
 
 - `wavo run [MODEL] AUDIO --diarize`: text as `Speaker 1: …` lines, `--json` with the
-  utterances; the diarizer is `sortformer`, downloaded as `run` downloads a model. Not with
-  Moonshine, which has no token times.
+  utterances; the diarizer is `nemotron-diarization`, downloaded as `run` downloads a model. Not
+  with Moonshine, which has no token times.
 - `--srt` with `--diarize`: speakers as cue boundaries, not labels (as Subtitle Edit does with
   Sortformer): no cue spans two speakers.
-- `wavo run sortformer AUDIO`: the turns alone, as text or `--json`.
+- `wavo run nemotron-diarization AUDIO`: the turns alone, as text or `--json`.
 - `wavo serve` stays out (OpenAI's `diarized_json` is a follow-up).
 
 ## Checklist
 
-- [x] `sortformer` in `hub::MODELS`, the model table, `ALL_MODELS` and `tests/models.rs`
-- [x] `scripts/fixtures.sh` keeps the reference's speaker segments; fixtures for
-      `sortformer-2spk-mix`, `multitalker-2spk-mix`, `jfk`, `dots`, `dots-full` and `noise`
-- [x] `src/sortformer/`: frontend, encoder (the Parakeet subsampling and the shared conformer with
-      biases), transformer and head on the GPU, the streaming state on the CPU
+- [x] `nemotron-diarization` in `hub::MODELS`, the model table, `ALL_MODELS` and `tests/models.rs`
+- [x] Fixtures from parakeet.cpp's segments for `sortformer-2spk-mix`, `multitalker-2spk-mix`,
+      `jfk`, `dots`, `dots-full` and `noise`
+- [x] `src/sortformer/`: the transformer (the shared encoder blocks, rotary in GPT-NeoX pairs) and
+      the head on the GPU, the streaming state on the CPU
 - [x] `Diarizer`, `Turn`, `Transcript::utterances`, rustdoc with units and errors
-- [x] Fixtures pass on the M2: exact up to 35 s; `dots-full` (306 s) within 1% of its speech
-      frames, as transcribe.cpp's own CPU and Metal backends differ there
-- [x] CLI: `--diarize`, the turns of `wavo run sortformer`
-- [x] Speed against transcribe.cpp on the M2
+- [x] Fixtures pass within 1% of their speech frames
+- [x] CLI: `--diarize`, the turns of `wavo run nemotron-diarization`
+- [x] Speed against parakeet.cpp
 - [x] `docs/roadmap.md`, `readme.md`
 
 ## Result
 
-- Turns of `sortformer-2spk-mix`, `multitalker-2spk-mix`, `jfk`, `dots` and `noise` as
-  transcribe.cpp's; `dots-full` 9 of 2945 speech frames apart (transcribe.cpp CPU vs Metal: 18;
-  portable kernels: 0).
-- On the M2, warm: jfk 40 vs 84 ms, dots 194 vs 421 ms, dots-full 1.82 vs 4.01 s (transcribe.cpp
-  on Metal); an hour in 22 s; load 37 ms.
+- Of the speech frames of parakeet.cpp's turns: `sortformer-2spk-mix` 1 of 874 apart,
+  `multitalker-2spk-mix` 1 of 1209, `jfk` 2 of 858, `dots` 1 of 2756, `dots-full` (306 s, 15
+  chunks) 42 of 21585 (portable kernels: 20); `noise` none.
+- On an M5, the whole CLI run with the load, best of 5, against parakeet.cpp's `diarize` on
+  Metal: jfk 0.04 vs 0.08 s, dots 0.08 vs 0.14 s, dots-full 0.52 vs 0.76 s. parakeet.cpp's own
+  Metal and CPU turns of dots-full are 10 speech frames apart, wavo's from its Metal ones 34.

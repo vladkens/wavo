@@ -2,7 +2,7 @@
 //! Log-mel features as transcribe.cpp computes them for Parakeet (`src/transcribe-mel.cpp`):
 //! pre-emphasis in f64 before 256 zeros of padding on each side, symmetric Hann(400) centred in an
 //! f64 FFT of 512, power cast to f32, Slaney filterbank, `ln(mel + 2⁻²⁴)`, then each mel bin
-//! normalized over all frames but the last, which is zero. Sortformer takes the log-mel without
+//! normalized over all frames but the last, which is zero. The diarizer takes the log-mel without
 //! the normalization. The GGUF's dither is never applied.
 
 use std::f64::consts::PI;

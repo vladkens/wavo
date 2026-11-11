@@ -104,23 +104,27 @@ pub struct ModelInfo {
 
 impl ModelInfo {
   /// The Hugging Face repository `<owner>/<full name>-gguf`, such as
-  /// `handy-computer/parakeet-tdt-0.6b-v3-gguf`.
+  /// `handy-computer/parakeet-tdt-0.6b-v3-gguf`; `-GGUF` for `mudler` (parakeet.cpp's author),
+  /// `mudler/Nemotron-3-Diarization-GGUF`. Downloads need the name's exact case.
   pub fn repo(&self) -> String {
-    format!("{}/{}-gguf", self.owner, self.full_name)
+    let suffix = if self.owner == MU { "GGUF" } else { "gguf" };
+    format!("{}/{}-{suffix}", self.owner, self.full_name)
   }
 
-  /// The file name in [`repo`](Self::repo), such as `parakeet-tdt-0.6b-v3-Q8_0.gguf`.
+  /// The file name in [`repo`](Self::repo), such as `parakeet-tdt-0.6b-v3-Q8_0.gguf`; lowercase
+  /// for `mudler`, `nemotron-3-diarization-q8_0.gguf`.
   pub fn file(&self) -> String {
-    format!("{}-Q8_0.gguf", self.full_name)
+    let file = format!("{}-Q8_0.gguf", self.full_name);
+    if self.owner == MU { file.to_lowercase() } else { file }
   }
 
   /// Whether it is a speaker diarization model, for [`Diarizer::load`](crate::Diarizer::load)
-  /// rather than [`Model::load`](crate::Model::load): `sortformer`.
+  /// rather than [`Model::load`](crate::Model::load): `nemotron-diarization`.
   ///
   /// ```
   /// let speech_to_text = wavo::hub::MODELS.iter().filter(|m| !m.diarization());
   /// assert!(speech_to_text.clone().any(|m| m.name == "parakeet-v3"));
-  /// assert!(speech_to_text.clone().all(|m| m.name != "sortformer"));
+  /// assert!(speech_to_text.clone().all(|m| m.name != "nemotron-diarization"));
   /// ```
   pub fn diarization(&self) -> bool {
     self.family == "Sortformer"
@@ -182,6 +186,8 @@ impl ModelInfo {
 const HC: &str = "handy-computer";
 /// wavo's author's account, for conversions transcribe.cpp doesn't publish.
 const VK: &str = "vladkens";
+/// parakeet.cpp's author's account, for the diarization model.
+const MU: &str = "mudler";
 
 static EN: &[&str] = &["en"];
 static HE: &[&str] = &["he"];
@@ -245,7 +251,7 @@ pub static MODELS: &[ModelInfo] = &[
   ModelInfo { name: "breeze-asr-25", owner: HC, full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", langs: ZH_EN, punctuated: true, family: "Whisper", maker: "MediaTek Research", card: "https://huggingface.co/MediaTek-Research/Breeze-ASR-25" },
   ModelInfo { name: "moonshine-tiny", owner: HC, full_name: "moonshine-tiny", size: 35_466_912, languages: "English", langs: EN, punctuated: true, family: "Moonshine", maker: "Useful Sensors", card: "https://huggingface.co/UsefulSensors/moonshine-tiny" },
   ModelInfo { name: "moonshine-base", owner: HC, full_name: "moonshine-base", size: 77_476_480, languages: "English", langs: EN, punctuated: true, family: "Moonshine", maker: "Useful Sensors", card: "https://huggingface.co/UsefulSensors/moonshine-base" },
-  ModelInfo { name: "sortformer", owner: HC, full_name: "diar_streaming_sortformer_4spk-v2.1", size: 139_310_336, languages: "any language", langs: &[], punctuated: false, family: "Sortformer", maker: "NVIDIA", card: "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1" },
+  ModelInfo { name: "nemotron-diarization", owner: MU, full_name: "Nemotron-3-Diarization", size: 108_674_112, languages: "any language", langs: &[], punctuated: false, family: "Sortformer", maker: "NVIDIA", card: "https://huggingface.co/nvidia/Nemotron-3-Diarization" },
 ];
 
 /// The model a short or full name stands for.
@@ -610,6 +616,9 @@ mod tests {
     assert_eq!(m.file(), "parakeet-tdt-0.6b-v3-he-Q8_0.gguf");
     assert_eq!(name("gigaam-multilingual-large-ctc"), "gigaam-multilingual");
     assert_eq!(name("parakeet-tdt-0.6b-v3-uk"), "parakeet-uk");
+    let m = lookup("nemotron-diarization").unwrap();
+    assert_eq!(m.repo(), "mudler/Nemotron-3-Diarization-GGUF");
+    assert_eq!(m.file(), "nemotron-3-diarization-q8_0.gguf");
   }
 
   #[test]

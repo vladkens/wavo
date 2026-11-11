@@ -18,9 +18,9 @@ pub struct Turn {
   /// The speaker, from 0: speakers are numbered in the order they first talk in the audio, so the
   /// same voice has the same number throughout one call, but not across calls.
   pub speaker: u32,
-  /// Start in milliseconds from the start of the audio, a multiple of the model's 80 ms frame.
+  /// Start in milliseconds from the start of the audio, a multiple of the model's 10 ms frame.
   pub start_ms: u32,
-  /// End in milliseconds, a multiple of 80 after `start_ms`.
+  /// End in milliseconds, a multiple of 10 after `start_ms`.
   pub end_ms: u32,
 }
 
@@ -58,7 +58,7 @@ impl Transcript {
   ///
   /// ```no_run
   /// let model = wavo::Model::load("parakeet-tdt-0.6b-v3-Q8_0.gguf")?;
-  /// let diarizer = wavo::Diarizer::load("diar_streaming_sortformer_4spk-v2.1-Q8_0.gguf")?;
+  /// let diarizer = wavo::Diarizer::load("nemotron-3-diarization-q8_0.gguf")?;
   /// # let pcm = vec![0.0f32; 16_000];
   /// let transcript = model.transcribe(&pcm)?;
   /// for u in transcript.utterances(&diarizer.diarize(&pcm)?) {

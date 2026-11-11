@@ -177,37 +177,27 @@ fn check(name: &str, samples: &[&str]) {
   }
 }
 
-/// The turns of each sample are the speaker segments of its block: `speaker segments: N`, then
-/// lines `  [   0.32 ->    2.40] S1`, speaker by speaker.
+/// Each sample's turns are within 1% of the speech frames of its block, frames where one says a
+/// speaker talks and the other doesn't: GPU arithmetic tips probabilities near 0.5, and on long
+/// clips the speaker cache's choice between near-equal frames. A block is parakeet.cpp's segments,
+/// `speaker segments: N`, then lines `  [   0.32 ->    2.40] S1`.
 fn check_turns(name: &str, samples: &[&str]) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
   let diarizer = wavo::Diarizer::load(model_path(name)).unwrap();
-  for sample in samples {
-    let got = turns(&diarizer, sample);
-    assert_eq!(got, read_turns(name, sample), "{name} {sample}: turns");
-  }
-}
-
-/// Past a minute or so the speaker cache keeps the best frames of each voice, and float rounding
-/// tips near-ties between them: on `dots-full` transcribe.cpp's own CPU and Metal backends give
-/// different turns, apart in 18 of its 2945 speech frames (wavo in 9). So a long clip's turns need
-/// only be within `percent` of the speech frames of its fixture: frames where one says a speaker
-/// talks and the other doesn't.
-fn close_turns(name: &str, sample: &str, percent: usize) {
-  let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
-  let diarizer = wavo::Diarizer::load(model_path(name)).unwrap();
-  let (got, want) = (turns(&diarizer, sample), read_turns(name, sample));
-  // Per speaker the 80 ms frames it talks in.
+  // Per speaker the 10 ms frames it talks in.
   let frames = |turns: &[(u32, u32, u32)]| -> std::collections::BTreeSet<(u32, u32)> {
-    turns.iter().flat_map(|&(s, start, end)| (start / 80..end / 80).map(move |f| (s, f))).collect()
+    turns.iter().flat_map(|&(s, start, end)| (start / 10..end / 10).map(move |f| (s, f))).collect()
   };
-  let (a, b) = (frames(&got), frames(&want));
-  let apart = a.symmetric_difference(&b).count();
-  println!("{name} {sample}: {apart} of {} speech frames apart", b.len());
-  assert!(
-    apart * 100 <= b.len() * percent,
-    "{name} {sample}: {apart} frames apart\n got {got:?}\nwant {want:?}"
-  );
+  for sample in samples {
+    let (got, want) = (turns(&diarizer, sample), read_turns(name, sample));
+    let (a, b) = (frames(&got), frames(&want));
+    let apart = a.symmetric_difference(&b).count();
+    println!("{name} {sample}: {apart} of {} speech frames apart", b.len());
+    assert!(
+      apart * 100 <= b.len(),
+      "{name} {sample}: {apart} frames apart\n got {got:?}\nwant {want:?}"
+    );
+  }
 }
 
 /// `(speaker from 1, start ms, end ms)` sorted, as the fixtures list them.
@@ -676,8 +666,8 @@ fn moonshine_base() {
 }
 
 #[test]
-fn sortformer() {
-  const SAMPLES: &[&str] = &["sortformer-2spk-mix", "multitalker-2spk-mix", "jfk", "dots", "noise"];
-  check("diar_streaming_sortformer_4spk-v2.1", SAMPLES);
-  close_turns("diar_streaming_sortformer_4spk-v2.1", "dots-full", 1);
+fn nemotron_diarization() {
+  const SAMPLES: &[&str] =
+    &["sortformer-2spk-mix", "multitalker-2spk-mix", "jfk", "dots", "dots-full", "noise"];
+  check("Nemotron-3-Diarization", SAMPLES);
 }

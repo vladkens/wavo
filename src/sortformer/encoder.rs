@@ -1,46 +1,40 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! The network on the GPU in two calls per chunk: `embed`, Parakeet's 8× subsampling of the chunk's
-//! mel window; `predict`, over the speaker cache, the FIFO and the chunk scaled by √d, the
-//! FastConformer blocks, the projection to the transformer's width, its post-LN layers
-//! `x = LN(x + attn(x))`, `x = LN(x + ffn(x))` (ReLU, no positions), then ReLU, fc1 + ReLU and the
-//! speaker head, whose sigmoid the caller takes. Both run over one preallocated arena.
+//! The network on the GPU in two calls per chunk, as parakeet.cpp's `src/diarization_encoder.cpp`
+//! and `src/diarization_head.cpp`: `embed`, the chunk's mel frames stacked by 8 and projected;
+//! `predict`, over the speaker cache, the FIFO and the chunk, a LayerNorm, the pre-LN transformer
+//! blocks with rotary positions (GPT-NeoX pairs) and a final LayerNorm, then the head: a projection
+//! to its width, a conv1d (kernel 3) to 8 frames of that width per frame, ReLU, a hidden layer with
+//! ReLU and an output per speaker, through a sigmoid. Both run over one arena.
 
 use std::sync::{Mutex, PoisonError};
 
-use crate::conformer::{self, Buffers, Conformer};
+use crate::conformer;
 use crate::error::Result;
 use crate::gguf::Gguf;
-use crate::gpu::{Buffer, Channels, Epilogue, Gpu, Groups, Linear, Pass, half, pos_rows};
-use crate::parakeet::encoder::Subsampling;
+use crate::gpu::{Buffer, Channels, Epilogue, Gpu, Groups, Linear, Pass};
 use crate::parakeet::frontend::MELS;
-use crate::transformer::{Config, norm, parallel};
+use crate::transformer::{self, Block, Buffers, Config, norm, parallel};
+
+/// Mel frames per embedding, and output frames per embedding.
+pub const STACK: usize = 8;
 
 pub struct Encoder {
-  subsampling: Subsampling,
-  conformer: Conformer,
+  stack: Linear,
+  embed_norm: Channels,
+  blocks: transformer::Encoder,
   proj: Linear,
-  cfg: Config,
-  blocks: Vec<Block>,
-  fc1: Linear,
+  conv: Linear,
+  hidden: Linear,
   head: Linear,
-  arena: Mutex<Option<Arena>>,
+  speakers: usize,
+  arena: Mutex<Arena>,
 }
 
-struct Block {
-  qkv: Linear,
-  out: Linear,
-  norm1: Channels,
-  ff_in: Linear,
-  ff_out: Linear,
-  norm2: Channels,
-}
-
-/// Activations for up to `frames` frames, and the bind groups of each call.
+/// Activations for up to `frames` embeddings, and the bind groups of each call.
 struct Arena {
-  frames: usize,
   bufs: Buffers,
-  /// Sinusoidal positions: `pos_rows(frames)` rows of d, row r is position `frames + 15 − r`.
-  table: Vec<f32>,
+  /// The rotary table from position 0: per position head_dim / 2 cosines, then sines.
+  rope: Buffer,
   mel: Buffer,
   out: Buffer,
   read: Buffer,
@@ -49,148 +43,119 @@ struct Arena {
 }
 
 impl Encoder {
-  /// Loads the network with `ch` subsampling channels, the transformer `cfg` (post-LN, biases, no
-  /// positions) and a head of `speakers`.
+  /// Loads the network of `cfg`, the head's `width` and `speakers`, for calls over up to `frames`
+  /// embeddings, with rotary frequencies `theta^(−2i / head_dim)`.
   pub fn new(
     gpu: &Gpu,
     g: &Gguf,
-    enc: conformer::Config,
-    ch: usize,
     cfg: Config,
-    speakers: usize,
+    [width, speakers, frames]: [usize; 3],
+    theta: f32,
   ) -> Result<Self> {
-    let (d, f, ed) = (cfg.d, cfg.d_ff, enc.d);
-    let linear = |name: &str, dims: &[usize]| conformer::linear(gpu, g, &[name.into()], dims, true);
-    let (blocks, subsampling, conformer) = std::thread::scope(|s| {
-      let subsampling = s.spawn(|| Subsampling::new(gpu, g, ch, ed));
-      let blocks = s.spawn(|| {
-        parallel(cfg.layers, |i| {
-          let p = |n: &str| format!("tf.blocks.{i}.{n}");
-          let qkv = ["q", "k", "v"].map(|n| p(&format!("attn.{n}")));
-          Ok(Block {
-            qkv: conformer::linear(gpu, g, &qkv, &[d, d], true)?,
-            out: linear(&p("attn.out"), &[d, d])?,
-            norm1: norm(gpu, g, &p("norm_1"), d, true)?,
-            ff_in: linear(&p("ff.in"), &[d, f])?,
-            ff_out: linear(&p("ff.out"), &[f, d])?,
-            norm2: norm(gpu, g, &p("norm_2"), d, true)?,
-          })
-        })
-      });
-      let conformer = Conformer::load(gpu, g, enc)?;
-      Ok::<_, crate::Error>((blocks.join().unwrap()?, subsampling.join().unwrap()?, conformer))
+    let (d, f) = (cfg.d, cfg.d_ff);
+    let linear =
+      |name: &str, dims: &[usize], bias| conformer::linear(gpu, g, &[name.into()], dims, bias);
+    let blocks = parallel(cfg.layers, |i| {
+      let p = |n: &str| format!("encoder.layers.{i}.{n}");
+      Ok(Block {
+        norm_attn: norm(gpu, g, &p("norm1"), d, true)?,
+        qkv: linear(&p("attn.w_qkv"), &[d, 3 * d], false)?,
+        out: linear(&p("attn.out_proj"), &[d, d], true)?,
+        norm_ffn: norm(gpu, g, &p("norm2"), d, true)?,
+        fc1: linear(&p("ffn.net.0"), &[d, f], true)?,
+        fc2: linear(&p("ffn.net.3"), &[f, d], true)?,
+      })
     })?;
+    let m = |n: &str| format!("sortformer_modules.{n}");
+    let conv_bias = g.tensor(&m("subpixel_upsample.bias"), &[STACK * width])?.to_f32()?;
+    let conv = g.tensor(&m("subpixel_upsample.weight"), &[3, width, STACK * width])?;
 
-    Ok(Self {
-      subsampling,
-      proj: linear("diar.encoder_proj", &[ed, d])?,
-      blocks,
-      fc1: linear("diar.fc1", &[d, d])?,
-      head: linear("diar.single_spk_head", &[d, speakers])?,
-      conformer,
-      cfg,
-      arena: Mutex::new(None),
-    })
-  }
+    let hd = cfg.head_dim();
+    let mut table = Vec::with_capacity(frames * hd);
+    for pos in 0..frames {
+      let angles = (0..hd / 2).map(|i| pos as f32 * theta.powf(-((2 * i) as f32) / hd as f32));
+      table.extend(angles.clone().map(f32::cos).chain(angles.map(f32::sin)));
+    }
 
-  /// The conformer's width: the embeddings' size.
-  pub fn width(&self) -> usize {
-    self.conformer.cfg.d
-  }
-
-  /// Allocates the arena for calls over up to `frames` frames, of embeddings or of mel frames / 8.
-  pub fn reserve(&self, gpu: &Gpu, frames: usize) {
-    self.with(gpu, frames, |_| ());
-  }
-
-  /// Runs `f` with the arena for up to `frames` frames.
-  fn with<T>(&self, gpu: &Gpu, frames: usize, f: impl FnOnce(&mut Arena) -> T) -> T {
-    let mut arena = self.arena.lock().unwrap_or_else(PoisonError::into_inner);
-    let a = match arena.take() {
-      Some(a) if a.frames >= frames => arena.insert(a),
-      old => {
-        drop(old);
-        arena.insert(self.arena(gpu, frames.next_multiple_of(64)))
-      }
-    };
-    f(a)
-  }
-
-  /// The embeddings `[half³(m)][d]` of a mel window `[m][MELS]`, unscaled.
-  pub fn embed(&self, gpu: &Gpu, mel: &[f32]) -> Result<Vec<f32>> {
-    let m = mel.len() / MELS;
-    let t = half(half(half(m)));
-    self.with(gpu, m.div_ceil(8), |a| {
-      gpu.write(&a.mel, mel);
-      let Arena { bufs, mel, read, embed, .. } = a;
-      let x = &bufs.x;
-      gpu
-        .run(embed, x, read, t * self.width(), |p| self.subsampling.record(p, bufs, mel, [m, m], t))
-    })
-  }
-
-  /// The speaker head's outputs before the sigmoid, `[t][speakers]`, for the embeddings `x`
-  /// `[t][d]`, already scaled by √d.
-  pub fn predict(&self, gpu: &Gpu, x: &[f32], speakers: usize) -> Result<Vec<f32>> {
-    let (d, t, width) = (self.width(), x.len() / self.width(), self.head.width());
-    let out = self.with(gpu, t, |a| {
-      gpu.write(&a.bufs.x, x);
-      gpu.write(&a.bufs.pos, &a.table[(a.frames - t) * d..][..pos_rows(t) * d]);
-      let Arena { bufs, out, read, predict, .. } = a;
-      gpu.run(predict, out, read, t * width, |p| self.record(p, bufs, out, t))
-    })?;
-    Ok(out.chunks(width).flat_map(|row| &row[..speakers]).copied().collect())
-  }
-
-  fn record(&self, p: &mut Pass, b: &Buffers, out: &Buffer, t: usize) {
-    let (d, heads) = (self.cfg.d, self.cfg.heads);
-    let enc = self.conformer.record(p, b, t);
-    let (x, y) = if std::ptr::eq(enc, &b.x) { (&b.y, &b.x) } else { (&b.x, &b.y) };
-    p.gemm(enc, &self.proj, x, t, Epilogue::Bias);
-    p.layers(&self.blocks, |p, k| {
-      p.gemm(x, &k.qkv, &b.qk, t, Epilogue::Bias);
-      p.attention(&b.qk, None, None, &b.s, y, t, heads, self.cfg.head_dim());
-      p.gemm(y, &k.out, x, t, Epilogue::Residual(1.0));
-      p.layer_norm(x, &k.norm1, y, t, d, None);
-      p.gemm(y, &k.ff_in, &b.h, t, Epilogue::Relu);
-      p.gemm(&b.h, &k.ff_out, y, t, Epilogue::Residual(1.0));
-      p.layer_norm(y, &k.norm2, x, t, d, None);
-      x
-    });
-    p.relu(x, t * d);
-    p.gemm(x, &self.fc1, y, t, Epilogue::Relu);
-    p.gemm(y, &self.head, out, t, Epilogue::Bias);
-  }
-
-  fn arena(&self, gpu: &Gpu, frames: usize) -> Arena {
-    let (c, tf) = (&self.conformer.cfg, &self.cfg);
-    let (d, n) = (c.d, pos_rows(frames));
-    let [chunk, third] = self.subsampling.scratch(frames);
-    let scores = gpu.scores_len(frames, c.heads, c.head_dim(), true).max(gpu.scores_len(
-      frames,
-      tf.heads,
-      tf.head_dim(),
-      false,
-    ));
     let bufs = Buffers {
       x: gpu.buffer(frames * d),
       y: gpu.buffer(frames * d),
-      h: gpu.buffer((frames * c.d_ff.max(tf.d_ff)).max(third)),
-      qk: gpu.buffer((frames * 4 * d).max(chunk).max(third)),
-      s: gpu.buffer(scores),
-      yr: gpu.buffer(((n + 64) * d).max(chunk)),
-      pos: gpu.buffer(n * d),
+      // Also the conv's columns [t][3·width] and the hidden layer's output [8t][width].
+      qkv: gpu.buffer(frames * (3 * d).max(STACK * width)),
+      // Also the conv's output [t][8·width].
+      h: gpu.buffer(frames * f.max(STACK * width)),
+      s: gpu.buffer(gpu.scores_len(frames, cfg.heads, hd, false)),
     };
-    let width = self.head.width().max(d);
-    Arena {
-      frames,
+    let head = linear(&m("single_hidden_to_spks"), &[width, speakers], true)?;
+    let out = frames * (STACK * head.width()).max(d);
+    let arena = Arena {
       bufs,
-      table: conformer::rel_positions(d, frames as i64 + 15, n),
-      mel: gpu.buffer(8 * frames * MELS),
-      out: gpu.buffer(frames * self.head.width()),
-      read: gpu.readback(frames * width),
+      rope: gpu.upload(&table)?,
+      mel: gpu.buffer(frames * STACK * MELS),
+      out: gpu.buffer(out),
+      read: gpu.readback(out),
       embed: Vec::new(),
       predict: Vec::new(),
-    }
+    };
+
+    Ok(Self {
+      stack: linear("encoder.pre_encode.proj", &[STACK * MELS, d], false)?,
+      embed_norm: norm(gpu, g, "encoder.embed_norm", d, true)?,
+      blocks: transformer::Encoder {
+        norm: norm(gpu, g, "encoder.final_norm", d, true)?,
+        cfg,
+        blocks,
+      },
+      proj: linear(&m("encoder_proj"), &[d, width], true)?,
+      conv: gpu.conv(conv, &conv_bias)?,
+      hidden: linear(&m("first_hidden_to_hidden"), &[width, width], true)?,
+      head,
+      speakers,
+      arena: Mutex::new(arena),
+    })
+  }
+
+  /// The embeddings `[⌈m / 8⌉][d]` of `m` mel frames `[m][MELS]`, the last 8 padded with zeros.
+  pub fn embed(&self, gpu: &Gpu, mel: &[f32]) -> Result<Vec<f32>> {
+    let t = (mel.len() / MELS).div_ceil(STACK);
+    let mut padded = mel.to_vec();
+    padded.resize(t * STACK * MELS, 0.0);
+    let mut a = self.arena.lock().unwrap_or_else(PoisonError::into_inner);
+    gpu.write(&a.mel, &padded);
+    let Arena { mel, out, read, embed, .. } = &mut *a;
+    let len = t * self.blocks.cfg.d;
+    gpu.run(embed, out, read, len, |p| p.gemm(mel, &self.stack, out, t, Epilogue::Bias))
+  }
+
+  /// Per output frame, 8 per embedding of `x` `[t][d]`, each speaker's probability:
+  /// `[8t][speakers]`.
+  pub fn predict(&self, gpu: &Gpu, x: &[f32]) -> Result<Vec<f32>> {
+    let t = x.len() / self.blocks.cfg.d;
+    let width = self.head.width();
+    let mut a = self.arena.lock().unwrap_or_else(PoisonError::into_inner);
+    gpu.write(&a.bufs.y, x);
+    let Arena { bufs, rope, out, read, predict, .. } = &mut *a;
+    let logits =
+      gpu.run(predict, out, read, STACK * t * width, |p| self.record(p, bufs, rope, out, t))?;
+    let sigmoid = |z: f32| 1.0 / (1.0 + (-z).exp());
+    Ok(
+      logits
+        .chunks(width)
+        .flat_map(|row| row[..self.speakers].iter().map(|&z| sigmoid(z)))
+        .collect(),
+    )
+  }
+
+  fn record(&self, p: &mut Pass, b: &Buffers, rope: &Buffer, out: &Buffer, t: usize) {
+    let (d, width) = (self.blocks.cfg.d, self.proj.width());
+    p.layer_norm(&b.y, &self.embed_norm, &b.x, t, d, None);
+    self.blocks.record(p, b, t, Some(rope));
+    p.gemm(&b.y, &self.proj, &b.x, t, Epilogue::Bias);
+    p.im2col(&b.x, &b.qkv, t, width, [3, 1, 1]);
+    // Each frame's 8·width outputs are 8 frames of width.
+    p.gemm(&b.qkv, &self.conv, &b.h, t, Epilogue::Bias);
+    p.relu(&b.h, t * STACK * width);
+    p.gemm(&b.h, &self.hidden, &b.qkv, STACK * t, Epilogue::Relu);
+    p.gemm(&b.qkv, &self.head, out, STACK * t, Epilogue::Bias);
   }
 }

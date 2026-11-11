@@ -1,14 +1,10 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! The streaming state on the CPU, as transcribe.cpp's `src/arch/sortformer/stream.cpp` ports
+//! The streaming state on the CPU, as parakeet.cpp's `src/diarization_streaming.cpp` ports
 //! NeMo's `SortformerModules` (batch 1): after each chunk its frames go through a FIFO into the
 //! speaker cache, which is compressed to the frames that best represent each speaker (the
-//! Arrival-Order Speaker Cache), with the mean embedding of silent frames in place of empty
-//! slots. Embeddings are pre-encode outputs `[frames][d]`, predictions `[frames][speakers]`.
+//! Arrival-Order Speaker Cache), with the model's silence embedding in place of empty slots.
+//! Embeddings are pre-encode outputs `[frames][d]`, predictions `[frames][speakers]`.
 
-/// Frames of each speaker's share of the compressed cache kept for silence.
-pub const SIL_FRAMES_PER_SPEAKER: usize = 3;
-/// A frame whose predictions sum below this is silence.
-const SIL_THRESHOLD: f32 = 0.2;
 /// Predictions are clamped to at least this before their logarithms.
 const PRED_SCORE_THRESHOLD: f32 = 0.25;
 /// Added to the scores of the frames that arrived since the last compression.
@@ -17,8 +13,7 @@ const STRONG_BOOST_RATE: f32 = 0.75;
 const WEAK_BOOST_RATE: f32 = 1.5;
 const MIN_POS_SCORES_RATE: f32 = 0.5;
 
-/// The chunking, in 80 ms frames: the GGUF's `stt.sortformer.stream.*`.
-#[derive(Clone, Copy)]
+/// The chunking, in embedding frames.
 pub struct Params {
   /// Frames per chunk.
   pub chunk: usize,
@@ -27,6 +22,8 @@ pub struct Params {
   pub cache: usize,
   /// Frames moved from the FIFO to the cache at a time.
   pub period: usize,
+  /// Frames of each speaker's share of the compressed cache kept for silence.
+  pub silence: usize,
 }
 
 pub struct State {
@@ -38,26 +35,14 @@ pub struct State {
   cache_preds: Option<Vec<f32>>,
   fifo: Vec<f32>,
   fifo_preds: Vec<f32>,
-  /// The mean embedding of the silent frames seen so far, and their count.
-  sil_mean: Vec<f32>,
-  sil_frames: u64,
-  /// The predictions of the chunks so far.
-  pub preds: Vec<f32>,
+  /// The embedding of an empty slot.
+  silence: Vec<f32>,
 }
 
 impl State {
-  pub fn new(d: usize, n: usize) -> Self {
-    Self {
-      d,
-      n,
-      cache: Vec::new(),
-      cache_preds: None,
-      fifo: Vec::new(),
-      fifo_preds: Vec::new(),
-      sil_mean: vec![0.0; d],
-      sil_frames: 0,
-      preds: Vec::new(),
-    }
+  pub fn new(n: usize, silence: Vec<f32>) -> Self {
+    let (cache, fifo, fifo_preds) = (Vec::new(), Vec::new(), Vec::new());
+    Self { d: silence.len(), n, cache, cache_preds: None, fifo, fifo_preds, silence }
   }
 
   /// The speaker cache then the FIFO, `[frames][d]`: the rows before a chunk's.
@@ -65,22 +50,19 @@ impl State {
     self.cache.iter().chain(&self.fifo)
   }
 
-  /// Takes a chunk's embeddings `[lc + c + rc][d]` and the predictions `[context + chunk][n]` of
-  /// the forward over the context and them: `streaming_update` (sync).
-  pub fn update(&mut self, p: &Params, embs: &[f32], preds: &[f32], [lc, rc]: [usize; 2]) {
+  /// Takes a chunk's embeddings `[c][d]` and the predictions `[context + c][n]` of the forward
+  /// over the context and them: `streaming_update` (sync).
+  pub fn update(&mut self, p: &Params, embs: &[f32], preds: &[f32]) {
     let (d, n) = (self.d, self.n);
     let (s, f) = (self.cache.len() / d, self.fifo.len() / d);
-    let c = embs.len() / d - lc - rc;
-    self.fifo_preds = preds[s * n..(s + f) * n].to_vec();
-    let chunk_preds = &preds[(s + f + lc) * n..(s + f + lc + c) * n];
-    self.fifo.extend_from_slice(&embs[lc * d..(lc + c) * d]);
-    self.fifo_preds.extend_from_slice(chunk_preds);
+    let c = embs.len() / d;
+    self.fifo_preds = preds[s * n..].to_vec();
+    self.fifo.extend_from_slice(embs);
 
     if f + c > p.fifo {
       let pop = p.period.max(f + c - p.fifo).min(f + c);
       let pop_embs: Vec<f32> = self.fifo.drain(..pop * d).collect();
       let pop_preds: Vec<f32> = self.fifo_preds.drain(..pop * n).collect();
-      self.silence(&pop_embs, &pop_preds);
       self.cache.extend_from_slice(&pop_embs);
       if let Some(cache_preds) = &mut self.cache_preds {
         cache_preds.extend_from_slice(&pop_preds);
@@ -89,39 +71,18 @@ impl State {
       if self.cache.len() / d > p.cache {
         // The first compression takes the cache's predictions from this forward.
         self.cache_preds.get_or_insert_with(|| [&preds[..s * n], &pop_preds].concat());
-        self.compress(p.cache);
+        self.compress(p.cache, p.silence);
       }
     }
-
-    self.preds.extend_from_slice(chunk_preds);
   }
 
-  /// `_get_silence_profile`: the silent frames of `embs` join the running mean.
-  fn silence(&mut self, embs: &[f32], preds: &[f32]) {
-    let silent: Vec<bool> =
-      preds.chunks(self.n).map(|p| p.iter().fold(0.0f32, |s, x| s + x) < SIL_THRESHOLD).collect();
-    let count = silent.iter().filter(|&&s| s).count() as u64;
-    if count == 0 {
-      return;
-    }
-
-    let (old, new) = (self.sil_frames, self.sil_frames + count);
-    for (i, mean) in self.sil_mean.iter_mut().enumerate() {
-      let rows = embs.chunks(self.d).zip(&silent).filter(|r| *r.1);
-      let sum = rows.fold(0.0f32, |s, (row, _)| s + row[i]);
-      *mean = (*mean * old as f32 + sum) / new.max(1) as f32;
-    }
-
-    self.sil_frames = new;
-  }
-
-  /// `_compress_spkcache`: the cache down to `len` frames, per speaker its best-scored ones and a
-  /// few of silence, in time order.
-  fn compress(&mut self, len: usize) {
+  /// `_compress_spkcache`: the cache down to `len` frames, per speaker its best-scored ones and
+  /// `silence` of silence, in time order.
+  fn compress(&mut self, len: usize, silence: usize) {
     let (d, n) = (self.d, self.n);
     let preds = self.cache_preds.take().unwrap();
     let frames = preds.len() / n;
-    let per_speaker = (len / n - SIL_FRAMES_PER_SPEAKER) as f32;
+    let per_speaker = (len / n - silence) as f32;
     let [strong, weak, min_pos] = [STRONG_BOOST_RATE, WEAK_BOOST_RATE, MIN_POS_SCORES_RATE]
       .map(|rate| (per_speaker * rate).floor() as usize);
 
@@ -132,9 +93,9 @@ impl State {
     boost_top(&mut scores, n, strong, 2.0);
     boost_top(&mut scores, n, weak, 1.0);
 
-    // Speaker-major with SIL_FRAMES_PER_SPEAKER frames of +inf after each speaker's, the best
-    // `len` (by score, then index), in index order; -inf picks and the silence frames are empty.
-    let padded = frames + SIL_FRAMES_PER_SPEAKER;
+    // Speaker-major with `silence` frames of +inf after each speaker's, the best `len` (by score,
+    // then index), in index order; -inf picks and the silence frames are empty.
+    let padded = frames + silence;
     let score = |f: usize| match f % padded {
       i if i < frames => scores[i * n + f / padded],
       _ => f32::INFINITY,
@@ -156,7 +117,7 @@ impl State {
           kept.extend_from_slice(&preds[i * n..(i + 1) * n]);
         }
         None => {
-          cache.extend_from_slice(&self.sil_mean);
+          cache.extend_from_slice(&self.silence);
           kept.extend(std::iter::repeat_n(0.0, n));
         }
       }
@@ -249,27 +210,24 @@ mod tests {
 
   #[test]
   fn fifo_cache_and_compression() {
-    let p = Params { chunk: 4, fifo: 2, cache: 5, period: 4 };
-    let mut st = State::new(1, 1);
+    let p = Params { chunk: 4, fifo: 2, cache: 5, period: 4, silence: 3 };
+    let mut st = State::new(1, vec![9.0]);
     // Frame i has embedding i; the speaker talks in even frames.
     let preds = |frames: std::ops::Range<usize>| -> Vec<f32> {
       frames.map(|i| if i % 2 == 0 { 0.9 } else { 0.0 }).collect()
     };
     let embs = |frames: std::ops::Range<usize>| frames.map(|i| i as f32).collect::<Vec<_>>();
 
-    // Past the FIFO's 2 frames, 4 move to the cache; 1 and 3 are silence.
-    st.update(&p, &embs(0..4), &preds(0..4), [0, 0]);
+    // Past the FIFO's 2 frames, 4 move to the cache.
+    st.update(&p, &embs(0..4), &preds(0..4));
     assert_eq!((st.cache.clone(), st.fifo.len()), (vec![0.0, 1.0, 2.0, 3.0], 0));
-    assert_eq!((st.sil_frames, st.sil_mean[0]), (2, 2.0));
     assert!(st.cache_preds.is_none());
 
     // The forward saw [cache | chunk]. 8 frames pass the cache's 5: per speaker 5 − 3 = 2 frames
-    // stay, the best after boosts (6, the latest, then 0 of the equal 0, 2, 4), then 3 of silence,
-    // whose mean is now (1 + 3 + 5 + 7) / 4.
+    // stay, the best after boosts (6, the latest, then 0 of the equal 0, 2, 4), then 3 of silence.
     assert_eq!(st.context().count(), 4);
-    st.update(&p, &embs(4..8), &preds(0..8), [0, 0]);
-    assert_eq!(st.cache, [0.0, 6.0, 4.0, 4.0, 4.0]);
+    st.update(&p, &embs(4..8), &preds(0..8));
+    assert_eq!(st.cache, [0.0, 6.0, 9.0, 9.0, 9.0]);
     assert_eq!(st.cache_preds.as_deref(), Some(&[0.9, 0.9, 0.0, 0.0, 0.0][..]));
-    assert_eq!(st.preds, preds(0..8));
   }
 }

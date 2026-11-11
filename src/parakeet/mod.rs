@@ -7,7 +7,7 @@
 
 pub mod ane;
 mod decoder;
-pub(crate) mod encoder;
+mod encoder;
 pub(crate) mod frontend;
 
 use decoder::Decoder;

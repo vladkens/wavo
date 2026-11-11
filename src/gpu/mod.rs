@@ -1623,11 +1623,21 @@ impl<'a> Pass<'a> {
   }
 
   /// Rotary embedding in place over `rows` rows `[q | k | v]` of `heads` heads of `hd`, at
-  /// positions `pos..`: in q's and k's heads the pairs (2i, 2i + 1) for 2i < `rot` rotate. The
-  /// table holds per position `rot` / 2 cosines, then as many sines.
-  pub fn rope(&mut self, table: &Buffer, qkv: &Buffer, rows: usize, pos: usize, shape: [usize; 3]) {
+  /// positions `pos..`: in q's and k's heads, for 2i < `rot`, the pairs (2i, 2i + 1) rotate, or
+  /// with `neox` the pairs (i, i + `rot` / 2). The table holds per position `rot` / 2 cosines, then
+  /// as many sines.
+  pub fn rope(
+    &mut self,
+    table: &Buffer,
+    qkv: &Buffer,
+    rows: usize,
+    pos: usize,
+    shape: [usize; 3],
+    neox: bool,
+  ) {
     let [heads, hd, rot] = shape;
-    let params = [rows, 3 * heads * hd, hd, 0, rot, 0, 2 * heads, pos].map(|v| v as u32);
+    let params =
+      [rows, 3 * heads * hd, hd, 0, rot, neox as usize, 2 * heads, pos].map(|v| v as u32);
     let size = [(heads * rot).div_ceil(256), rows, 1];
     self.run(&self.gpu.kernels.rope, &[table, qkv], &params, size);
   }
@@ -2280,27 +2290,34 @@ mod tests {
   #[test]
   fn rope() {
     // Rows [q | k | v] of 3 heads of 10, the first 6 dims of q's and k's heads rotating, from
-    // position 2.
+    // position 2; GPT-J's pairs (2i, 2i + 1) and GPT-NeoX's (i, i + 3).
     let (rows, heads, hd, rot, pos) = (5, 3, 10, 6, 2);
     let stride = 3 * heads * hd;
     let x = random(rows * stride, 30);
     let table = random((pos + rows) * rot, 31);
-    let want: Vec<f32> = (0..x.len())
-      .map(|e| {
-        let (r, i) = (e / stride, e % stride);
-        let d = i % hd;
-        if i >= 2 * heads * hd || d >= rot {
-          return x[e];
-        }
-        let t = &table[(pos + r) * rot..];
-        let (c, s) = (t[d / 2], t[rot / 2 + d / 2]);
-        if d % 2 == 0 { x[e] * c - x[e + 1] * s } else { x[e - 1] * s + x[e] * c }
-      })
-      .collect();
-    for gpu in gpus() {
-      let tb = up(gpu, &table);
-      let got = run(gpu, &x, |p, xb| p.rope(&tb, xb, rows, pos, [heads, hd, rot]));
-      assert_close(&got, &want);
+    for neox in [false, true] {
+      let want: Vec<f32> = (0..x.len())
+        .map(|e| {
+          let (r, i) = (e / stride, e % stride);
+          let d = i % hd;
+          if i >= 2 * heads * hd || d >= rot {
+            return x[e];
+          }
+          let t = &table[(pos + r) * rot..];
+          // The pair's index, and whether d is its first; the other is `step` away.
+          let (pair, first, step) = match neox {
+            false => (d / 2, d % 2 == 0, 1),
+            true => (d % (rot / 2), d < rot / 2, rot / 2),
+          };
+          let (c, s) = (t[pair], t[rot / 2 + pair]);
+          if first { x[e] * c - x[e + step] * s } else { x[e - step] * s + x[e] * c }
+        })
+        .collect();
+      for gpu in gpus() {
+        let tb = up(gpu, &table);
+        let got = run(gpu, &x, |p, xb| p.rope(&tb, xb, rows, pos, [heads, hd, rot], neox));
+        assert_close(&got, &want);
+      }
     }
   }
 

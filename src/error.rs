@@ -12,7 +12,7 @@ pub enum Error {
   #[error(transparent)]
   Io(#[from] std::io::Error),
   /// The file is not a model wavo supports: not a GGUF, an architecture other than `gigaam`,
-  /// `parakeet`, `whisper` and `moonshine` (`sortformer` for
+  /// `parakeet`, `whisper` and `moonshine` (parakeet.cpp's diarization model for
   /// [`Diarizer::load`](crate::Diarizer::load)), or a missing or mismatched tensor or metadata
   /// key.
   #[error("invalid model: {0}")]

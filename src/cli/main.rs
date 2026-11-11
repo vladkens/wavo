@@ -56,7 +56,7 @@ Run options:
                                Moonshine; at most 15 on the Neural Engine)
   --language CODE              the language of the speech (en, he, ...) for multilingual
                                Whisper models, instead of detecting it
-  --diarize                    tell who speaks with the sortformer model (downloaded as
+  --diarize                    tell who speaks with nemotron-diarization (downloaded as
                                MODEL is): Speaker 1: ... lines, the utterances in --json,
                                cues split where the speaker changes in --srt; not with
                                Moonshine, which doesn't time its words
@@ -86,9 +86,9 @@ Serve options:
   whisper-asr-webservice does, for Bazarr's subtitles, with the first model.
 
 MODEL is a name below, its full name or a path to a .gguf file (for serve, a name); for
-sortformer, wavo run prints who speaks when (as text or --json), up to 4 speakers numbered
-from 1. AUDIO is wav, mp3, m4a, flac or ogg (Vorbis), downmixed to mono and resampled to
-16 kHz.
+nemotron-diarization, wavo run prints who speaks when (as text or --json), up to 8 speakers
+numbered from 1. AUDIO is wav, mp3, m4a, flac or ogg (Vorbis), downmixed to mono and
+resampled to 16 kHz.
 Models live in the Hugging Face cache (HF_HUB_CACHE or HF_HOME), shared with the hf CLI;
 only `wavo pull`, and `wavo run` and `wavo serve` for a missing model (after asking, or with
 -y), download.
@@ -287,7 +287,7 @@ fn devices() -> Result<()> {
 }
 
 /// The diarization model of `--diarize`.
-const DIARIZER: &str = "sortformer";
+const DIARIZER: &str = "nemotron-diarization";
 
 fn run(args: &[&str]) -> Result<()> {
   const USAGE: &str = "usage: wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS] \
@@ -346,7 +346,10 @@ fn run(args: &[&str]) -> Result<()> {
     Ok(m) => Some(m.family.to_lowercase()),
     Err(_) => models::architecture(Path::new(model)),
   };
-  let diarizer = arch.as_deref() == Some("sortformer");
+  let diarizer = match hub::lookup(model) {
+    Ok(m) => m.diarization(),
+    Err(_) => models::diarization(Path::new(model)),
+  };
   if diarizer {
     ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU only, not --backend ane");
     ensure!(
@@ -591,20 +594,20 @@ fn bench(model: &str, audio: &str, opts: &[&str]) -> Result<()> {
   let t = Instant::now();
   // The call: `diarize` for a diarization model.
   let pcm = &pcm;
-  let (call, device): (Box<dyn Fn() -> wavo::Result<()>>, String) =
-    match models::architecture(&path).as_deref() {
-      Some("sortformer") => {
-        ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU only, not --backend ane");
-        let d = wavo::Diarizer::load(&path)?;
-        let device = d.device().to_string();
-        (Box::new(move || d.diarize(pcm).map(drop)), device)
-      }
-      _ => {
-        let m = load(&path, on)?;
-        let device = m.device().to_string();
-        (Box::new(move || m.transcribe(pcm).map(drop)), device)
-      }
-    };
+  let (call, device): (Box<dyn Fn() -> wavo::Result<()>>, String) = match models::diarization(&path)
+  {
+    true => {
+      ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU only, not --backend ane");
+      let d = wavo::Diarizer::load(&path)?;
+      let device = d.device().to_string();
+      (Box::new(move || d.diarize(pcm).map(drop)), device)
+    }
+    _ => {
+      let m = load(&path, on)?;
+      let device = m.device().to_string();
+      (Box::new(move || m.transcribe(pcm).map(drop)), device)
+    }
+  };
   let load = ms(t);
   eprintln!("device: {device}");
   let mut calls = (0..=n).map(|_| {
@@ -659,12 +662,12 @@ mod tests {
     assert!(error("talk.wav -n 5").starts_with("unknown or repeated option -n\n"));
     assert_eq!(error("talk.wav --json --srt"), "--json and --srt: choose one");
     // Options that don't fit the model, before any download (Cargo.toml stands in for audio).
-    let only = "--diarize, --segment and --language are for speech-to-text models; sortformer \
+    let only = "--diarize, --segment and --language are for speech-to-text models; nemotron-diarization \
                 only tells who speaks when";
-    assert_eq!(error("run sortformer Cargo.toml --segment 10"), only);
-    assert_eq!(error("run sortformer Cargo.toml --diarize"), only);
-    let srt = "sortformer prints its turns as text or --json, not --srt";
-    assert_eq!(error("run sortformer Cargo.toml --srt"), srt);
+    assert_eq!(error("run nemotron-diarization Cargo.toml --segment 10"), only);
+    assert_eq!(error("run nemotron-diarization Cargo.toml --diarize"), only);
+    let srt = "nemotron-diarization prints its turns as text or --json, not --srt";
+    assert_eq!(error("run nemotron-diarization Cargo.toml --srt"), srt);
     assert!(
       error("run moonshine-tiny Cargo.toml --diarize").starts_with("--diarize needs the time")
     );

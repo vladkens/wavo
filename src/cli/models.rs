@@ -11,7 +11,7 @@ pub const DEFAULT: &str = "parakeet-ultra";
 /// The model's line in the help: its languages, then what sets it apart.
 pub fn about(m: &ModelInfo) -> String {
   if m.diarization() {
-    return "who speaks when, up to 4 speakers".into();
+    return "who speaks when, up to 8 speakers".into();
   }
 
   let lower = if m.punctuated { "" } else { ", lowercase without punctuation" };
@@ -19,18 +19,28 @@ pub fn about(m: &ModelInfo) -> String {
   format!("{}{lower}{ctc}", m.languages)
 }
 
-/// The model file's `general.architecture` (`whisper`, `gigaam`, …), from its GGUF metadata:
-/// the key-value pairs are read in order, skipping other values, until the key turns up.
+/// The model file's `general.architecture` (`whisper`, `gigaam`, …).
 pub fn architecture(path: &Path) -> Option<String> {
+  meta(path, "general.architecture")
+}
+
+/// Whether the model file is a speaker diarization model: `parakeet.arch` is `diarization`.
+pub fn diarization(path: &Path) -> bool {
+  meta(path, "parakeet.arch").as_deref() == Some("diarization")
+}
+
+/// The string `key` of a GGUF's metadata: the key-value pairs are read in order, skipping other
+/// values, until the key turns up.
+fn meta(path: &Path, key: &str) -> Option<String> {
   let mut f = std::io::BufReader::new(std::fs::File::open(path).ok()?);
   let mut magic = [0; 4];
   f.read_exact(&mut magic).ok()?;
   (magic == *b"GGUF").then_some(())?;
   let (_version, _tensors, kvs) = (int::<4>(&mut f)?, int::<8>(&mut f)?, int::<8>(&mut f)?);
   for _ in 0..kvs {
-    let key = string(&mut f)?;
+    let name = string(&mut f)?;
     let ty = int::<4>(&mut f)?;
-    if key == b"general.architecture" && ty == 8 {
+    if name == key.as_bytes() && ty == 8 {
       return String::from_utf8(string(&mut f)?).ok();
     }
     skip(&mut f, ty)?;
@@ -114,6 +124,6 @@ mod tests {
     assert_eq!(about("gigaam-v3-e2e-ctc"), "Russian, CTC head");
     assert_eq!(about("gigaam-v3-ctc"), "Russian, lowercase without punctuation, CTC head");
     assert_eq!(about("whisper-turbo"), "100 languages");
-    assert_eq!(about("sortformer"), "who speaks when, up to 4 speakers");
+    assert_eq!(about("nemotron-diarization"), "who speaks when, up to 8 speakers");
   }
 }
