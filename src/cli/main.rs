@@ -65,6 +65,9 @@ Serve options:
   --port PORT                  the port to listen on (8000)
   --api-key KEY                require `Authorization: Bearer KEY` (or set WAVO_API_KEY)
   --backend auto|gpu|ane       where the encoder runs, as in run
+  --unload-after DURATION      free a model's memory after DURATION without requests (30s,
+                               10m, 1h; 0 right after they stop); its next request loads it
+                               again. Without it, the models given stay loaded
   -y, --yes                    download missing models without asking
   POST /v1/audio/transcriptions takes OpenAI's fields file, model, language and
   response_format (json, text, srt, vtt, verbose_json); GET /v1/models lists the downloaded
@@ -499,6 +502,8 @@ mod tests {
     assert!(error("talk.wav -n 5").starts_with("unknown or repeated option -n\n"));
     assert_eq!(error("talk.wav --json --srt"), "--json and --srt: choose one");
     assert_eq!(error("serve --port 99999"), "--port takes a port");
+    let unload = "--unload-after takes a duration such as 30s, 10m or 1h";
+    assert_eq!(error("serve --unload-after -1"), unload);
     assert!(error("serve --jsn").starts_with("unknown option --jsn\nusage: wavo serve "));
     assert_eq!(error("serve dir/m.gguf"), "expected a model name, not a path: dir/m.gguf");
   }

@@ -2,12 +2,14 @@
 //! `wavo serve` end to end: started on a free port with a smoke model (`make models`), it must
 //! answer curl's uploads with the text `wavo run` prints, for the model it was started with and
 //! for one it loads on demand, and Bazarr's `POST /asr` with its subtitles, `POST /detect-language`
-//! and `GET /status`.
+//! and `GET /status`; with `--unload-after 0` it frees its model and an on-demand one after their
+//! requests, and loads its model again for `/asr`, `/detect-language` and transcriptions.
 #![cfg(feature = "cli")]
 
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
 const WAVO: &str = env!("CARGO_BIN_EXE_wavo");
 
@@ -28,23 +30,35 @@ fn output(command: &mut Command) -> String {
   String::from_utf8(out.stdout).unwrap()
 }
 
-#[test]
-fn transcribes_like_run() {
+fn jfk() -> PathBuf {
   let jfk = Path::new(env!("CARGO_MANIFEST_DIR")).join("3rd/transcribe.cpp/samples/jfk.wav");
   assert!(jfk.exists(), "{jfk:?} is missing: run make samples");
+  jfk
+}
+
+/// `wavo serve` with `args` on a free port, and its URL once the models have loaded.
+fn serve(args: &[&str]) -> (Server, String) {
   let mut child = Command::new(WAVO)
-    .args(["serve", "whisper-tiny", "--port", "0", "--api-key", "k"])
+    .args(["serve", "--port", "0"])
+    .args(args)
     .stderr(Stdio::piped())
     .spawn()
     .unwrap();
   let stderr = child.stderr.take().unwrap();
-  let _server = Server(child);
+  let server = Server(child);
   // Ready once the models have loaded: `listening on http://127.0.0.1:PORT`.
   let mut lines = BufReader::new(stderr).lines();
   let url = (lines.by_ref().map(Result::unwrap))
     .find_map(|l| l.strip_prefix("listening on ").map(str::to_string))
     .expect("wavo serve exited before listening");
   std::thread::spawn(move || lines.for_each(drop)); // the request log, so it never blocks
+  (server, url)
+}
+
+#[test]
+fn transcribes_like_run() {
+  let jfk = jfk();
+  let (_server, url) = serve(&["whisper-tiny", "--api-key", "k"]);
 
   let send = |path: &str, fields: &[&str]| {
     let mut curl = Command::new("curl");
@@ -83,4 +97,36 @@ fn transcribes_like_run() {
   let status =
     output(curl.args(["-sS", "-H", "Authorization: Bearer k", &format!("{url}/status")]));
   assert_eq!(status, format!("{{\"version\": \"wavo {}\"}}\n", env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn frees_idle_models() {
+  let (_server, url) = serve(&["whisper-tiny", "--unload-after", "0"]);
+  let post = |path: &str, fields: &[&str]| {
+    let mut curl = Command::new("curl");
+    curl.args(["-sS", "--fail-with-body"]).args(fields.iter().flat_map(|f| ["-F", f]));
+    output(curl.arg(format!("{url}{path}")))
+  };
+  let health = || output(Command::new("curl").args(["-sS", &format!("{url}/health")]));
+  let freed = || {
+    (0..50).any(|_| {
+      std::thread::sleep(Duration::from_millis(100));
+      health().contains("\"models\": []")
+    })
+  };
+  let (file, audio_file) =
+    (format!("file=@{}", jfk().display()), format!("audio_file=@{}", jfk().display()));
+
+  let first = post("/v1/audio/transcriptions", &[&file]);
+  assert!(freed(), "still loaded 5 s after the request: {}", health());
+  let asr = post("/asr?output=txt", &[&audio_file]);
+  assert_eq!(first, format!("{{\"text\": \"{}\"}}\n", asr.trim_end()), "/asr loaded it again");
+  assert!(freed(), "still loaded 5 s after /asr: {}", health());
+  let detected = post("/detect-language", &[&audio_file]);
+  assert!(detected.contains("\"language_code\": \"en\""), "{detected}");
+  assert!(freed(), "still loaded 5 s after /detect-language: {}", health());
+  let moonshine = post("/v1/audio/transcriptions", &[&file, "model=moonshine-tiny"]);
+  assert!(moonshine.contains("country"), "{moonshine}");
+  assert!(freed(), "moonshine-tiny still loaded 5 s after its request: {}", health());
+  assert_eq!(post("/v1/audio/transcriptions", &[&file]), first, "loaded again");
 }
