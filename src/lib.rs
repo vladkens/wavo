@@ -427,10 +427,13 @@ pub enum Backend {
   /// transcribe.cpp. wavo picks the adapter as [`Model::device`] describes.
   Gpu,
   /// The GPU adapter at this index of [`devices`], such as an integrated GPU on a laptop where
-  /// [`Gpu`](Self::Gpu) picks the discrete one. `GpuAt(0)` is the adapter `Gpu` picks. The index
-  /// holds while the adapters and drivers stay the same. An index past the GPUs, or the Neural
-  /// Engine's (the last entry of `devices` on a Mac that has one), fails the load with
-  /// [`Error::Gpu`].
+  /// [`Gpu`](Self::Gpu) picks the discrete one. `GpuAt(0)` is the adapter `Gpu` picks. An index
+  /// past the GPUs, or the Neural Engine's (the last entry of `devices` on a Mac that has one),
+  /// fails the load with [`Error::Gpu`].
+  ///
+  /// The index can change between runs, with a driver update, an external GPU or
+  /// `WGPU_BACKEND`: to remember a choice, store the device's [`name`](Device::name) and
+  /// [`api`](Device::api), and look its index up in `devices` when the program starts.
   ///
   /// ```no_run
   /// use wavo::{Backend, DeviceKind, Model};

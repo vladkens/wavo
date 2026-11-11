@@ -5,7 +5,8 @@
 //! one at a time. Requests share each model, and their calls take turns on the GPU. `POST /asr`,
 //! `POST /detect-language` and `GET /status` answer as whisper-asr-webservice does, for Bazarr's
 //! subtitles. With `--unload-after`, a model idle that long is freed, and its next request loads
-//! it again from the cache.
+//! it again from the cache. Every model runs on the device `--backend` and `--device` chose at
+//! start.
 
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};

@@ -102,33 +102,41 @@ pub enum Kernels {
 
 /// The GPU adapters for [`crate::devices`], the one `adapter()` picks first.
 pub fn devices() -> Result<Vec<Device>> {
-  Ok(adapters()?.iter().map(|a| Device::new(&a.get_info(), kernels(a))).collect())
+  Ok(adapters(usize::MAX)?.iter().map(|a| Device::new(&a.get_info(), kernels(a))).collect())
 }
 
-/// Every adapter, the one `adapter()` picks first, in the order of [`devices`].
-fn adapters() -> Result<Vec<wgpu::Adapter>> {
-  let first = adapter()?;
+/// The adapters in the order of [`devices`], at least up to index `upto`: the one `adapter()`
+/// picks, the others of its instance (Vulkan and Metal, or DX12 only), then DX12's when `upto`
+/// is past them. Enumerating on the picked adapter's instance saves a second Vulkan instance,
+/// and DX12's only starts when needed: each takes tens of milliseconds on Windows.
+fn adapters(upto: usize) -> Result<Vec<wgpu::Adapter>> {
+  let (instance, first) = picked()?;
   let info = first.get_info();
-  let mut desc = wgpu::InstanceDescriptor::new_without_display_handle().with_env();
-  desc.backends &= wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12;
-  let backends = desc.backends;
-  let mut rest = pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(backends));
+  let mut all = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
   // One of them: two identical GPUs may report the same info.
-  if let Some(i) = rest.iter().position(|a| a.get_info() == info) {
-    rest.remove(i);
+  if let Some(i) = all.iter().position(|a| a.get_info() == info) {
+    all.remove(i);
   }
 
-  Ok(std::iter::once(first).chain(rest).collect())
+  all.insert(0, first);
+  if upto >= all.len() && info.backend != wgpu::Backend::Dx12 {
+    let dx12 = self::instance(wgpu::Backends::DX12);
+    all.extend(pollster::block_on(dx12.enumerate_adapters(wgpu::Backends::DX12)));
+  }
+
+  Ok(all)
 }
 
 /// The adapter at `index` of [`devices`], else the one `adapter()` picks.
 fn adapter_at(index: Option<usize>) -> Result<wgpu::Adapter> {
-  let Some(i) = index else { return adapter() };
-  let mut all = adapters()?;
+  let i = match index {
+    None | Some(0) => return adapter(),
+    Some(i) => i,
+  };
+  let mut all = adapters(i)?;
   if i >= all.len() {
     let n = all.len();
-    let msg = format!("no GPU at index {i} of wavo::devices(): it lists {n} GPUs, 0 to {}", n - 1);
-    return Err(Error::Gpu(msg));
+    return Err(Error::Gpu(format!("no GPU at index {i}: wavo::devices() lists {n}")));
   }
 
   Ok(all.swap_remove(i))
@@ -1060,17 +1068,28 @@ const COOP: wgpu::Features = wgpu::Features::SUBGROUP
 /// `WGPU_BACKEND` (e.g. `dx12`) and wgpu's other `WGPU_*` variables override the choice, within
 /// these three: `Api` names no other.
 fn adapter() -> Result<wgpu::Adapter> {
+  Ok(picked()?.1)
+}
+
+/// `adapter()`'s adapter and the instance it came from.
+fn picked() -> Result<(wgpu::Instance, wgpu::Adapter)> {
   let request = |backends| {
-    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle().with_env();
-    desc.backends &= backends;
-    let instance = wgpu::Instance::new(desc);
-    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+    let instance = instance(backends);
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
       power_preference: wgpu::PowerPreference::HighPerformance,
       ..Default::default()
-    }))
+    }))?;
+    Ok::<_, wgpu::RequestAdapterError>((instance, adapter))
   };
   let primary = request(wgpu::Backends::VULKAN | wgpu::Backends::METAL);
   Ok(primary.or_else(|e| request(wgpu::Backends::DX12).map_err(|_| e))?)
+}
+
+/// An instance of `backends`, within those wgpu's `WGPU_*` variables allow.
+fn instance(backends: wgpu::Backends) -> wgpu::Instance {
+  let mut desc = wgpu::InstanceDescriptor::new_without_display_handle().with_env();
+  desc.backends &= backends;
+  wgpu::Instance::new(desc)
 }
 
 /// F of the F×F cooperative matrices the fast kernels use on `adapter`, which needs 32-lane
@@ -1663,6 +1682,11 @@ mod tests {
       }
       [Gpu::new(false, None).unwrap(), fast]
     })
+  }
+
+  #[test]
+  fn index_past_the_gpus() {
+    assert!(matches!(Gpu::new(false, Some(usize::MAX)), Err(Error::Gpu(_))));
   }
 
   fn random(n: usize, seed: u32) -> Vec<f32> {

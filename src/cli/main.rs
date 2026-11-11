@@ -61,16 +61,16 @@ Run options:
                                Engine for Parakeet and GigaAM once `wavo pull` prepared
                                them on a Mac, else the GPU
   --device auto|N|NAME         the GPU to run on: its number in wavo devices or part of its
-                               name in any case (the first that matches); auto (the
-                               default) is the first GPU, or the Neural Engine as --backend
-                               picks
+                               name, ignoring case (the first that matches); auto: wavo's
+                               default GPU (0 in wavo devices), or the Neural Engine as
+                               --backend picks
 
 Serve options:
   --host ADDR                  the address to listen on (127.0.0.1)
   --port PORT                  the port to listen on (8000)
   --api-key KEY                require `Authorization: Bearer KEY` (or set WAVO_API_KEY)
   --backend auto|gpu|ane       where the encoder runs, as in run
-  --device auto|N|NAME         the GPU to run on, as in run
+  --device auto|N|NAME         the GPU every model runs on, as in run, chosen at start
   --unload-after DURATION      free a model's memory after DURATION without requests (30s,
                                10m, 1h; 0 right after they stop); its next request loads it
                                again. Without it, the models given stay loaded
@@ -245,7 +245,8 @@ fn target(on: Backend, device: Option<&str>) -> Result<Backend> {
 
 /// The value of `--device`.
 fn device<'a>(arg: Option<&&'a str>) -> Result<&'a str> {
-  arg.copied().context("--device takes auto, a number from wavo devices or part of a GPU's name")
+  let arg = arg.copied().filter(|a| !a.is_empty());
+  arg.context("--device takes auto, a number from wavo devices or part of a GPU's name")
 }
 
 /// The GPUs of `wavo::devices()`, which lists the Neural Engine last.
@@ -580,6 +581,7 @@ mod tests {
     assert_eq!(error("serve --backend ane --device nvidia"), ane);
     let device = "--device takes auto, a number from wavo devices or part of a GPU's name";
     assert_eq!(error("talk.wav --device"), device);
+    assert_eq!(cli(&["talk.wav", "--device", ""]).unwrap_err().to_string(), device);
     assert_eq!(error("devices x"), "usage: wavo devices");
   }
 
