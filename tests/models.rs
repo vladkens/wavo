@@ -183,8 +183,10 @@ fn too_long(name: &str, sample: &str) {
 
 /// `transcribe_long` on a clip repeated past 40 s, in pieces of up to 15 s: the callback gets
 /// each piece in order, with its start and the transcript `transcribe` gives its audio, shifted
-/// there; the pieces make the transcript; and `Break` cancels after the first piece.
-fn long(name: &str, sample: &str) {
+/// there; the pieces make the transcript, the tokens' pieces spelling its words: with a character
+/// vocabulary (`chars`) the first token of each piece after the first starts with the space
+/// between the texts; and `Break` cancels after the first piece.
+fn long(name: &str, sample: &str, chars: bool) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
   let model = wavo::Model::load_with(model_path(name), wavo::Backend::Gpu).unwrap();
   let clip = read_sample(sample);
@@ -209,10 +211,23 @@ fn long(name: &str, sample: &str) {
     let mut alone = model.transcribe(&pcm[r]).unwrap();
     alone.tokens.iter_mut().for_each(|t| t.start_ms += start);
     assert_eq!(piece, alone, "{name} {sample}: piece {i}");
+    let mut piece_tokens = piece.tokens;
+    if chars
+      && !text.is_empty()
+      && !piece.text.is_empty()
+      && let Some(first) = piece_tokens.first_mut()
+      && !first.piece.starts_with(' ')
+    {
+      first.piece.insert(0, ' ');
+    }
+
     text.extend((!piece.text.is_empty()).then_some(piece.text));
-    tokens.extend(piece.tokens);
+    tokens.extend(piece_tokens);
   }
 
+  let spelled: String = got.tokens.iter().map(|t| t.piece.replace('▁', " ")).collect();
+  let words: Vec<&str> = spelled.split_whitespace().collect();
+  assert_eq!(words, got.text.split_whitespace().collect::<Vec<_>>(), "{name} {sample}: spelled");
   assert_eq!((got.text, got.tokens), (text.join(" "), tokens), "{name} {sample}: joined");
   let mut calls = 0;
   let cancelled = model.transcribe_long(&pcm, &options, |_| {
@@ -392,7 +407,7 @@ const GIGAAM: &[&str] = &["ru", "ru-short", "ru-long"];
 fn gigaam_v3_e2e_rnnt() {
   check("gigaam-v3-e2e-rnnt", GIGAAM);
   too_long("gigaam-v3-e2e-rnnt", "ru-long");
-  long("gigaam-v3-e2e-rnnt", "ru");
+  long("gigaam-v3-e2e-rnnt", "ru", false);
 }
 
 #[test]
@@ -417,6 +432,7 @@ fn gigaam_v3_ctc() {
 fn gigaam_multilingual_large_ctc() {
   check("gigaam-multilingual-large-ctc", &["ru", "ru-short", "ru-long", "jfk"]);
   too_long("gigaam-multilingual-large-ctc", "ru-long");
+  long("gigaam-multilingual-large-ctc", "ru", true);
 }
 
 #[cfg(target_os = "macos")]
@@ -457,7 +473,7 @@ fn parakeet_tdt_v2() {
 #[test]
 fn parakeet_tdt_v3() {
   check("parakeet-tdt-0.6b-v3", &["jfk", "ru-short", "uk-short"]);
-  long("parakeet-tdt-0.6b-v3", "jfk");
+  long("parakeet-tdt-0.6b-v3", "jfk", false);
 }
 
 // uk-long (29 s) is within the 30 s that transcribe.cpp takes in one pass; past them its VAD head

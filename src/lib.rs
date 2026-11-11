@@ -327,7 +327,8 @@ pub struct Piece<'a> {
   /// Where the piece starts, in milliseconds from the start of the audio.
   pub start_ms: u32,
   /// The piece's transcript, with token `start_ms` from the start of the whole audio: it is
-  /// joined to the previous pieces' as it is.
+  /// joined to the previous pieces' as it is, but for the space a character vocabulary's first
+  /// token then gets (see [`Token::piece`]).
   pub transcript: &'a Transcript,
 }
 
@@ -393,7 +394,10 @@ pub struct Token {
   pub id: u32,
   /// Vocabulary piece: a SentencePiece piece (`▁` marks a word start), a character, or for byte
   /// tokens (Whisper's, and SentencePiece's `<0xHH>` fallback) the text the token completes (its
-  /// bytes may end inside a character, leaving the piece empty).
+  /// bytes may end inside a character, leaving the piece empty). With a character vocabulary
+  /// (GigaAM `ctc` and `rnnt`), where audio transcribed in pieces ([`Model::transcribe_long`], and
+  /// [`Model::transcribe`] on the Neural Engine past its window) has their texts joined, the space
+  /// between them starts the piece of the next one's first token, unless that token is a space.
   pub piece: String,
   /// Start time in milliseconds from the start of the audio: the encoder frame where the token
   /// was emitted times the frame length (40 ms for GigaAM, 80 ms for Parakeet); for Whisper the
@@ -701,9 +705,11 @@ impl Model {
   /// (an empty one is skipped), and the tokens follow each other with `start_ms` from the start of
   /// `pcm`. Audio that fits in one piece gives the same transcript as `transcribe_with`.
   ///
-  /// Each piece's first token starts a word, though with a character vocabulary it has no `▁` or
-  /// space: GigaAM `ctc` and `rnnt` spell words letter by letter with a space token between them,
-  /// and none falls between two pieces.
+  /// Each piece's first token starts a word. With a character vocabulary it has no `▁` or space
+  /// of its own (GigaAM `ctc` and `rnnt` spell words letter by letter with a space token between
+  /// them, and none falls between two pieces), so where the texts are joined, the space between
+  /// them starts the [`piece`](Token::piece) of the next piece's first token, unless that token
+  /// is a space.
   ///
   /// The pieces run one after another on the calling thread. After each, `on_piece` gets it as a
   /// [`Piece`]: its index, the number of pieces, its start and its transcript, for progress or to
@@ -758,6 +764,7 @@ impl Model {
   ) -> Result<Transcript> {
     let ranges = split(pcm, window_ms);
     let (count, mut out) = (ranges.len(), Transcript::default());
+    let chars = matches!(&self.family, Family::Gigaam(m) if m.chars());
     // Samples per language among the pieces with text.
     let mut heard: Vec<(String, usize)> = Vec::new();
     for (index, r) in ranges.into_iter().enumerate() {
@@ -780,7 +787,7 @@ impl Model {
         }
       }
 
-      split::append(&mut out, transcript);
+      split::append(&mut out, transcript, chars);
     }
 
     // The first of the most heard.
