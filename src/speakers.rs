@@ -68,12 +68,15 @@ impl Transcript {
   /// ```
   pub fn utterances(&self, turns: &[Turn]) -> Vec<Utterance> {
     let tokens = &self.tokens;
-    // A pause starts a word too: between Whisper's segments of text without spaces.
+    // A pause starts a word too: between Whisper's segments of text without spaces. SentencePiece
+    // marks every word's start with `▁`, so there a piece without one continues a word, however
+    // late it comes.
+    let marked = tokens.iter().any(|t| t.piece.starts_with('▁'));
     let firsts: Vec<usize> = (0..tokens.len())
       .filter(|&i| {
         i == 0
           || tokens[i].piece.starts_with(['▁', ' '])
-          || tokens[i].start_ms > tokens[i - 1].start_ms.saturating_add(WORD_MS)
+          || !marked && tokens[i].start_ms > tokens[i - 1].start_ms.saturating_add(WORD_MS)
       })
       .collect();
     // Per word its tokens and start: that of its first token with more than a space (a space token
@@ -190,6 +193,10 @@ mod tests {
       [u(1, "Hello", 0, 400), u(0, "there.", 400, 1400), u(1, "Hi! Bye", 2000, 6000)]
     );
     assert_eq!(said(&t, &[]), [(None, "Hello there. Hi! Bye".into(), 0, 6000)]);
+    // A piece without `▁` continues its word past a pause, in the speaker of the word's start.
+    let t = transcript(&[("▁ask", 3600), ("▁not", 3920), ("hing", 4960), (".", 4960)]);
+    let turns = [turn(0, 3300, 4590), turn(1, 5220, 9610)];
+    assert_eq!(said(&t, &turns), [u(0, "ask nothing.", 3600, 4920)]);
     assert!(Transcript::default().utterances(&turns).is_empty());
   }
 

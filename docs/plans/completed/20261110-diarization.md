@@ -61,3 +61,9 @@ the reference.
 - On an M5, the whole CLI run with the load, best of 5, against parakeet.cpp's `diarize` on
   Metal: jfk 0.04 vs 0.08 s, dots 0.08 vs 0.14 s, dots-full 0.52 vs 0.76 s. parakeet.cpp's own
   Metal and CPU turns of dots-full are 10 speech frames apart, wavo's from its Metal ones 34.
+- DER, collar 0, against the datasets' own labels: AMI test SDM (16 meetings, 8.9 h, 3–4
+  speakers) wavo 28.2%, parakeet.cpp 27.5% on Metal and on the CPU; VoxConverse dev, its first 44
+  files (4.2 h, 1–17 speakers) wavo 5.2%, parakeet.cpp 6.1% on Metal and on the CPU. A long
+  recording now and then flips a speaker for minutes on one build and not another: AMI's ES2004a
+  53.5% on the M5's tensor kernels against 32–35% on the others, VoxConverse's vmaiq (17 speakers)
+  28% against 45–46%.
