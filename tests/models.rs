@@ -1,6 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Transcripts must match the reference fixtures (`make fixtures`) exactly: text, every token piece
-//! and its start time (for Whisper every segment's text and start). Every GGUF must list the
+//! and its start time (for Whisper every segment's text and start); a diarization model's turns,
+//! its speaker segments. Every GGUF must list the
 //! languages `hub::MODELS` gives its model. Missing models or samples fail the test. A sample
 //! `<clip>+lang=<code>` is `<clip>` transcribed with `Options::language` set to `<code>`. On macOS
 //! the Neural Engine runs the Parakeet and GigaAM models too, in agreement with the fixtures rather
@@ -131,6 +132,10 @@ fn detect(name: &str, expected: &[(&str, &str)]) {
 const START_SLACK_MS: u32 = 80;
 
 fn check(name: &str, samples: &[&str]) {
+  if wavo::hub::lookup(name).unwrap().diarization() {
+    return check_turns(name, samples);
+  }
+
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
   let model = wavo::Model::load_with(model_path(name), wavo::Backend::Gpu).unwrap();
   check_languages(name, &model);
@@ -170,6 +175,58 @@ fn check(name: &str, samples: &[&str]) {
     let same = got.len() == tokens.len() && got.iter().zip(&tokens).all(close);
     assert!(same, "{name} {sample}: tokens\n got {got:?}\nwant {tokens:?}");
   }
+}
+
+/// Each sample's turns are within 1% of the speech frames of its block, frames where one says a
+/// speaker talks and the other doesn't: GPU arithmetic tips probabilities near 0.5, and on long
+/// clips the speaker cache's choice between near-equal frames. A block is parakeet.cpp's segments,
+/// `speaker segments: N`, then lines `  [   0.32 ->    2.40] S1`.
+fn check_turns(name: &str, samples: &[&str]) {
+  let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
+  let diarizer = wavo::Diarizer::load(model_path(name)).unwrap();
+  // Per speaker the 10 ms frames it talks in.
+  let frames = |turns: &[(u32, u32, u32)]| -> std::collections::BTreeSet<(u32, u32)> {
+    turns.iter().flat_map(|&(s, start, end)| (start / 10..end / 10).map(move |f| (s, f))).collect()
+  };
+  for sample in samples {
+    let (got, want) = (turns(&diarizer, sample), read_turns(name, sample));
+    let (a, b) = (frames(&got), frames(&want));
+    let apart = a.symmetric_difference(&b).count();
+    println!("{name} {sample}: {apart} of {} speech frames apart", b.len());
+    assert!(
+      apart * 100 <= b.len(),
+      "{name} {sample}: {apart} frames apart\n got {got:?}\nwant {want:?}"
+    );
+  }
+}
+
+/// `(speaker from 1, start ms, end ms)` sorted, as the fixtures list them.
+fn turns(diarizer: &wavo::Diarizer, sample: &str) -> Vec<(u32, u32, u32)> {
+  let turns = diarizer.diarize(&read_sample(sample)).unwrap();
+  let mut got: Vec<_> = turns.iter().map(|t| (t.speaker + 1, t.start_ms, t.end_ms)).collect();
+  got.sort();
+  got
+}
+
+fn read_turns(name: &str, sample: &str) -> Vec<(u32, u32, u32)> {
+  let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}.txt"));
+  let fixture = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+  let header = format!("## {sample}");
+  let mut lines = fixture.lines().skip_while(|l| *l != header);
+  assert!(lines.next().is_some(), "{path:?}: no {header}");
+  let mut lines = lines.take_while(|l| !l.starts_with("## ")).filter(|l| !l.is_empty());
+  let count = lines.next().and_then(|l| l.strip_prefix("speaker segments: ")).expect("count");
+  let want: Vec<(u32, u32, u32)> = lines
+    .map(|line| {
+      let (times, speaker) =
+        line.trim_start().strip_prefix('[').unwrap().split_once("] S").unwrap();
+      let (start, end) = times.split_once("->").unwrap();
+      let ms = |s: &str| (s.trim().parse::<f64>().unwrap() * 1000.0).round() as u32;
+      (speaker.parse().unwrap(), ms(start), ms(end))
+    })
+    .collect();
+  assert_eq!(want.len(), count.parse::<usize>().unwrap(), "{path:?}: {sample}: count");
+  want
 }
 
 /// A clip played twice, past 1.5 times the model's `max_audio_ms`, fails with `AudioTooLong`.
@@ -606,4 +663,11 @@ fn moonshine_tiny() {
 fn moonshine_base() {
   check("moonshine-base", &["jfk", "dots", "jobs-silence"]);
   too_long("moonshine-base", "dots");
+}
+
+#[test]
+fn nemotron_diarization() {
+  const SAMPLES: &[&str] =
+    &["sortformer-2spk-mix", "multitalker-2spk-mix", "jfk", "dots", "dots-full", "noise"];
+  check("Nemotron-3-Diarization", SAMPLES);
 }

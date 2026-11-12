@@ -83,6 +83,7 @@ impl Moonshine {
         d_ff: key("ffn_dim")?,
         bias: false,
         rot,
+        neox: false,
         gated: part == "decoder",
       })
     };

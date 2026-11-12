@@ -56,6 +56,10 @@ Run options:
                                Moonshine; at most 15 on the Neural Engine)
   --language CODE              the language of the speech (en, he, ...) for multilingual
                                Whisper models, instead of detecting it
+  --diarize                    tell who speaks with nemotron-diarization (downloaded as
+                               MODEL is): Speaker 1: ... lines, the utterances in --json,
+                               cues split where the speaker changes in --srt; not with
+                               Moonshine, which doesn't time its words
   -y, --yes                    download a missing model without asking
   --backend auto|gpu|ane       where the encoder runs: auto (the default) takes the Neural
                                Engine for Parakeet and GigaAM once `wavo pull` prepared
@@ -81,8 +85,10 @@ Serve options:
   first use, one at a time. POST /asr, POST /detect-language and GET /status answer as
   whisper-asr-webservice does, for Bazarr's subtitles, with the first model.
 
-MODEL is a name below, its full name or a path to a .gguf file (for serve, a name). AUDIO is
-wav, mp3, m4a, flac or ogg (Vorbis), downmixed to mono and resampled to 16 kHz.
+MODEL is a name below, its full name or a path to a .gguf file (for serve, a name); for
+nemotron-diarization, wavo run prints who speaks when (as text or --json), up to 8 speakers
+numbered from 1. AUDIO is wav, mp3, m4a, flac or ogg (Vorbis), downmixed to mono and
+resampled to 16 kHz.
 Models live in the Hugging Face cache (HF_HUB_CACHE or HF_HOME), shared with the hf CLI;
 only `wavo pull`, and `wavo run` and `wavo serve` for a missing model (after asking, or with
 -y), download.
@@ -280,10 +286,14 @@ fn devices() -> Result<()> {
   Ok(())
 }
 
+/// The diarization model of `--diarize`.
+const DIARIZER: &str = "nemotron-diarization";
+
 fn run(args: &[&str]) -> Result<()> {
   const USAGE: &str = "usage: wavo run [MODEL] AUDIO [--json | --srt] [--segment SECS] \
-                       [--language CODE] [--backend B] [--device D] [-y]";
+                       [--language CODE] [--diarize] [--backend B] [--device D] [-y]";
   let (mut format, mut segment, mut download, mut rest) = (None, None, Download::Ask, Vec::new());
+  let mut diarize = false;
   let mut options = wavo::Options::default();
   let (mut on, mut gpu) = (Backend::Auto, None);
   let mut args = args.iter();
@@ -304,6 +314,7 @@ fn run(args: &[&str]) -> Result<()> {
         options.language = Some(code.to_string());
       }
       "-y" | "--yes" => download = Download::Yes,
+      "--diarize" if !diarize => diarize = true,
       _ if arg.starts_with('-') => bail!("unknown or repeated option {arg}\n{USAGE}"),
       _ => rest.push(arg),
     }
@@ -329,10 +340,50 @@ fn run(args: &[&str]) -> Result<()> {
     meta => meta.with_context(|| format!("reading {audio}"))?,
   };
   ensure!(!meta.is_dir(), "{audio}: a folder, not an audio file");
+  // The family, from the name or a .gguf file's header, so that wrong options fail before a
+  // download is offered.
+  let arch = match hub::lookup(model) {
+    Ok(m) => Some(m.family.to_lowercase()),
+    Err(_) => models::architecture(Path::new(model)),
+  };
+  let diarizer = match hub::lookup(model) {
+    Ok(m) => m.diarization(),
+    Err(_) => models::diarization(Path::new(model)),
+  };
+  if diarizer {
+    ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU only, not --backend ane");
+    ensure!(
+      !diarize && segment.is_none() && options.language.is_none(),
+      "--diarize, --segment and --language are for speech-to-text models; {model} only tells \
+       who speaks when"
+    );
+    ensure!(format != Some("--srt"), "{model} prints its turns as text or --json, not --srt");
+  }
+
+  ensure!(
+    !diarize || arch.as_deref() != Some("moonshine"),
+    "--diarize needs the time of each word, which {model} doesn't give: use Parakeet, GigaAM or \
+     Whisper"
+  );
   let path = model_path(model, download, on)?;
+  let speakers = match diarize && !diarizer {
+    true => Some(model_path(DIARIZER, download, Backend::Gpu)?),
+    false => None,
+  };
   let bar = spinner(); // cleared on errors too
   bar.set_message("decoding the audio");
   let pcm = audio::read(audio)?;
+  if diarizer {
+    let turns = diarize_with(&path, &pcm, &bar)?;
+    bar.finish_and_clear();
+    if turns.is_empty() {
+      eprintln!("no speech found in {audio}");
+    }
+
+    let text = output::turns(&turns, format == Some("--json"));
+    return Ok(std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())?);
+  }
+
   bar.set_message("loading the model");
   let model = load(&path, on)?;
   if let Some(warning) = model.device().warning() {
@@ -348,14 +399,33 @@ fn run(args: &[&str]) -> Result<()> {
     eprintln!("no speech recognized in {audio}");
   }
 
-  let (tokens, ms) = (&transcript.tokens, (pcm.len() / 16) as u32);
-  let text = match format {
-    Some("--json") => output::json(&transcript) + "\n",
-    Some(_) => output::srt(&output::cues(tokens, &starts, ms, models::timed(&path))),
-    None if transcript.text.is_empty() => String::new(),
-    None => format!("{}\n", transcript.text),
+  let utterances = match speakers {
+    Some(diarizer) => {
+      let bar = spinner();
+      Some(transcript.utterances(&diarize_with(&diarizer, &pcm, &bar)?))
+    }
+    None => None,
+  };
+
+  let (tokens, ms, timed) = (&transcript.tokens, (pcm.len() / 16) as u32, models::timed(&path));
+  let text = match (format, &utterances) {
+    (Some("--json"), _) => output::json(&transcript, utterances.as_deref()) + "\n",
+    (Some(_), Some(u)) => output::srt(&output::speaker_cues(tokens, &starts, u, ms, timed)),
+    (Some(_), None) => output::srt(&output::cues(tokens, &starts, ms, timed)),
+    (None, Some(u)) => output::by_speaker(u),
+    (None, None) if transcript.text.is_empty() => String::new(),
+    (None, None) => format!("{}\n", transcript.text),
   };
   Ok(std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())?)
+}
+
+/// The turns of `pcm` by the diarization model at `path`, with progress on `bar`.
+fn diarize_with(path: &Path, pcm: &[f32], bar: &ProgressBar) -> Result<Vec<wavo::Turn>> {
+  bar.set_message("loading the diarization model");
+  let diarizer =
+    wavo::Diarizer::load(path).with_context(|| format!("loading {}", path.display()))?;
+  bar.set_message("telling the speakers apart");
+  Ok(diarizer.diarize(pcm)?)
 }
 
 /// A model by name, for the commands that manage the cache.
@@ -522,12 +592,27 @@ fn bench(model: &str, audio: &str, opts: &[&str]) -> Result<()> {
   let (pcm, path) = (audio::read(audio)?, model_path(model, Download::Never, on)?);
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
   let t = Instant::now();
-  let model = load(&path, on)?;
+  // The call: `diarize` for a diarization model.
+  let pcm = &pcm;
+  let (call, device): (Box<dyn Fn() -> wavo::Result<()>>, String) = match models::diarization(&path)
+  {
+    true => {
+      ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU only, not --backend ane");
+      let d = wavo::Diarizer::load(&path)?;
+      let device = d.device().to_string();
+      (Box::new(move || d.diarize(pcm).map(drop)), device)
+    }
+    _ => {
+      let m = load(&path, on)?;
+      let device = m.device().to_string();
+      (Box::new(move || m.transcribe(pcm).map(drop)), device)
+    }
+  };
   let load = ms(t);
-  eprintln!("device: {}", model.device());
+  eprintln!("device: {device}");
   let mut calls = (0..=n).map(|_| {
     let t = Instant::now();
-    model.transcribe(&pcm).map(|_| ms(t))
+    call().map(|_| ms(t))
   });
   let first = calls.next().unwrap()?;
   let mut warm = calls.collect::<Result<Vec<_>, _>>()?;
@@ -576,6 +661,16 @@ mod tests {
     assert!(error("talk.wav --jsn").starts_with("unknown or repeated option --jsn\nusage: "));
     assert!(error("talk.wav -n 5").starts_with("unknown or repeated option -n\n"));
     assert_eq!(error("talk.wav --json --srt"), "--json and --srt: choose one");
+    // Options that don't fit the model, before any download (Cargo.toml stands in for audio).
+    let only = "--diarize, --segment and --language are for speech-to-text models; nemotron-diarization \
+                only tells who speaks when";
+    assert_eq!(error("run nemotron-diarization Cargo.toml --segment 10"), only);
+    assert_eq!(error("run nemotron-diarization Cargo.toml --diarize"), only);
+    let srt = "nemotron-diarization prints its turns as text or --json, not --srt";
+    assert_eq!(error("run nemotron-diarization Cargo.toml --srt"), srt);
+    assert!(
+      error("run moonshine-tiny Cargo.toml --diarize").starts_with("--diarize needs the time")
+    );
     assert_eq!(error("serve --port 99999"), "--port takes a port");
     let unload = "--unload-after takes a duration such as 30s, 10m or 1h";
     assert_eq!(error("serve --unload-after -1"), unload);

@@ -1,11 +1,11 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! The renderings of a transcript: `--json` and `--srt`, and for `wavo serve` also WebVTT and
-//! OpenAI's `verbose_json`.
+//! OpenAI's `verbose_json`; with `--diarize` by speaker, and a diarization model's turns alone.
 
 use std::fmt::Write;
 use std::ops::Range;
 
-use wavo::{Token, Transcript};
+use wavo::{Token, Transcript, Turn, Utterance};
 
 /// A cue ends before it would grow past this many characters.
 const MAX_CUE: usize = 80;
@@ -13,8 +13,10 @@ const MAX_CUE: usize = 80;
 const LINGER_MS: u32 = 1500;
 
 /// `{"text": ..., "language": ..., "tokens": [{"id", "piece", "start_ms"}, ...]}`, one token per
-/// line; `language` only when the model says it.
-pub fn json(t: &Transcript) -> String {
+/// line; `language` only when the model says it. With `utterances`,
+/// `"utterances": [{"speaker", "start_ms", "end_ms", "text"}, ...]` follow; speakers count from 1,
+/// `null` when unknown.
+pub fn json(t: &Transcript, utterances: Option<&[Utterance]>) -> String {
   let language = t.language.as_deref().map(|l| format!("\"language\": {}, ", quote(l)));
   let mut out =
     format!("{{\"text\": {}, {}\"tokens\": [", quote(&t.text), language.unwrap_or_default());
@@ -23,7 +25,77 @@ pub fn json(t: &Transcript) -> String {
       (if i == 0 { "" } else { "," }, token.id, quote(&token.piece), token.start_ms);
     write!(out, "{sep}\n  {{\"id\": {id}, \"piece\": {piece}, \"start_ms\": {start}}}").unwrap();
   }
-  out + if t.tokens.is_empty() { "]}" } else { "\n]}" }
+
+  out += if t.tokens.is_empty() { "]" } else { "\n]" };
+  let Some(utterances) = utterances else { return out + "}" };
+
+  out += ", \"utterances\": [";
+  for (i, u) in utterances.iter().enumerate() {
+    let speaker = u.speaker.map_or("null".into(), |s| (s + 1).to_string());
+    let (sep, start, end, text) =
+      (if i == 0 { "" } else { "," }, u.start_ms, u.end_ms, quote(&u.text));
+    write!(
+      out,
+      "{sep}\n  {{\"speaker\": {speaker}, \"start_ms\": {start}, \"end_ms\": {end}, \"text\": {text}}}"
+    )
+    .unwrap();
+  }
+
+  out + if utterances.is_empty() { "]}" } else { "\n]}" }
+}
+
+/// `Speaker 1: text` per utterance, one per line.
+pub fn by_speaker(utterances: &[Utterance]) -> String {
+  utterances.iter().map(|u| format!("{}: {}\n", label(u.speaker), u.text)).collect()
+}
+
+fn label(speaker: Option<u32>) -> String {
+  speaker.map_or("Speaker ?".into(), |s| format!("Speaker {}", s + 1))
+}
+
+/// A diarization model's turns: `00:00:00.320 --> 00:00:02.400  Speaker 1` per line, or with
+/// `json` `{"turns": [{"speaker", "start_ms", "end_ms"}, ...]}` (speakers from 1).
+pub fn turns(turns: &[Turn], json: bool) -> String {
+  if !json {
+    let line = |t: &Turn| {
+      let (start, end) = (time(t.start_ms, '.'), time(t.end_ms, '.'));
+      format!("{start} --> {end}  {}\n", label(Some(t.speaker)))
+    };
+    return turns.iter().map(line).collect();
+  }
+
+  let turns: Vec<String> = (turns.iter())
+    .map(|t| {
+      let (s, a, b) = (t.speaker + 1, t.start_ms, t.end_ms);
+      format!("\n  {{\"speaker\": {s}, \"start_ms\": {a}, \"end_ms\": {b}}}")
+    })
+    .collect();
+  let end = if turns.is_empty() { "" } else { "\n" };
+  format!("{{\"turns\": [{}{end}]}}\n", turns.join(","))
+}
+
+/// The cues of each utterance on its own, so that none spans two speakers, shown at most until
+/// the next utterance starts.
+pub fn speaker_cues(
+  tokens: &[Token],
+  starts: &[usize],
+  utterances: &[Utterance],
+  audio_ms: u32,
+  timed: bool,
+) -> Vec<Cue> {
+  let mut out = Vec::new();
+  for (i, u) in utterances.iter().enumerate() {
+    let r = u.tokens.clone();
+    let end = utterances.get(i + 1).map_or(audio_ms, |n| n.start_ms);
+    let within: Vec<usize> =
+      starts.iter().filter(|&&s| r.contains(&s)).map(|s| s - r.start).collect();
+    for mut cue in cues(&tokens[r.clone()], &within, end, timed) {
+      cue.tokens = cue.tokens.start + r.start..cue.tokens.end + r.start;
+      out.push(cue);
+    }
+  }
+
+  out
 }
 
 /// A JSON string.
@@ -233,8 +305,8 @@ mod tests {
     let mut t = Transcript::default();
     (t.text, t.tokens) = ("a \"b\"\\\n\u{1}é".into(), tokens(&[("▁a", 40)]));
     let expected = "{\"text\": \"a \\\"b\\\"\\\\\\n\\u0001é\", \"tokens\": [\n  {\"id\": 0, \"piece\": \"▁a\", \"start_ms\": 40}\n]}";
-    assert_eq!(json(&t), expected);
-    assert_eq!(json(&Transcript::default()), "{\"text\": \"\", \"tokens\": []}");
+    assert_eq!(json(&t, None), expected);
+    assert_eq!(json(&Transcript::default(), None), "{\"text\": \"\", \"tokens\": []}");
   }
 
   #[test]
@@ -340,6 +412,56 @@ mod tests {
     assert!(empty.ends_with("\"duration\": 0.04, \"text\": \"\", \"segments\": []}"), "{empty}");
   }
 
+  fn turn(speaker: u32, start_ms: u32, end_ms: u32) -> Turn {
+    let mut t = Turn::default();
+    (t.speaker, t.start_ms, t.end_ms) = (speaker, start_ms, end_ms);
+    t
+  }
+
+  #[test]
+  fn by_speakers() {
+    let mut t = Transcript::default();
+    let pieces = [("▁Hi.", 0), ("▁Yes.", 1000), ("▁And", 4000), ("▁then", 4200)];
+    (t.text, t.tokens) = ("Hi. Yes. And then".into(), tokens(&pieces));
+    let u = t.utterances(&[turn(0, 0, 800), turn(1, 900, 1500), turn(0, 3900, 5000)]);
+    assert_eq!(by_speaker(&u), "Speaker 1: Hi.\nSpeaker 2: Yes.\nSpeaker 1: And then\n");
+    // No cue spans two speakers; each shows until the next speaker's starts.
+    assert_eq!(
+      srt(&speaker_cues(&t.tokens, &[], &u, 6000, true)),
+      "1\n00:00:00,000 --> 00:00:01,000\nHi.\n\n2\n00:00:01,000 --> 00:00:02,500\nYes.\n\n\
+       3\n00:00:04,000 --> 00:00:05,700\nAnd then\n\n"
+    );
+    let rendered = json(&t, Some(&u));
+    assert!(rendered.contains("\"piece\": \"▁Yes.\", \"start_ms\": 1000},"), "{rendered}");
+    assert!(
+      rendered.ends_with(
+        "\"utterances\": [\n  {\"speaker\": 1, \"start_ms\": 0, \"end_ms\": 1000, \"text\": \"Hi.\"},\
+         \n  {\"speaker\": 2, \"start_ms\": 1000, \"end_ms\": 2000, \"text\": \"Yes.\"},\
+         \n  {\"speaker\": 1, \"start_ms\": 4000, \"end_ms\": 5200, \"text\": \"And then\"}\n]}"
+      ),
+      "{rendered}"
+    );
+    // No turns at all: no speaker.
+    let none = t.utterances(&[]);
+    assert_eq!(by_speaker(&none), "Speaker ?: Hi. Yes. And then\n");
+    assert!(json(&t, Some(&none)).contains("\"speaker\": null"));
+  }
+
+  #[test]
+  fn turns_alone() {
+    let t = [turn(0, 320, 2400), turn(1, 2000, 3_600_080)];
+    assert_eq!(
+      turns(&t, false),
+      "00:00:00.320 --> 00:00:02.400  Speaker 1\n00:00:02.000 --> 01:00:00.080  Speaker 2\n"
+    );
+    assert_eq!(
+      turns(&t, true),
+      "{\"turns\": [\n  {\"speaker\": 1, \"start_ms\": 320, \"end_ms\": 2400},\
+       \n  {\"speaker\": 2, \"start_ms\": 2000, \"end_ms\": 3600080}\n]}\n"
+    );
+    assert_eq!(turns(&[], true), "{\"turns\": []}\n");
+  }
+
   /// Cue texts give each fixture's transcript text, up to whitespace: Chinese segments join
   /// without spaces.
   #[test]
@@ -350,7 +472,12 @@ mod tests {
       // A block per clip: a `## <clip>` header, then body lines, none of which starts with `## `.
       for block in fixture.strip_prefix("## ").unwrap().split("\n## ") {
         let mut lines = block.lines().skip(1).filter(|l| !l.is_empty());
-        let text = lines.next().unwrap().strip_prefix("text: ").unwrap().replace("(empty)", "");
+        let head = lines.next().unwrap();
+        // A diarization model's speaker segments have no text.
+        if head.starts_with("speaker segments: ") {
+          continue;
+        }
+        let text = head.strip_prefix("text: ").unwrap().replace("(empty)", "");
         // A block of text alone has no pieces to check.
         let Some(head) = lines.next() else { continue };
         let segments = head.starts_with("segments: ");
