@@ -253,6 +253,7 @@ mod whisper;
 use std::ops::ControlFlow;
 use std::path::Path;
 
+use ane::Target;
 use error::bail;
 pub use error::{Error, Result};
 pub use gpu::{Api, Device, DeviceKind, Kernels};
@@ -432,7 +433,9 @@ const DETECT_WINDOWS: usize = 5;
 pub enum Backend {
   /// The faster one for the model's family on this machine: the Neural Engine for Parakeet and
   /// GigaAM once [prepared](Model::prepare) in this program (see
-  /// [Neural Engine](crate#neural-engine)), else the GPU. [`Model::load`] uses it.
+  /// [Neural Engine](crate#neural-engine)), else the GPU; for GigaAM the [CPU](Self::Cpu) when
+  /// the GPU wavo would pick is a software one, such as llvmpipe, or there is none.
+  /// [`Model::load`] uses it.
   #[default]
   Auto,
   /// The GPU through wgpu, on every platform: the same text, tokens and timestamps as
@@ -463,6 +466,10 @@ pub enum Backend {
   /// 15 s window: now and then a word, a comma or a capital letter differs from the GPU's, and some
   /// tokens start one or two encoder frames apart (see [Neural Engine](crate#neural-engine)).
   NeuralEngine,
+  /// The CPU, with wavo's own kernels (AVX2 and FMA on x86_64, NEON on ARM) on as many threads
+  /// as the process may use, for GigaAM: for servers and machines without a GPU driver, where it
+  /// is many times faster than a software GPU such as llvmpipe. The same text as on the GPU.
+  Cpu,
 }
 
 /// The families with a Neural Engine program, and the function that writes it. [`Backend::Auto`]
@@ -470,6 +477,15 @@ pub enum Backend {
 /// GPU (Whisper's and Moonshine's slower).
 const NEURAL_ENGINE: &[(&str, ane::Build)] =
   &[("parakeet", parakeet::ane::build), ("gigaam", gigaam::ane::build)];
+
+/// The families whose encoder runs on the CPU: [`Backend::Auto`] takes it when the GPU wavo
+/// would pick is a software one, or there is none.
+const CPU: &[&str] = &["gigaam"];
+
+/// Whether the GPU wavo picks first is a hardware one.
+fn hardware_gpu() -> bool {
+  gpu::devices(0).is_ok_and(|d| d.first().is_some_and(|d| d.kind != DeviceKind::SoftwareGpu))
+}
 
 /// The Neural Engine program of a `general.architecture`, if it has one.
 fn program(arch: &str) -> Option<ane::Build> {
@@ -541,26 +557,35 @@ impl Model {
     let languages = g.optional_array::<&str>("general.languages")?;
     let languages = languages.into_iter().map(str::to_string).collect();
     let arch = g.get::<&str>("general.architecture")?;
-    let gpu = match backend {
-      Backend::GpuAt(i) => Some(i),
-      _ => None,
-    };
-    let ane = match backend {
-      Backend::Gpu | Backend::GpuAt(_) => None,
-      Backend::NeuralEngine => Some(neural_engine(path, arch)?),
+    let target = match backend {
+      Backend::Gpu => Target::Gpu(None),
+      Backend::GpuAt(i) => Target::Gpu(Some(i)),
+      Backend::NeuralEngine => Target::Ane(neural_engine(path, arch)?),
+      Backend::Cpu => Target::Cpu,
       // A file that isn't prepared in this program, or that Core ML fails to load, runs on the
       // GPU: a first load in this program would compile for the Neural Engine for 10–30 s.
-      Backend::Auto => (program(arch).is_some() && ane::available())
+      Backend::Auto => match (program(arch).is_some() && ane::available())
         .then(|| ane::prepared(path))
         .flatten()
-        .and_then(|compiled| ane::load_compiled(&compiled).ok()),
+        .and_then(|compiled| ane::load_compiled(&compiled).ok())
+      {
+        Some(model) => Target::Ane(model),
+        None if CPU.contains(&arch) && !hardware_gpu() => Target::Cpu,
+        None => Target::Gpu(None),
+      },
+    };
+    let gpu = |name: &str| match target {
+      Target::Gpu(index) => Ok(index),
+      _ => Err(Error::Gpu(format!("{name} runs on the GPU only"))),
     };
 
     let family = match arch {
-      "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g, ane, gpu)?)),
-      "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g, ane, gpu)?)),
-      "whisper" => Family::Whisper(Box::new(whisper::Whisper::load(&g, gpu)?)),
-      "moonshine" => Family::Moonshine(Box::new(moonshine::Moonshine::load(&g, gpu)?)),
+      "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g, target)?)),
+      "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g, target)?)),
+      "whisper" => Family::Whisper(Box::new(whisper::Whisper::load(&g, gpu("Whisper")?)?)),
+      "moonshine" => {
+        Family::Moonshine(Box::new(moonshine::Moonshine::load(&g, gpu("Moonshine")?)?))
+      }
       arch => bail!(
         "general.architecture is {arch:?}, only gigaam, parakeet, whisper and moonshine are supported"
       ),

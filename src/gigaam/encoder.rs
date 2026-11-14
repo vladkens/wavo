@@ -95,16 +95,6 @@ impl Encoder {
   fn arena(&self, gpu: &Gpu, frames: usize) -> Result<Arena> {
     let c = &self.conformer.cfg;
     let (d, hd) = (c.d, c.head_dim());
-    // Per position: hd / 2 cosines, then hd / 2 sines. Computed in f64 because Metal's fast-math
-    // sin/cos are inaccurate for large angles.
-    let rope: Vec<f32> = (0..frames)
-      .flat_map(|t| {
-        let angles: Vec<f64> =
-          (0..hd / 2).map(|i| t as f64 * self.theta.powf(-2.0 * i as f64 / hd as f64)).collect();
-        let cos = angles.iter().map(|a| a.cos() as f32);
-        cos.chain(angles.iter().map(|a| a.sin() as f32)).collect::<Vec<_>>()
-      })
-      .collect();
     let width = self.head.width();
     let bufs = Buffers {
       x: gpu.buffer(frames * d),
@@ -115,7 +105,7 @@ impl Encoder {
       qk: gpu.buffer(frames * 2 * d),
       s: gpu.buffer(gpu.scores_len(frames, c.heads, hd, false)),
       yr: gpu.buffer(frames * d),
-      pos: gpu.upload(&rope)?,
+      pos: gpu.upload(&super::rope(frames, hd, self.theta))?,
     };
     Ok(Arena {
       frames,

@@ -1,12 +1,18 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! CPU dot products for the frontends and decoders, with NEON tiles on aarch64 and AVX2 on x86_64.
+//! CPU dot products for the frontends and decoders, with NEON tiles on aarch64 and AVX2 on x86_64,
+//! and the encoders' kernels for the CPU backend.
 
-use std::sync::{Mutex, PoisonError};
+pub mod conformer;
+pub mod gemm;
+pub mod ops;
+
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use half::f16;
 
 use crate::error::Result;
 use crate::gguf::{Tensor, Type};
+use crate::{Api, Device, DeviceKind, Kernels};
 
 /// Dot product with 16 independent accumulators (four FMA vectors in flight), summed pairwise so
 /// the final reduction also vectorizes.
@@ -27,6 +33,14 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
   acc[0] + a_tail.iter().zip(b_tail).map(|(x, y)| x * y).sum::<f32>()
 }
 
+/// Whether the encoders' GEMM takes the AVX-VNNI tile.
+fn vnni() -> bool {
+  #[cfg(target_arch = "x86_64")]
+  return x86::vnni();
+  #[allow(unreachable_code)]
+  false
+}
+
 /// The code path `tile` and `Q8::rows` take on this CPU: `NEON`, `AVX2+FMA` or `portable`.
 pub fn path() -> &'static str {
   #[cfg(target_arch = "x86_64")]
@@ -35,6 +49,50 @@ pub fn path() -> &'static str {
   }
 
   if cfg!(target_arch = "aarch64") { "NEON" } else { "portable" }
+}
+
+/// What `Model::device` reports on the CPU: `CPU (AVX2+FMA, AVX-VNNI, 4 threads)`.
+pub fn device() -> &'static Device {
+  static DEVICE: OnceLock<Device> = OnceLock::new();
+  DEVICE.get_or_init(|| Device {
+    name: "CPU".into(),
+    api: Api::Cpu,
+    kind: DeviceKind::Cpu,
+    driver: format!("{}{}, {} threads", path(), if vnni() { ", AVX-VNNI" } else { "" }, threads()),
+    kernels: Kernels::Cpu,
+  })
+}
+
+/// Threads for the encoders' kernels: the CPUs this process may run on (`taskset` and cgroup
+/// limits count).
+pub fn threads() -> usize {
+  static THREADS: OnceLock<usize> = OnceLock::new();
+  *THREADS.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+}
+
+/// `f(scratch, item)` for each item, on `threads` scoped threads that take the next item as they
+/// come free, each with its own `scratch` from `init`.
+pub fn par_each<T: Send, S>(
+  items: impl Iterator<Item = T> + Send,
+  init: impl Fn() -> S + Sync,
+  f: impl Fn(&mut S, T) + Sync,
+) {
+  let items = Mutex::new(items);
+  let next = || items.lock().unwrap_or_else(PoisonError::into_inner).next();
+  let work = || {
+    let Some(first) = next() else { return };
+    let mut scratch = init();
+    f(&mut scratch, first);
+    while let Some(item) = next() {
+      f(&mut scratch, item);
+    }
+  };
+  std::thread::scope(|s| {
+    for _ in 1..threads() {
+      s.spawn(work);
+    }
+    work();
+  });
 }
 
 /// `w` (`k`-long rows) padded with zero rows to a multiple of 4, as `matmul` takes it.
@@ -126,14 +184,7 @@ impl Matrix {
     let k = t.dims[0];
     Ok(match t.ty {
       Type::F32 | Type::F16 => Self::F32 { k, w: t.to_f32()? },
-      Type::Q8_0 => {
-        let mut b = Vec::new();
-        t.read(1 << 20, |_, piece| b.extend_from_slice(piece))?;
-        let blocks = b.as_chunks::<34>().0;
-        let d = blocks.iter().map(|b| f16::from_le_bytes([b[0], b[1]]).to_f32()).collect();
-        let q = blocks.iter().flat_map(|b| b[2..].iter().map(|&v| v as i8)).collect();
-        Self::Q8(Q8 { k, q, d })
-      }
+      Type::Q8_0 => Self::Q8(Q8::new(&[t])?),
     })
   }
 
@@ -173,6 +224,22 @@ pub struct Q8 {
 }
 
 impl Q8 {
+  /// The Q8_0 tensors `ts`, of rows of the same length, stacked.
+  pub fn new(ts: &[&Tensor]) -> Result<Self> {
+    let len = ts.iter().map(|t| t.len()).sum::<usize>();
+    let (mut q, mut d) = (Vec::with_capacity(len), Vec::with_capacity(len / 32));
+    for t in ts {
+      // Pieces of whole 34-byte blocks.
+      t.read(34 << 15, |_, piece| {
+        for b in piece.as_chunks::<34>().0 {
+          d.push(f16::from_le_bytes([b[0], b[1]]).to_f32());
+          q.extend(b[2..].iter().map(|&v| v as i8));
+        }
+      })?;
+    }
+    Ok(Self { k: ts[0].dims[0], q, d })
+  }
+
   fn row(&self, r: usize) -> Vec<f32> {
     let (q, d) = (&self.q[r * self.k..][..self.k], &self.d[r * self.k / 32..]);
     q.iter().enumerate().map(|(i, &q)| q as f32 * d[i / 32]).collect()
@@ -232,10 +299,20 @@ impl Q8 {
 mod x86 {
   use std::arch::x86_64::*;
 
-  use super::Q8;
+  use super::{OnceLock, Q8};
 
   pub fn avx2() -> bool {
     is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")
+  }
+
+  /// AVX-VNNI too, for the encoders' i16 GEMM tile, unless `WAVO_KERNELS=portable` asks for the
+  /// f32 one.
+  pub fn vnni() -> bool {
+    static VNNI: OnceLock<bool> = OnceLock::new();
+    *VNNI.get_or_init(|| {
+      let portable = std::env::var_os("WAVO_KERNELS").is_some_and(|v| v == "portable");
+      avx2() && is_x86_feature_detected!("avxvnni") && !portable
+    })
   }
 
   /// `dot`'s pairwise sum of 16 lanes, 0..8 in `a` and 8..16 in `b`.

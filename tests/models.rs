@@ -131,8 +131,13 @@ fn detect(name: &str, expected: &[(&str, &str)]) {
 const START_SLACK_MS: u32 = 80;
 
 fn check(name: &str, samples: &[&str]) {
+  check_on(name, wavo::Backend::Gpu, samples);
+}
+
+/// `check` on `backend`.
+fn check_on(name: &str, backend: wavo::Backend, samples: &[&str]) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
-  let model = wavo::Model::load_with(model_path(name), wavo::Backend::Gpu).unwrap();
+  let model = wavo::Model::load_with(model_path(name), backend).unwrap();
   check_languages(name, &model);
   for sample in samples {
     let (clip, language) = match sample.split_once("+lang=") {
@@ -433,6 +438,33 @@ fn gigaam_multilingual_large_ctc() {
   check("gigaam-multilingual-large-ctc", &["ru", "ru-short", "ru-long", "jfk"]);
   too_long("gigaam-multilingual-large-ctc", "ru-long");
   long("gigaam-multilingual-large-ctc", "ru", true);
+}
+
+// The CPU computes in f32 as the GPU does, in another order: the fixtures hold all the same.
+#[test]
+fn gigaam_v3_e2e_rnnt_cpu() {
+  check_on("gigaam-v3-e2e-rnnt", wavo::Backend::Cpu, GIGAAM);
+}
+
+#[test]
+fn gigaam_v3_e2e_ctc_cpu() {
+  check_on("gigaam-v3-e2e-ctc", wavo::Backend::Cpu, GIGAAM);
+}
+
+#[test]
+fn gigaam_v3_rnnt_cpu() {
+  check_on("gigaam-v3-rnnt", wavo::Backend::Cpu, GIGAAM);
+}
+
+#[test]
+fn gigaam_v3_ctc_cpu() {
+  check_on("gigaam-v3-ctc", wavo::Backend::Cpu, GIGAAM);
+}
+
+#[test]
+fn gigaam_multilingual_large_ctc_cpu() {
+  let samples = &["ru", "ru-short", "ru-long", "jfk"];
+  check_on("gigaam-multilingual-large-ctc", wavo::Backend::Cpu, samples);
 }
 
 #[cfg(target_os = "macos")]

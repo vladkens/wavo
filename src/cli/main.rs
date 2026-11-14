@@ -57,9 +57,10 @@ Run options:
   --language CODE              the language of the speech (en, he, ...) for multilingual
                                Whisper models, instead of detecting it
   -y, --yes                    download a missing model without asking
-  --backend auto|gpu|ane       where the encoder runs: auto (the default) takes the Neural
+  --backend auto|gpu|ane|cpu   where the encoder runs: auto (the default) takes the Neural
                                Engine for Parakeet and GigaAM once `wavo pull` prepared
-                               them on a Mac, else the GPU
+                               them on a Mac, the CPU for GigaAM without a hardware GPU,
+                               else the GPU
   --device auto|N|NAME         the GPU to run on: its number in wavo devices or part of its
                                name, ignoring case (the first that matches); auto: wavo's
                                default GPU (0 in wavo devices), or the Neural Engine as
@@ -69,7 +70,7 @@ Serve options:
   --host ADDR                  the address to listen on (127.0.0.1)
   --port PORT                  the port to listen on (8000)
   --api-key KEY                require `Authorization: Bearer KEY` (or set WAVO_API_KEY)
-  --backend auto|gpu|ane       where the encoder runs, as in run
+  --backend auto|gpu|ane|cpu   where the encoder runs, as in run
   --device auto|N|NAME         the GPU every model runs on, as in run, chosen at start
   --unload-after DURATION      free a model's memory after DURATION without requests (30s,
                                10m, 1h; 0 right after they stop); its next request loads it
@@ -171,8 +172,8 @@ enum Download {
 
 /// A model by name, downloaded when `download` allows, or a `.gguf` path.
 fn model_path(arg: &str, download: Download, on: Backend) -> Result<PathBuf> {
-  // `--backend gpu` and `--device` skip preparing for the Neural Engine after a download.
-  let hub = Hub::new().prepare(!matches!(on, Backend::Gpu | Backend::GpuAt(_)));
+  // `--backend gpu` or `cpu` and `--device` skip preparing for the Neural Engine after a download.
+  let hub = Hub::new().prepare(!matches!(on, Backend::Gpu | Backend::GpuAt(_) | Backend::Cpu));
   let e = match hub.resolve(arg) {
     Ok(path) => return Ok(path),
     Err(e) => e,
@@ -215,7 +216,8 @@ fn backend(arg: Option<&&str>) -> Result<Backend> {
     Some("auto") => Backend::Auto,
     Some("gpu") => Backend::Gpu,
     Some("ane") => Backend::NeuralEngine,
-    _ => bail!("--backend takes auto, gpu or ane"),
+    Some("cpu") => Backend::Cpu,
+    _ => bail!("--backend takes auto, gpu, ane or cpu"),
   })
 }
 
@@ -228,6 +230,7 @@ fn target(on: Backend, device: Option<&str>) -> Result<Backend> {
     on != Backend::NeuralEngine,
     "--device picks a GPU, and --backend ane runs on the Neural Engine: drop one of them"
   );
+  ensure!(on != Backend::Cpu, "--device picks a GPU, and --backend cpu runs on the CPU: drop one");
   let name = |d: &wavo::Device| d.name.to_lowercase().contains(&arg.to_lowercase());
   let find = |gpus: &[wavo::Device]| match arg.parse::<usize>() {
     Ok(i) => (i < gpus.len()).then_some(i),

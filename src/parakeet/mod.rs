@@ -14,7 +14,7 @@ use decoder::Decoder;
 use encoder::Encoder;
 use frontend::{F_MAX, Frontend, HOP, MELS, N_FFT, PRE_EMPHASIS, WINDOW};
 
-use crate::ane::Backend;
+use crate::ane::{Backend, Target};
 use crate::conformer::{self, Attention};
 use crate::error::{Error, Result, bail};
 use crate::gguf::Gguf;
@@ -26,7 +26,7 @@ use crate::{Token, Transcript};
 const FRAME_MS: u32 = 80;
 
 pub struct Parakeet {
-  backend: Backend<Encoder>,
+  backend: Backend<Encoder, std::convert::Infallible>,
   frontend: Frontend,
   decoder: Decoder,
   tok: Tokenizer,
@@ -89,8 +89,7 @@ fn config(g: &Gguf) -> Result<(conformer::Config, usize, usize)> {
 }
 
 impl Parakeet {
-  /// Runs the encoder on `ane` when given, else on the GPU at `gpu` (see `ane::Backend::new`).
-  pub fn load(g: &Gguf, ane: Option<crate::ane::Model>, gpu: Option<usize>) -> Result<Self> {
+  pub fn load(g: &Gguf, target: Target) -> Result<Self> {
     let (cfg, ch, joint) = config(g)?;
     let kestrel = match g.optional::<&str>("stt.parakeet.encoder.length_masking")? {
       None | Some("none") => false,
@@ -112,7 +111,8 @@ impl Parakeet {
     // The decoder loads on the CPU while the GPU starts and the encoder uploads.
     let (backend, decoder) = std::thread::scope(|s| {
       let decoder = s.spawn(|| Decoder::new(g, vocab.len(), blank));
-      let backend = Backend::new(ane, gpu, |gpu| Encoder::new(gpu, g, cfg, ch, joint))?;
+      let gpu = |gpu: &_| Encoder::new(gpu, g, cfg, ch, joint);
+      let backend = Backend::new(target, gpu, || bail!("Parakeet doesn't run on the CPU yet"))?;
       Ok::<_, Error>((backend, decoder.join().unwrap()?))
     })?;
     let tok = Tokenizer::new(&vocab);
@@ -133,6 +133,7 @@ impl Parakeet {
     let (enc, width) = match &self.backend {
       Backend::Gpu(gpu) => gpu.1.run(&gpu.0, &mel, valid)?,
       Backend::Ane(model) => ane::run(model, &mel, valid)?,
+      Backend::Cpu(never) => match **never {},
     };
     let (ids, frames): (Vec<usize>, Vec<u32>) = (self.decoder.decode(&enc, width).into_iter())
       .filter(|&(id, _)| !self.special[id as usize])
