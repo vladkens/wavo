@@ -46,7 +46,7 @@ ALL_MODELS := $(shell sed -n 's/.*full_name: "\([^"]*\)".*/\1/p' src/hub/mod.rs)
 # `make test-all` covers them all. CI caches the downloads under a key made from this line, so
 # keep it on one line.
 MODELS := gigaam-v3-e2e-rnnt parakeet-tdt-0.6b-v3 parakeet-tdt-0.6b-v2 whisper-tiny moonshine-tiny
-SMOKE_TESTS := gigaam_v3_e2e_rnnt parakeet_tdt_v3 parakeet_tdt_v2 whisper_tiny moonshine_tiny
+SMOKE_TESTS := gigaam_v3_e2e_rnnt gigaam_v3_e2e_rnnt_cpu parakeet_tdt_v3 parakeet_tdt_v2 whisper_tiny moonshine_tiny
 REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
 # Whisper has segment timestamps only: TIMESTAMPS=segment; Moonshine none: TIMESTAMPS=none.
 TIMESTAMPS := token

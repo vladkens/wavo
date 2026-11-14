@@ -131,8 +131,13 @@ fn detect(name: &str, expected: &[(&str, &str)]) {
 const START_SLACK_MS: u32 = 80;
 
 fn check(name: &str, samples: &[&str]) {
+  check_on(name, wavo::Backend::Gpu, samples);
+}
+
+/// `check` on `backend`.
+fn check_on(name: &str, backend: wavo::Backend, samples: &[&str]) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
-  let model = wavo::Model::load_with(model_path(name), wavo::Backend::Gpu).unwrap();
+  let model = wavo::Model::load_with(model_path(name), backend).unwrap();
   check_languages(name, &model);
   for sample in samples {
     let (clip, language) = match sample.split_once("+lang=") {
@@ -435,6 +440,33 @@ fn gigaam_multilingual_large_ctc() {
   long("gigaam-multilingual-large-ctc", "ru", true);
 }
 
+// The CPU computes in f32 as the GPU does, in another order: the fixtures hold all the same.
+#[test]
+fn gigaam_v3_e2e_rnnt_cpu() {
+  check_on("gigaam-v3-e2e-rnnt", wavo::Backend::Cpu, GIGAAM);
+}
+
+#[test]
+fn gigaam_v3_e2e_ctc_cpu() {
+  check_on("gigaam-v3-e2e-ctc", wavo::Backend::Cpu, GIGAAM);
+}
+
+#[test]
+fn gigaam_v3_rnnt_cpu() {
+  check_on("gigaam-v3-rnnt", wavo::Backend::Cpu, GIGAAM);
+}
+
+#[test]
+fn gigaam_v3_ctc_cpu() {
+  check_on("gigaam-v3-ctc", wavo::Backend::Cpu, GIGAAM);
+}
+
+#[test]
+fn gigaam_multilingual_large_ctc_cpu() {
+  let samples = &["ru", "ru-short", "ru-long", "jfk"];
+  check_on("gigaam-multilingual-large-ctc", wavo::Backend::Cpu, samples);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn gigaam_v3_e2e_rnnt_ane() {
@@ -483,6 +515,22 @@ fn parakeet_ultra() {
   check("parakeet-ultra", &["jfk", "ru-short", "uk-long", "jobs-silence"]);
 }
 
+#[test]
+fn parakeet_tdt_v2_cpu() {
+  check_on("parakeet-tdt-0.6b-v2", wavo::Backend::Cpu, &["jfk", "dots", "jobs-silence"]);
+}
+
+#[test]
+fn parakeet_tdt_v3_cpu() {
+  check_on("parakeet-tdt-0.6b-v3", wavo::Backend::Cpu, &["jfk", "ru-short", "uk-short"]);
+}
+
+#[test]
+fn parakeet_ultra_cpu() {
+  let samples = &["jfk", "ru-short", "uk-long", "jobs-silence"];
+  check_on("parakeet-ultra", wavo::Backend::Cpu, samples);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn parakeet_tdt_v2_ane() {
@@ -509,6 +557,16 @@ fn parakeet_tdt_v3_he() {
 #[test]
 fn parakeet_tdt_v3_uk() {
   check("parakeet-tdt-0.6b-v3-uk", &["uk-short", "uk-long", "jfk"]);
+}
+
+#[test]
+fn parakeet_tdt_v3_he_cpu() {
+  check_on("parakeet-tdt-0.6b-v3-he", wavo::Backend::Cpu, &["he-short", "he-long"]);
+}
+
+#[test]
+fn parakeet_tdt_v3_uk_cpu() {
+  check_on("parakeet-tdt-0.6b-v3-uk", wavo::Backend::Cpu, &["uk-short", "uk-long", "jfk"]);
 }
 
 #[cfg(target_os = "macos")]

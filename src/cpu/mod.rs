@@ -1,12 +1,18 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! CPU dot products for the frontends and decoders, with NEON tiles on aarch64 and AVX2 on x86_64.
+//! CPU dot products for the frontends and decoders, with NEON tiles on aarch64 and AVX2 on x86_64,
+//! and the encoders' kernels for the CPU backend.
 
-use std::sync::{Mutex, PoisonError};
+pub mod conformer;
+pub mod gemm;
+pub mod ops;
+
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use half::f16;
 
 use crate::error::Result;
 use crate::gguf::{Tensor, Type};
+use crate::{Api, Device, DeviceKind, Kernels};
 
 /// Dot product with 16 independent accumulators (four FMA vectors in flight), summed pairwise so
 /// the final reduction also vectorizes.
@@ -18,13 +24,27 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
       *s = x.mul_add(*y, *s);
     }
   }
+
   for n in [8, 4, 2, 1] {
     let (lo, hi) = acc.split_at_mut(n);
     for (l, h) in lo.iter_mut().zip(&*hi) {
       *l += h;
     }
   }
+
   acc[0] + a_tail.iter().zip(b_tail).map(|(x, y)| x * y).sum::<f32>()
+}
+
+/// The VNNI the encoders' GEMM takes, for `device`: `", AVX-VNNI"`, `", AVX512-VNNI"` or none.
+fn vnni() -> &'static str {
+  #[cfg(target_arch = "x86_64")]
+  return match x86::vnni() {
+    Some(x86::Vnni::Avx) => ", AVX-VNNI",
+    Some(x86::Vnni::Avx512) => ", AVX512-VNNI",
+    None => "",
+  };
+  #[allow(unreachable_code)]
+  ""
 }
 
 /// The code path `tile` and `Q8::rows` take on this CPU: `NEON`, `AVX2+FMA` or `portable`.
@@ -35,6 +55,51 @@ pub fn path() -> &'static str {
   }
 
   if cfg!(target_arch = "aarch64") { "NEON" } else { "portable" }
+}
+
+/// What `Model::device` reports on the CPU: `CPU (AVX2+FMA, AVX-VNNI, 4 threads)`.
+pub fn device() -> &'static Device {
+  static DEVICE: OnceLock<Device> = OnceLock::new();
+  DEVICE.get_or_init(|| Device {
+    name: "CPU".into(),
+    api: Api::Cpu,
+    kind: DeviceKind::Cpu,
+    driver: format!("{}{}, {} threads", path(), vnni(), threads()),
+    kernels: Kernels::Cpu,
+  })
+}
+
+/// Threads for the encoders' kernels: the CPUs this process may run on (`taskset` and cgroup
+/// limits count).
+pub fn threads() -> usize {
+  static THREADS: OnceLock<usize> = OnceLock::new();
+  *THREADS.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+}
+
+/// `f(scratch, item)` for each item, on `threads` scoped threads that take the next item as they
+/// come free, each with its own `scratch` from `init`.
+pub fn par_each<T: Send, S>(
+  items: impl Iterator<Item = T> + Send,
+  init: impl Fn() -> S + Sync,
+  f: impl Fn(&mut S, T) + Sync,
+) {
+  let items = Mutex::new(items);
+  let next = || items.lock().unwrap_or_else(PoisonError::into_inner).next();
+  let work = || {
+    let Some(first) = next() else { return };
+    let mut scratch = init();
+    f(&mut scratch, first);
+    while let Some(item) = next() {
+      f(&mut scratch, item);
+    }
+  };
+  std::thread::scope(|s| {
+    for _ in 1..threads() {
+      s.spawn(work);
+    }
+
+    work();
+  });
 }
 
 /// `w` (`k`-long rows) padded with zero rows to a multiple of 4, as `matmul` takes it.
@@ -58,12 +123,14 @@ pub fn matmul(w: &[f32], z: &[f32], k: usize) -> Vec<f32> {
       out[rows + 2 * r..][..2].copy_from_slice(&d1);
     }
   }
+
   if !last.is_empty() {
     let out = out.rchunks_exact_mut(rows).next().unwrap();
     for (w, out) in w.chunks_exact(4 * k).zip(out.as_chunks_mut::<4>().0) {
       [*out] = tile::<4, 1>(w, last, k);
     }
   }
+
   out
 }
 
@@ -88,6 +155,7 @@ fn tile<const R: usize, const F: usize>(w: &[f32], z: &[f32], k: usize) -> [[f32
         }
       }
     }
+
     acc.map(|acc| {
       acc.map(|[a0, a1, a2, a3]| {
         let lanes = vaddq_f32(vaddq_f32(a0, a2), vaddq_f32(a1, a3));
@@ -111,6 +179,7 @@ fn tile<const R: usize, const F: usize>(w: &[f32], z: &[f32], k: usize) -> [[f32
     // SAFETY: the CPU has AVX2 and FMA.
     return unsafe { x86::tile(w, z, k) };
   }
+
   std::array::from_fn(|f| std::array::from_fn(|r| dot(&w[r * k..][..k], &z[f * k..][..k])))
 }
 
@@ -126,14 +195,7 @@ impl Matrix {
     let k = t.dims[0];
     Ok(match t.ty {
       Type::F32 | Type::F16 => Self::F32 { k, w: t.to_f32()? },
-      Type::Q8_0 => {
-        let mut b = Vec::new();
-        t.read(1 << 20, |_, piece| b.extend_from_slice(piece))?;
-        let blocks = b.as_chunks::<34>().0;
-        let d = blocks.iter().map(|b| f16::from_le_bytes([b[0], b[1]]).to_f32()).collect();
-        let q = blocks.iter().flat_map(|b| b[2..].iter().map(|&v| v as i8)).collect();
-        Self::Q8(Q8 { k, q, d })
-      }
+      Type::Q8_0 => Self::Q8(Q8::new(&[t])?),
     })
   }
 
@@ -173,6 +235,23 @@ pub struct Q8 {
 }
 
 impl Q8 {
+  /// The Q8_0 tensors `ts`, of rows of the same length, stacked.
+  pub fn new(ts: &[&Tensor]) -> Result<Self> {
+    let len = ts.iter().map(|t| t.len()).sum::<usize>();
+    let (mut q, mut d) = (Vec::with_capacity(len), Vec::with_capacity(len / 32));
+    for t in ts {
+      // Pieces of whole 34-byte blocks.
+      t.read(34 << 15, |_, piece| {
+        for b in piece.as_chunks::<34>().0 {
+          d.push(f16::from_le_bytes([b[0], b[1]]).to_f32());
+          q.extend(b[2..].iter().map(|&v| v as i8));
+        }
+      })?;
+    }
+
+    Ok(Self { k: ts[0].dims[0], q, d })
+  }
+
   fn row(&self, r: usize) -> Vec<f32> {
     let (q, d) = (&self.q[r * self.k..][..self.k], &self.d[r * self.k / 32..]);
     q.iter().enumerate().map(|(i, &q)| q as f32 * d[i / 32]).collect()
@@ -203,6 +282,7 @@ impl Q8 {
             }
           }
         }
+
         for (o, [a0, a1, a2, a3]) in out.iter_mut().zip(acc) {
           let lanes = vaddq_f32(vaddq_f32(a0, a2), vaddq_f32(a1, a3));
           let pair = vadd_f32(vget_low_f32(lanes), vget_high_f32(lanes));
@@ -219,6 +299,7 @@ impl Q8 {
       // SAFETY: the CPU has AVX2 and FMA.
       return unsafe { x86::rows(self, r0, x, out) };
     }
+
     for (r, o) in out.iter_mut().enumerate() {
       *o = dot(&self.row(r0 + r), x);
     }
@@ -232,10 +313,36 @@ impl Q8 {
 mod x86 {
   use std::arch::x86_64::*;
 
-  use super::Q8;
+  use super::{OnceLock, Q8};
 
   pub fn avx2() -> bool {
     is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")
+  }
+
+  /// The `vpdpwssd` of the encoders' i16 GEMM tile on 256-bit vectors.
+  #[derive(Clone, Copy, PartialEq, Eq)]
+  pub enum Vnni {
+    /// AVX-VNNI (VEX): Intel since Alder Lake, AMD since Zen 5.
+    Avx,
+    /// AVX512-VNNI with AVX512VL (EVEX): Intel's servers since Cascade Lake, AMD's Zen 4.
+    Avx512,
+  }
+
+  /// The VNNI on this CPU with AVX2 and FMA, unless `WAVO_KERNELS=portable` asks for the f32 tile.
+  pub fn vnni() -> Option<Vnni> {
+    static VNNI: OnceLock<Option<Vnni>> = OnceLock::new();
+    *VNNI.get_or_init(|| {
+      if !avx2() || std::env::var_os("WAVO_KERNELS").is_some_and(|v| v == "portable") {
+        return None;
+      }
+
+      if is_x86_feature_detected!("avxvnni") {
+        return Some(Vnni::Avx);
+      }
+
+      let avx512 = is_x86_feature_detected!("avx512vnni") && is_x86_feature_detected!("avx512vl");
+      avx512.then_some(Vnni::Avx512)
+    })
   }
 
   /// `dot`'s pairwise sum of 16 lanes, 0..8 in `a` and 8..16 in `b`.
@@ -258,6 +365,7 @@ mod x86 {
           // SAFETY: 8 floats below `n` ≤ k of a row of `w`.
           *v = unsafe { _mm256_loadu_ps(w.as_ptr().add(r * k + i + 8 * c)) };
         }
+
         for (f, acc) in acc.iter_mut().enumerate() {
           // SAFETY: 8 floats below `n` ≤ k of a frame of `z`.
           let zv = unsafe { _mm256_loadu_ps(z.as_ptr().add(f * k + i + 8 * c)) };
@@ -267,6 +375,7 @@ mod x86 {
         }
       }
     }
+
     let mut out = [[0.0; R]; F];
     for (f, out) in out.iter_mut().enumerate() {
       for (r, out) in out.iter_mut().enumerate() {
@@ -275,6 +384,7 @@ mod x86 {
         *out = sum(acc[f][r][0], acc[f][r][1]) + tail;
       }
     }
+
     out
   }
 
@@ -300,6 +410,7 @@ mod x86 {
           acc[1] = _mm256_fmadd_ps(_mm256_mul_ps(hi, scale), xs[1], acc[1]);
         }
       }
+
       for (o, [a, b]) in out.iter_mut().zip(acc) {
         *o = sum(a, b);
       }
@@ -325,6 +436,7 @@ pub fn matvecs<const N: usize>(jobs: [(&Matrix, &[f32]); N]) -> [Vec<f32>; N] {
     for _ in 1..4 {
       s.spawn(work);
     }
+
     work();
   });
   out

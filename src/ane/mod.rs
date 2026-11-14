@@ -65,32 +65,44 @@ pub fn device() -> &'static Device {
   })
 }
 
-/// Where a family's encoder `E` runs: the GPU, or the Neural Engine's program.
-pub enum Backend<E> {
+/// Where a family's encoder runs: the GPU (`E`), the Neural Engine's program, or the CPU (`C`).
+pub enum Backend<E, C> {
   Gpu(Box<(Gpu, E)>),
   Ane(Model),
+  Cpu(Box<C>),
 }
 
-impl<E> Backend<E> {
-  /// `ane` when given, else the GPU at `gpu`, an index of `crate::devices` (by default the first),
-  /// and the encoder `encoder` loads on it.
+/// Where `Model::load_with` loads a family's encoder.
+pub enum Target {
+  /// The GPU at an index of `crate::devices`, by default the first.
+  Gpu(Option<usize>),
+  Ane(Model),
+  Cpu,
+}
+
+impl<E, C> Backend<E, C> {
+  /// The encoder on `target`: `gpu` loads it on a GPU, `cpu` for the CPU.
   pub fn new(
-    ane: Option<Model>,
-    gpu: Option<usize>,
-    encoder: impl FnOnce(&Gpu) -> Result<E>,
+    target: Target,
+    gpu: impl FnOnce(&Gpu) -> Result<E>,
+    cpu: impl FnOnce() -> Result<C>,
   ) -> Result<Self> {
-    let Some(model) = ane else {
-      let gpu = Gpu::new(true, gpu)?;
-      let e = encoder(&gpu)?;
-      return Ok(Self::Gpu(Box::new((gpu, e))));
-    };
-    Ok(Self::Ane(model))
+    Ok(match target {
+      Target::Gpu(index) => {
+        let device = Gpu::new(true, index)?;
+        let e = gpu(&device)?;
+        Self::Gpu(Box::new((device, e)))
+      }
+      Target::Ane(model) => Self::Ane(model),
+      Target::Cpu => Self::Cpu(Box::new(cpu()?)),
+    })
   }
 
   pub fn device(&self) -> &Device {
     match self {
       Self::Gpu(gpu) => gpu.0.info(),
       Self::Ane(_) => device(),
+      Self::Cpu(_) => crate::cpu::device(),
     }
   }
 }

@@ -464,6 +464,46 @@ two numbers (A/B/A, warm median unless stated), kept or rejected and why.
   - LayerNorm statistics with eight loads issued before their sums: 44.4 / 44.2 / 44.1 ms, no gain.
     LayerNorm rows held in a 32-entry register array: encoder +1.5 ms (likely spilled).
 
+### CPU encoders
+
+N100 (4 Gracemont cores, AVX2 + AVX-VNNI, one 2 MB L2 for all four; 3.0 GHz on one core, 2.4 on
+two, 2.2 on four), `ru-30s.wav` (30 s of Russian), gigaam-v3-e2e-rnnt, `wavo bench --backend cpu`
+warm medians under `taskset`. onnx-asr 0.12 int8 (onnxruntime) on the same cores: warm 6.07 / 5.42 s,
+first call 11.2 / 12.5 s, load 1.3–1.6 s, 0.55 GB (2 / 4 cores).
+
+- 2026-11-14, GigaAM, f32 GEMM: Q8_0 W unpacked per 16-row panel into f32, groups of panels
+  that fit 384 KiB, 6 × 16 FMA tile (AVX2 / NEON), jobs of panel group × row range on scoped
+  threads; attention per head in blocks of 48 queries through the same tile; LayerNorm, GLU,
+  depthwise conv, softmax and SiLU in vectorized f32 with a branch-free exp. Fixtures exact on
+  every GigaAM model. 1 / 2 / 4 cores: 9.3 / 5.8 / 4.4 s. On two cores ff 3.4 s, q/k/v/out
+  0.87, pointwise 0.65, attention 0.69, the rest 0.2: the GEMMs run at 65 GFLOP/s, 85% of the
+  FMA peak at 2.4 GHz. Kept.
+- 2026-11-14, F16 pointwise weights kept F16 and widened per panel, Q8_0 vectors reserved
+  exactly: RSS 492 → 338 MB, speed the same. Kept.
+- 2026-11-14, Q8_0 GEMMs with `a` rounded per 32 values to i16 (scale max / 32767) and
+  `vpdpwssd` (AVX-VNNI), exact i32 sums scaled per block: A/B/A 2 cores 5.77 / 5.35 / 5.78 s,
+  4 cores 4.35 / 3.92 / 4.35 s; fixtures exact. Gracemont runs a ymm VNNI no faster per
+  multiply-add than two FMAs, so the gain is the halved panels. Kept, `WAVO_KERNELS=portable`
+  turns it off.
+- 2026-11-14, `a` rounded to i8 per 32 values (ggml's Q8_0 × Q8_0, which `vpdpbusd` / `sdot` would
+  run twice as fast as i16), simulated on the f32 tile: ru-short loses a comma, multilingual jfk
+  a space. Rejected.
+- 2026-11-14, Parakeet V3 (24 layers of d 1024, 8× subsampling): relative attention per head
+  through the same tile, `(q + v)·pos` over the position rows a block of queries reads, added to
+  the scores before the softmax; the subsampling in chunks of 64 frames, conv0 recomputed per
+  conv2 row. Fixtures exact on every Parakeet model. 2 / 4 cores warm 7.70 / 5.63 s, first call
+  (whole process) 7.98 / 5.90 s, 0.84 GB; subsampling 0.15 s of 7.4: the blocks run at GigaAM's
+  rate, with 1.46× its multiply-adds. onnx-asr int8 `nemo-parakeet-tdt-0.6b-v3`: warm 7.81 /
+  5.84 s, first call 12.0 / 12.7 s after a 2.0–2.2 s load, 1.62 GB, and "передов" for
+  "периодов". Kept.
+- 2026-11-14, Ryzen 9 7945HX (Zen 4: AVX-512 with VNNI but no AVX-VNNI, 512-bit operations in two
+  256-bit halves), warm medians on 2 / 16 threads pinned to separate cores, GigaAM v3 e2e-rnnt and
+  Parakeet V3 on `ru-30s.wav`. f32 ymm tile: 1401 / 412 and 1985 / 615 ms. The same tile on zmm
+  (one vector per row): 1388 / 407 and 1959 / 610. The i16 tile with AVX512-VNNI's `vpdpwssd`
+  on ymm: 1070 / 431 and 1424 / 622; on zmm: 1054 / 435 and 1400 / 626. All bit-identical. Kept
+  the ymm AVX512-VNNI tier (the AVX-VNNI one with the EVEX instruction, −24–28% on two cores; on
+  16 the per-GEMM quantize pass costs about what it saves); zmm rejected at 1–2%.
+
 ### CPU decoders
 
 - 2026-10-10, all models, x86_64: runtime-dispatched AVX2 + FMA versions of the decoder tiles and
