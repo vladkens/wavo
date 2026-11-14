@@ -504,6 +504,18 @@ first call 11.2 / 12.5 s, load 1.3–1.6 s, 0.55 GB (2 / 4 cores).
   the ymm AVX512-VNNI tier (the AVX-VNNI one with the EVEX instruction, −24–28% on two cores; on
   16 the per-GEMM quantize pass costs about what it saves); zmm rejected at 1–2%.
 
+- 2026-11-14, Whisper and Moonshine (`cpu::transformer`): the conv stems as im2col GEMMs, the
+  pre-LN blocks through the same tiles, decoding one token per step with `gemv` over Q8_0 rows and
+  the self- and cross-attention caches rounded to f16 as on the GPU. W and `a` of every GEMM
+  rounded to f16 first, as the GPU's GEMM rounds them: without it ivrit he-long gives "החללה" for
+  "החלאה"; GigaAM and Parakeet fixtures stay exact. Fixtures exact on every Whisper and Moonshine
+  model on NEON, AVX-VNNI and AVX512-VNNI. N100 `ru-30s.wav` warm 2 / 4 cores: tiny 1.43 / 1.44,
+  base 5.3 / 4.5, small 17.6 / 13.8, turbo 80 / 57 s; small on two cores per 30 s window encoder
+  ~6 s, cross K/V 0.77 s, a step ~35 ms (two windows: the first ends at 16 s). faster-whisper int8
+  beam 1 on the same cores: tiny 1.03 / 1.04, base 3.3 / 3.0, small 10.1–11.9 / 9.3 s, 0.27–0.84 GB
+  against wavo's 0.09–0.56. Moonshine `dots.wav` (35 s) whole process: tiny 2.5 / 2.3, base
+  3.7 / 3.3 s. Kept; int8 activations, as faster-whisper's, rejected above.
+
 ### CPU decoders
 
 - 2026-10-10, all models, x86_64: runtime-dispatched AVX2 + FMA versions of the decoder tiles and
@@ -571,6 +583,10 @@ first call 11.2 / 12.5 s, load 1.3–1.6 s, 0.55 GB (2 / 4 cores).
 - 2026-10-09, GigaAM, joint scored for spans of 8 frames per weight pass while the predictor
   output is unchanged: ru-long 397.5 → 417.2 ms. Rejected: rescoring the frames after each token
   outweighs the cache reuse.
+- 2026-11-14, x86_64, `dot` through an AVX2 + FMA version when the CPU has them: built without
+  FMA, `mul_add` is a libm call per element, and the Whisper and Moonshine decoders' attention
+  scores run through `dot`. Bit-identical (both fused). N100 whisper-small `ru-30s.wav` warm on
+  two cores 20.0 → 17.6 s. Kept.
 
 ### Whisper decoder
 

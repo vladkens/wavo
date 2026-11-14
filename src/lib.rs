@@ -16,10 +16,10 @@
 //! NVIDIA's Parakeet, Sber's GigaAM, OpenAI's Whisper and Useful Sensors' Moonshine, with the same
 //! text and timestamps as transcribe.cpp. The encoder runs on the GPU through wgpu (Metal on Apple
 //! Silicon, Vulkan on Linux and Windows, DX12 on Windows without a Vulkan driver) with wavo's own
-//! kernels, or for Parakeet and GigaAM on the Neural Engine of an Apple Silicon Mac through Core ML
-//! ([below](#neural-engine)); the audio frontend runs on the CPU, and so does the decoder except
-//! Whisper's and Moonshine's. It builds with a plain `cargo build`: no C++ toolchain, Python or
-//! ONNX Runtime.
+//! kernels, on the CPU with its own SIMD kernels, or for Parakeet and GigaAM on the Neural Engine
+//! of an Apple Silicon Mac through Core ML ([below](#neural-engine)); the audio frontend runs on
+//! the CPU, and so does the decoder except Whisper's and Moonshine's on the GPU. It builds with a
+//! plain `cargo build`: no C++ toolchain, Python or ONNX Runtime.
 //!
 //! [transcribe.cpp]: https://github.com/handy-computer/transcribe.cpp
 //!
@@ -427,15 +427,14 @@ const WINDOW_MS: u32 = 60_000;
 const DETECT_WINDOWS: usize = 5;
 
 /// Where a model's encoder runs, chosen when it loads ([`Model::load_with`]). The audio frontend
-/// and the decoder run on the CPU either way (Whisper's and Moonshine's decoders on the GPU).
+/// and the decoder run on the CPU either way (Whisper's and Moonshine's decoders with the encoder).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Backend {
   /// The faster one for the model's family on this machine: the Neural Engine for Parakeet and
   /// GigaAM once [prepared](Model::prepare) in this program (see
-  /// [Neural Engine](crate#neural-engine)), else the GPU; for Parakeet and GigaAM the
-  /// [CPU](Self::Cpu) when the GPU wavo would pick is a software one, such as llvmpipe, or there is
-  /// none.
+  /// [Neural Engine](crate#neural-engine)), else the GPU; the [CPU](Self::Cpu) when the GPU wavo
+  /// would pick is a software one, such as llvmpipe, or there is none.
   /// [`Model::load`] uses it.
   #[default]
   Auto,
@@ -468,9 +467,8 @@ pub enum Backend {
   /// tokens start one or two encoder frames apart (see [Neural Engine](crate#neural-engine)).
   NeuralEngine,
   /// The CPU, with wavo's own kernels (AVX2 and FMA on x86_64, NEON on ARM) on as many threads
-  /// as the process may use, for Parakeet and GigaAM: for servers and machines without a GPU
-  /// driver, where it is many times faster than a software GPU such as llvmpipe. The same text as
-  /// on the GPU.
+  /// as the process may use, for every family: for servers and machines without a GPU driver, where
+  /// it is many times faster than a software GPU such as llvmpipe. The same text as on the GPU.
   Cpu,
 }
 
@@ -479,10 +477,6 @@ pub enum Backend {
 /// GPU (Whisper's and Moonshine's slower).
 const NEURAL_ENGINE: &[(&str, ane::Build)] =
   &[("parakeet", parakeet::ane::build), ("gigaam", gigaam::ane::build)];
-
-/// The families whose encoder runs on the CPU: [`Backend::Auto`] takes it when the GPU wavo
-/// would pick is a software one, or there is none.
-const CPU: &[&str] = &["parakeet", "gigaam"];
 
 /// Whether the GPU wavo picks first is a hardware one.
 fn hardware_gpu() -> bool {
@@ -572,22 +566,15 @@ impl Model {
         .and_then(|compiled| ane::load_compiled(&compiled).ok())
       {
         Some(model) => Target::Ane(model),
-        None if CPU.contains(&arch) && !hardware_gpu() => Target::Cpu,
+        None if !hardware_gpu() => Target::Cpu,
         None => Target::Gpu(None),
       },
     };
-    let gpu = |name: &str| match target {
-      Target::Gpu(index) => Ok(index),
-      _ => Err(Error::Gpu(format!("{name} runs on the GPU only"))),
-    };
-
     let family = match arch {
       "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g, target)?)),
       "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g, target)?)),
-      "whisper" => Family::Whisper(Box::new(whisper::Whisper::load(&g, gpu("Whisper")?)?)),
-      "moonshine" => {
-        Family::Moonshine(Box::new(moonshine::Moonshine::load(&g, gpu("Moonshine")?)?))
-      }
+      "whisper" => Family::Whisper(Box::new(whisper::Whisper::load(&g, target)?)),
+      "moonshine" => Family::Moonshine(Box::new(moonshine::Moonshine::load(&g, target)?)),
       arch => bail!(
         "general.architecture is {arch:?}, only gigaam, parakeet, whisper and moonshine are supported"
       ),
@@ -939,8 +926,8 @@ impl Model {
     match &self.family {
       Family::Gigaam(m) => m.device(),
       Family::Parakeet(m) => m.device(),
-      Family::Whisper(m) => m.gpu.info(),
-      Family::Moonshine(m) => m.gpu.info(),
+      Family::Whisper(m) => m.device(),
+      Family::Moonshine(m) => m.device(),
     }
   }
 

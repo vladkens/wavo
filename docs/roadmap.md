@@ -38,11 +38,12 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **Spoken language:** `Model::detect_language`, `Transcript::language` and Bazarr's
       `POST /detect-language`; for Parakeet v3 and ultra, the language of Parakeet's text
       (whatlang) (#77).
+- [x] **CPU backend** for servers without a GPU: every family on the CPU, text as on the GPU;
+      30 s of Russian in 5.3 s with GigaAM and 7.7 s with Parakeet V3 on two N100 cores (#104).
+      [Plan](plans/completed/20261114-cpu.md)
 
 Open:
 
-- [ ] **CPU backend** for servers without a GPU: GigaAM and Parakeet done, 30 s in 5.4 and
-      7.7 s on two N100 cores; Whisper next. [Plan](plans/20261114-cpu.md)
 - **Moonshine:** fast (phase 16), the language fine-tunes (17), the streaming variants one-shot
   (18, optional). [Plan](plans/20261011-moonshine.md)
 - **Fast kernels beyond Apple.** The GEMM on F16 16×16 cooperative matrices runs on NVIDIA

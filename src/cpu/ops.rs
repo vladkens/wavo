@@ -3,8 +3,10 @@
 //! them, over time-major `[t][ch]` f32 activations, in plain arithmetic the compiler vectorizes.
 //! Rows go to threads in chunks.
 
+use half::f16;
+
 use super::gemm::{NR, panels, product};
-use super::par_each;
+use super::{dot, par_each};
 use crate::gpu::pos_rows;
 
 /// e^x as Cephes' `expf` computes it (relative error ~1e-7) without branches or calls, so loops
@@ -26,6 +28,15 @@ pub fn exp(x: f32) -> f32 {
 #[inline]
 pub fn silu(x: f32) -> f32 {
   x / (1.0 + exp(-x))
+}
+
+/// GELU with erf as the GPU's `gelu` computes it: Abramowitz–Stegun 7.1.26, as ggml-metal.
+#[inline]
+pub fn gelu(x: f32) -> f32 {
+  let z = (std::f32::consts::FRAC_1_SQRT_2 * x).abs();
+  let t = 1.0 / (1.0 + 0.327_591_1 * z);
+  let p = (((1.061_405_4 * t - 1.453_152) * t + 1.421_413_8) * t - 0.284_496_74) * t + 0.254_829_6;
+  0.5 * x * (1.0 + x.signum() * (1.0 - p * t * exp(-z * z)))
 }
 
 /// Rows per job for `rows` rows: about four jobs per thread.
@@ -173,30 +184,40 @@ pub fn conv_glu(
 /// Query rows per step of `attention`: scores for 48 queries over 1500 keys take 280 KiB.
 const QUERIES: usize = 48;
 
-/// Multi-head attention with rotary positions already applied: `qk` `[t][q | k]` and `v` `[t][ch]`
-/// into `o` `[t][ch]`, scores scaled by 1/√head_dim. One head per job; heads of a multiple of 16
-/// dims.
-pub fn attention(qk: &[f32], v: &[f32], o: &mut [f32], t: usize, heads: usize) {
+/// Multi-head attention with any rotary positions already applied: row i's q at `qk[i · ld..]`,
+/// its k at `qk[i · ld + ch..]` and its v at `v[i · ldv..]`, into `o` `[t][ch]`, scores scaled by
+/// 1/√head_dim. One head per job.
+pub fn attention(
+  qk: &[f32],
+  ld: usize,
+  v: &[f32],
+  ldv: usize,
+  o: &mut [f32],
+  t: usize,
+  heads: usize,
+) {
   let ch = o.len() / t;
   let (hd, tp) = (ch / heads, t.next_multiple_of(NR));
+  // A head's output rows are as wide as its value panels.
+  let hp = hd.next_multiple_of(NR);
   let scale = 1.0 / (hd as f32).sqrt();
   let mut outs = vec![Vec::new(); heads];
   par_each(
     outs.iter_mut().enumerate(),
     || vec![0.0; QUERIES * tp],
     |s, (h, out)| {
-      let keys = panels(&qk[ch + h * hd..], 2 * ch, t, hd, hd, false);
-      let values = panels(&v[h * hd..], ch, hd, tp, t, true);
-      *out = vec![0.0; t * hd];
+      let keys = panels(&qk[ch + h * hd..], ld, t, hd, hd, false);
+      let values = panels(&v[h * hd..], ldv, hd, tp, t, true);
+      *out = vec![0.0; t * hp];
       for i in (0..t).step_by(QUERIES) {
         let m = QUERIES.min(t - i);
-        product(&qk[i * 2 * ch + h * hd..], 2 * ch, m, &keys, hd, s, tp);
+        product(&qk[i * ld + h * hd..], ld, m, &keys, hd, s, tp);
         softmax(s, m, t, scale);
-        product(s, tp, m, &values, tp, &mut out[i * hd..], hd);
+        product(s, tp, m, &values, tp, &mut out[i * hp..], hp);
       }
     },
   );
-  gather(&outs, o, hd);
+  gather(&outs, o, hd, hp);
 }
 
 /// Multi-head attention with Transformer-XL relative positions over `qkv` `[t][q | k | v]`, with
@@ -248,7 +269,7 @@ pub fn relative_attention(
       }
     },
   );
-  gather(&outs, o, hd);
+  gather(&outs, o, hd, hd);
 }
 
 /// Softmax of `scores` × `scale` over the first `t` of each of `m` rows; the rest of a row is
@@ -265,12 +286,82 @@ fn softmax(scores: &mut [f32], m: usize, t: usize, scale: f32) {
   }
 }
 
-/// The heads' outputs `[t][head_dim]` into the rows `[t][heads · head_dim]` of `o`.
-fn gather(outs: &[Vec<f32>], o: &mut [f32], hd: usize) {
+/// The heads' outputs `[t][hp]` (the first head_dim of each row) into the rows
+/// `[t][heads · head_dim]` of `o`.
+fn gather(outs: &[Vec<f32>], o: &mut [f32], hd: usize, hp: usize) {
   let ch = outs.len() * hd;
   for (h, out) in outs.iter().enumerate() {
-    for (o, out) in o.chunks_exact_mut(ch).zip(out.chunks_exact(hd)) {
-      o[h * hd..][..hd].copy_from_slice(out);
+    for (o, out) in o.chunks_exact_mut(ch).zip(out.chunks_exact(hp)) {
+      o[h * hd..][..hd].copy_from_slice(&out[..hd]);
+    }
+  }
+}
+
+/// One query per head, `q` `[heads][head_dim]` rounded to f16 as the GPU's `attend` rounds it,
+/// over the first `n` positions of a cache `kv` (K, then V, each `[heads][cols][head_dim]`), into
+/// `o` `[heads][head_dim]`; scores scaled by 1/√head_dim. Heads go to threads when the cache is
+/// long.
+pub fn attend(q: &[f32], kv: &[f32], cols: usize, n: usize, o: &mut [f32], heads: usize) {
+  let hd = q.len() / heads;
+  let scale = 1.0 / (hd as f32).sqrt();
+  let (k, v) = kv.split_at(heads * cols * hd);
+  // Jobs of at least 2^16 multiply-adds.
+  let per = heads.div_ceil(((heads * n * hd) >> 16).clamp(1, heads));
+  par_each(
+    o.chunks_mut(per * hd).enumerate(),
+    || (vec![0.0; hd], vec![0.0; n]),
+    |(qh, s), (j, o)| {
+      for (i, o) in o.chunks_exact_mut(hd).enumerate() {
+        let h = j * per + i;
+        for (qh, q) in qh.iter_mut().zip(&q[h * hd..][..hd]) {
+          *qh = f16::from_f32(*q).to_f32();
+        }
+
+        let (k, v) = (&k[h * cols * hd..][..n * hd], &v[h * cols * hd..][..n * hd]);
+        for (s, k) in s.iter_mut().zip(k.chunks_exact(hd)) {
+          *s = dot(qh, k) * scale;
+        }
+
+        let max = s.iter().fold(f32::NEG_INFINITY, |m, &x| m.max(x));
+        s.iter_mut().for_each(|x| *x = exp(*x - max));
+        let inv = 1.0 / sum(s.iter().copied());
+        o.fill(0.0);
+        for (s, v) in s.iter().zip(v.chunks_exact(hd)) {
+          o.iter_mut().zip(v).for_each(|(o, v)| *o += s * v);
+        }
+
+        o.iter_mut().for_each(|o| *o *= inv);
+      }
+    },
+  );
+}
+
+/// Rotary embedding in place over rows `[q | k | v]` of `heads` heads of `hd`, row j at the
+/// position of `table` row j (`rot` / 2 cosines, then as many sines): in q's and k's heads the
+/// pairs (2i, 2i + 1) for 2i < `rot` rotate, as the GPU's `rope`.
+pub fn rope(qkv: &mut [f32], table: &[f32], [heads, hd, rot]: [usize; 3]) {
+  let half = rot / 2;
+  for (row, t) in qkv.chunks_exact_mut(3 * heads * hd).zip(table.chunks_exact(rot)) {
+    let (cos, sin) = t.split_at(half);
+    for head in row[..2 * heads * hd].chunks_exact_mut(hd) {
+      for (i, x) in head[..rot].as_chunks_mut::<2>().0.iter_mut().enumerate() {
+        let [a, b] = *x;
+        *x = [a * cos[i] - b * sin[i], a * sin[i] + b * cos[i]];
+      }
+    }
+  }
+}
+
+/// GroupNorm with one group in place over `x` `[t][ch]`: normalized over all its values (eps
+/// `eps`), then times `w` and plus `b` per channel. The moments are summed in f64.
+pub fn group_norm(x: &mut [f32], (w, b): (&[f32], &[f32]), eps: f32) {
+  let n = x.len() as f64;
+  let mean = x.iter().map(|&v| v as f64).sum::<f64>() / n;
+  let var = x.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / n;
+  let (mean, rstd) = (mean as f32, 1.0 / (var as f32 + eps).sqrt());
+  for row in x.chunks_exact_mut(w.len()) {
+    for ((x, w), b) in row.iter_mut().zip(w).zip(b) {
+      *x = (*x - mean) * rstd * w + b;
     }
   }
 }

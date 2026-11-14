@@ -3,7 +3,9 @@
 //! type. W is unpacked 16 rows at a time into f32 panels `[k][16]`, and a tile of 6 rows × 16
 //! columns of fused multiply-adds (AVX2+FMA, NEON, else portable) runs over the rows of `a`. A job
 //! unpacks a group of panels that fits the L2 cache once and runs them over a range of rows,
-//! 6 rows of `a` at a time while they are in L1; threads take jobs as they come free.
+//! 6 rows of `a` at a time while they are in L1; threads take jobs as they come free. W and `a`
+//! are rounded to f16 first, as the GPU's GEMM rounds them (a near-tie of ivrit he-long falls on
+//! the other side otherwise); products of halves are exact in f32.
 //!
 //! With AVX-VNNI or AVX512-VNNI, Q8_0 weights meet the rows of `a` rounded per 32 values to i16
 //! instead: products summed exactly in i32, then scaled. On an N100 that is 7–10% faster than f32
@@ -13,7 +15,7 @@
 use half::f16;
 use half::slice::HalfFloatSliceExt;
 
-use super::{Q8, par_each};
+use super::{Q8, dot, ops, par_each};
 use crate::error::{Result, bail};
 use crate::gguf::{Tensor, Type};
 use crate::gpu::Epilogue;
@@ -72,6 +74,16 @@ impl Linear {
     Ok(Self { n, k, w, bias })
   }
 
+  /// Row `r` of W in f32.
+  pub fn row(&self, r: usize) -> Vec<f32> {
+    let k = self.k;
+    match &self.w {
+      Weights::Q8(q8) => q8.row(r),
+      Weights::F16(w) => w[r * k..][..k].iter().map(|w| w.to_f32()).collect(),
+      Weights::F32(w) => w[r * k..][..k].to_vec(),
+    }
+  }
+
   /// Panel `p` into `out` `[k][NR]`: rows 16p.. of W, zeros past the last; `wide` is scratch of
   /// `k` floats.
   fn pack(&self, p: usize, out: &mut [f32], wide: &mut [f32]) {
@@ -90,7 +102,7 @@ impl Linear {
             q.as_chunks::<32>().0.iter().zip(d).zip(out.as_chunks_mut::<{ 32 * NR }>().0)
           {
             for (q, out) in q.iter().zip(out.as_chunks_mut::<NR>().0) {
-              out[j] = *q as f32 * d;
+              out[j] = to_half(*q as f32 * d);
             }
           }
         }
@@ -102,7 +114,7 @@ impl Linear {
         }
         Weights::F32(w) => {
           for (w, out) in w[row * k..][..k].iter().zip(out.as_chunks_mut::<NR>().0) {
-            out[j] = *w;
+            out[j] = to_half(*w);
           }
         }
       }
@@ -148,6 +160,7 @@ pub fn gemm(a: &[f32], l: &Linear, c: &mut [f32], m: usize, epilogue: Epilogue) 
       },
     );
   }
+  let a: Vec<f32> = a[..m * k].iter().map(|&x| to_half(x)).collect();
   let kb = k * NR;
   jobs(
     l,
@@ -161,6 +174,50 @@ pub fn gemm(a: &[f32], l: &Linear, c: &mut [f32], m: usize, epilogue: Epilogue) 
       tile(std::array::from_fn(|r| &a[(row + r).min(last - 1) * k..][..k]), &b[i * kb..][..kb], k)
     },
   );
+}
+
+/// `c = epilogue(x·Wᵀ + b)` for one row `x` `[k]` into `c` `[n]`, in f32 as the GPU's `gemv`:
+/// blocks of rows on threads when there is enough work for them.
+pub fn gemv(x: &[f32], l: &Linear, c: &mut [f32], epilogue: Epilogue) {
+  let k = l.k;
+  // At least 2^18 multiply-adds per block, a multiple of `Q8::rows`' 4 rows.
+  let rows = l.n.div_ceil(super::threads()).max((1 << 18) / k).next_multiple_of(4);
+  par_each(
+    c[..l.n].chunks_mut(rows).enumerate(),
+    || (vec![0.0; rows], vec![0.0; k]),
+    |(acc, wide), (i, c)| {
+      let (r0, acc) = (i * rows, &mut acc[..c.len()]);
+      match &l.w {
+        Weights::Q8(q8) => q8.rows(r0, x, acc),
+        Weights::F16(w) => {
+          for (a, w) in acc.iter_mut().zip(w[r0 * k..].chunks_exact(k)) {
+            w.convert_to_f32_slice(wide);
+            *a = dot(wide, x);
+          }
+        }
+        Weights::F32(w) => {
+          for (a, w) in acc.iter_mut().zip(w[r0 * k..].chunks_exact(k)) {
+            *a = dot(w, x);
+          }
+        }
+      }
+
+      finish(c, acc, &l.bias[r0..], epilogue);
+    },
+  );
+}
+
+/// `x` rounded to the nearest f16 (ties to even), as the GPU's `to_half`: subnormal halves are
+/// multiples of 2⁻²⁴, and values past the f16 range keep their exponent rather than become inf.
+#[inline]
+fn to_half(x: f32) -> f32 {
+  let b = x.to_bits();
+  let normal = f32::from_bits((b + 0xfff + ((b >> 13) & 1)) & 0xffff_e000);
+  if x.abs() < f32::from_bits(0x3880_0000) {
+    (x * 16_777_216.0).round_ties_even() / 16_777_216.0
+  } else {
+    normal
+  }
 }
 
 /// Runs a GEMM's jobs over `l`'s panels of `bytes` each: a job packs a group of panels that fits
@@ -274,23 +331,23 @@ impl Out {
       // SAFETY: as the caller promises.
       let c =
         unsafe { std::slice::from_raw_parts_mut(self.0.add(r * ld + cols.start), cols.len()) };
-      let (acc, bias) = (&acc[..cols.len()], &bias[..cols.len()]);
-      match epilogue {
-        Epilogue::Bias => c.iter_mut().zip(acc).zip(bias).for_each(|((c, a), b)| *c = a + b),
-        Epilogue::Silu => {
-          c.iter_mut().zip(acc).zip(bias).for_each(|((c, a), b)| *c = super::ops::silu(a + b))
-        }
-        Epilogue::Relu => {
-          c.iter_mut().zip(acc).zip(bias).for_each(|((c, a), b)| *c = (a + b).max(0.0))
-        }
-        Epilogue::Residual(alpha) => {
-          c.iter_mut().zip(acc).zip(bias).for_each(|((c, a), b)| *c += alpha * (a + b))
-        }
-        Epilogue::Gelu | Epilogue::GeluResidual | Epilogue::Tanh => {
-          unreachable!("no CPU encoder uses GELU or tanh")
-        }
-      }
+      finish(c, &acc[..cols.len()], bias, epilogue);
     }
+  }
+}
+
+/// `c = epilogue(acc + bias)`, as long as `c`.
+fn finish(c: &mut [f32], acc: &[f32], bias: &[f32], epilogue: Epilogue) {
+  let v = acc.iter().zip(bias).map(|(a, b)| a + b);
+  match epilogue {
+    Epilogue::Bias => c.iter_mut().zip(v).for_each(|(c, v)| *c = v),
+    Epilogue::Silu => c.iter_mut().zip(v).for_each(|(c, v)| *c = ops::silu(v)),
+    Epilogue::Relu => c.iter_mut().zip(v).for_each(|(c, v)| *c = v.max(0.0)),
+    Epilogue::Residual(alpha) => c.iter_mut().zip(v).for_each(|(c, v)| *c += alpha * v),
+    Epilogue::Gelu => c.iter_mut().zip(v).for_each(|(c, v)| *c = ops::gelu(v)),
+    Epilogue::GeluResidual => c.iter_mut().zip(v).for_each(|(c, v)| *c += ops::gelu(v)),
+    // As the GPU's: tanh(±10) is ±1 in f32.
+    Epilogue::Tanh => c.iter_mut().zip(v).for_each(|(c, v)| *c = v.clamp(-10.0, 10.0).tanh()),
   }
 }
 
@@ -542,6 +599,42 @@ mod tests {
       for (i, (c, w)) in c.iter().zip(&want).enumerate() {
         let want = 1.0 + 0.5 * (w + bias[i % n]);
         assert!((c - want).abs() <= 1e-4 * want.abs().max(1.0), "{ty:?} {i}: {c} vs {want}");
+      }
+    }
+  }
+
+  #[test]
+  fn halves_round_as_f16() {
+    // Normal and subnormal halves, both signs, below the f16 maximum.
+    for b in (0x3000_0000..0x4770_0000u32).step_by(4093) {
+      for x in [f32::from_bits(b), -f32::from_bits(b)] {
+        assert_eq!(super::to_half(x), f16::from_f32(x).to_f32(), "{x:e}");
+      }
+    }
+  }
+
+  #[test]
+  fn gemv_matches_dot() {
+    // 70 rows of 96: Q8_0 and F32 weights, an output block and a short one.
+    let (k, n) = (96, 70);
+    let v: Vec<f32> = (0..n * k).map(|i| (i * 7919 % 31) as f32 / 8.0 - 15.0 / 8.0).collect();
+    let mut q8 = Vec::new();
+    for b in v.as_chunks::<32>().0 {
+      q8.extend(f16::from_f32(0.125).to_le_bytes());
+      q8.extend(b.map(|v| (v * 8.0) as i8 as u8));
+    }
+
+    let f32s: Vec<u8> = v.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let x: Vec<f32> = (0..k).map(|i| (i * 31 % 17) as f32 / 8.0 - 1.0).collect();
+    let bias: Vec<f32> = (0..n).map(|i| i as f32 / 4.0).collect();
+    let want = naive(&x, &v, k);
+    for (ty, bytes) in [(Type::F32, f32s), (Type::Q8_0, q8)] {
+      let g = Gguf::with_tensors(&[("w", &[k, n], ty, &bytes)]);
+      let l = super::Linear::new(&[g.tensor("w", &[k, n]).unwrap()], bias.clone()).unwrap();
+      let mut c = vec![0.0; n];
+      super::gemv(&x, &l, &mut c, Epilogue::Gelu);
+      for (i, (c, w)) in c.iter().zip(&want).enumerate() {
+        assert_eq!(*c, super::ops::gelu(w + bias[i]), "{ty:?} {i}");
       }
     }
   }

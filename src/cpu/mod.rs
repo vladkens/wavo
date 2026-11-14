@@ -5,6 +5,7 @@
 pub mod conformer;
 pub mod gemm;
 pub mod ops;
+pub mod transformer;
 
 use std::sync::{Mutex, OnceLock, PoisonError};
 
@@ -17,6 +18,12 @@ use crate::{Api, Device, DeviceKind, Kernels};
 /// Dot product with 16 independent accumulators (four FMA vectors in flight), summed pairwise so
 /// the final reduction also vectorizes.
 pub fn dot(a: &[f32], b: &[f32]) -> f32 {
+  #[cfg(target_arch = "x86_64")]
+  if x86::avx2() {
+    // SAFETY: the CPU has AVX2 and FMA.
+    return unsafe { x86::dot(a, b) };
+  }
+
   let ((a16, a_tail), (b16, b_tail)) = (a.as_chunks::<16>(), b.as_chunks::<16>());
   let mut acc = [0f32; 16];
   for (x, y) in a16.iter().zip(b16) {
@@ -76,13 +83,14 @@ pub fn threads() -> usize {
   *THREADS.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
 }
 
-/// `f(scratch, item)` for each item, on `threads` scoped threads that take the next item as they
-/// come free, each with its own `scratch` from `init`.
+/// `f(scratch, item)` for each item, on `threads` scoped threads (no more than there can be
+/// items) that take the next item as they come free, each with its own `scratch` from `init`.
 pub fn par_each<T: Send, S>(
   items: impl Iterator<Item = T> + Send,
   init: impl Fn() -> S + Sync,
   f: impl Fn(&mut S, T) + Sync,
 ) {
+  let spawn = threads().min(items.size_hint().1.unwrap_or(usize::MAX));
   let items = Mutex::new(items);
   let next = || items.lock().unwrap_or_else(PoisonError::into_inner).next();
   let work = || {
@@ -94,7 +102,7 @@ pub fn par_each<T: Send, S>(
     }
   };
   std::thread::scope(|s| {
-    for _ in 1..threads() {
+    for _ in 1..spawn {
       s.spawn(work);
     }
 
@@ -352,6 +360,24 @@ mod x86 {
     let s = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps::<1>(s));
     let s = _mm_add_ps(s, _mm_movehl_ps(s, s));
     _mm_cvtss_f32(s) + _mm_cvtss_f32(_mm_shuffle_ps::<1>(s, s))
+  }
+
+  /// `dot` without `mul_add`'s libm call.
+  #[target_feature(enable = "avx2,fma")]
+  pub fn dot(a: &[f32], b: &[f32]) -> f32 {
+    let n = a.len().min(b.len()) / 16 * 16;
+    let mut acc = [_mm256_setzero_ps(); 2];
+    for i in (0..n).step_by(16) {
+      for (c, acc) in acc.iter_mut().enumerate() {
+        // SAFETY: 8 floats below `n` of `a` and of `b`.
+        let (x, y) = unsafe {
+          (_mm256_loadu_ps(a.as_ptr().add(i + 8 * c)), _mm256_loadu_ps(b.as_ptr().add(i + 8 * c)))
+        };
+        *acc = _mm256_fmadd_ps(x, y, *acc);
+      }
+    }
+
+    sum(acc[0], acc[1]) + a[n..].iter().zip(&b[n..]).map(|(x, y)| x * y).sum::<f32>()
   }
 
   #[target_feature(enable = "avx2,fma")]

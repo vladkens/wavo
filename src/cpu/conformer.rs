@@ -172,7 +172,7 @@ impl Block {
         gemm(yr, w, qk, t, Epilogue::Bias);
         let v = &mut h[..t * d];
         gemm(y, wv, v, t, Epilogue::Bias);
-        attention(qk, v, y, t, c.heads);
+        attention(qk, 2 * d, v, d, y, t, c.heads);
       }
       Mhsa::Relative { qkv, pos: wp, uv } => {
         let (qkv_out, p) = (&mut qk[..t * 3 * d], &mut yr[..pos_rows(t) * d]);
