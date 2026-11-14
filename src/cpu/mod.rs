@@ -35,12 +35,16 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
   acc[0] + a_tail.iter().zip(b_tail).map(|(x, y)| x * y).sum::<f32>()
 }
 
-/// Whether the encoders' GEMM takes the AVX-VNNI tile.
-fn vnni() -> bool {
+/// The VNNI the encoders' GEMM takes, for `device`: `", AVX-VNNI"`, `", AVX512-VNNI"` or none.
+fn vnni() -> &'static str {
   #[cfg(target_arch = "x86_64")]
-  return x86::vnni();
+  return match x86::vnni() {
+    Some(x86::Vnni::Avx) => ", AVX-VNNI",
+    Some(x86::Vnni::Avx512) => ", AVX512-VNNI",
+    None => "",
+  };
   #[allow(unreachable_code)]
-  false
+  ""
 }
 
 /// The code path `tile` and `Q8::rows` take on this CPU: `NEON`, `AVX2+FMA` or `portable`.
@@ -60,7 +64,7 @@ pub fn device() -> &'static Device {
     name: "CPU".into(),
     api: Api::Cpu,
     kind: DeviceKind::Cpu,
-    driver: format!("{}{}, {} threads", path(), if vnni() { ", AVX-VNNI" } else { "" }, threads()),
+    driver: format!("{}{}, {} threads", path(), vnni(), threads()),
     kernels: Kernels::Cpu,
   })
 }
@@ -315,13 +319,29 @@ mod x86 {
     is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")
   }
 
-  /// AVX-VNNI too, for the encoders' i16 GEMM tile, unless `WAVO_KERNELS=portable` asks for the
-  /// f32 one.
-  pub fn vnni() -> bool {
-    static VNNI: OnceLock<bool> = OnceLock::new();
+  /// The `vpdpwssd` of the encoders' i16 GEMM tile on 256-bit vectors.
+  #[derive(Clone, Copy, PartialEq, Eq)]
+  pub enum Vnni {
+    /// AVX-VNNI (VEX): Intel since Alder Lake, AMD since Zen 5.
+    Avx,
+    /// AVX512-VNNI with AVX512VL (EVEX): Intel's servers since Cascade Lake, AMD's Zen 4.
+    Avx512,
+  }
+
+  /// The VNNI on this CPU with AVX2 and FMA, unless `WAVO_KERNELS=portable` asks for the f32 tile.
+  pub fn vnni() -> Option<Vnni> {
+    static VNNI: OnceLock<Option<Vnni>> = OnceLock::new();
     *VNNI.get_or_init(|| {
-      let portable = std::env::var_os("WAVO_KERNELS").is_some_and(|v| v == "portable");
-      avx2() && is_x86_feature_detected!("avxvnni") && !portable
+      if !avx2() || std::env::var_os("WAVO_KERNELS").is_some_and(|v| v == "portable") {
+        return None;
+      }
+
+      if is_x86_feature_detected!("avxvnni") {
+        return Some(Vnni::Avx);
+      }
+
+      let avx512 = is_x86_feature_detected!("avx512vnni") && is_x86_feature_detected!("avx512vl");
+      avx512.then_some(Vnni::Avx512)
     })
   }
 

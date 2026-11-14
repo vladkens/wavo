@@ -5,9 +5,10 @@
 //! unpacks a group of panels that fits the L2 cache once and runs them over a range of rows,
 //! 6 rows of `a` at a time while they are in L1; threads take jobs as they come free.
 //!
-//! With AVX-VNNI, Q8_0 weights meet the rows of `a` rounded per 32 values to i16 instead: products
-//! summed exactly in i32, then scaled. On an N100 that is 7–10% faster than f32 FMA; the GigaAM
-//! fixtures hold. (i8 rows, twice as fast again, change a comma or a space now and then.)
+//! With AVX-VNNI or AVX512-VNNI, Q8_0 weights meet the rows of `a` rounded per 32 values to i16
+//! instead: products summed exactly in i32, then scaled. On an N100 that is 7–10% faster than f32
+//! FMA, on a Zen 4 on two cores 24–28%; the fixtures hold. (i8 rows, twice as fast again, change a
+//! comma or a space now and then.)
 
 use half::f16;
 use half::slice::HalfFloatSliceExt;
@@ -114,7 +115,7 @@ pub fn gemm(a: &[f32], l: &Linear, c: &mut [f32], m: usize, epilogue: Epilogue) 
   let k = l.k;
   #[cfg(target_arch = "x86_64")]
   if let Weights::Q8(q8) = &l.w
-    && super::x86::vnni()
+    && let Some(vnni) = super::x86::vnni()
   {
     let (q, d) = (&mut vec![0; m * k], &mut vec![0.0; m * k / 32]);
     let rows = m.div_ceil(4 * super::threads());
@@ -136,8 +137,14 @@ pub fn gemm(a: &[f32], l: &Linear, c: &mut [f32], m: usize, epilogue: Epilogue) 
         let at = |r: usize| (row + r).min(last - 1);
         let a = std::array::from_fn(|r| &aq[at(r) * k..][..k]);
         let ad = std::array::from_fn(|r| &ad[at(r) * k / 32..][..k / 32]);
-        // SAFETY: the CPU has AVX-VNNI.
-        unsafe { x86::tile_i16(a, ad, &q[i * kq..][..kq], &d[i * kd..][..kd], k) }
+        let (q, d) = (&q[i * kq..][..kq], &d[i * kd..][..kd]);
+        // SAFETY: the CPU has this VNNI.
+        unsafe {
+          match vnni {
+            super::x86::Vnni::Avx => x86::tile_i16(a, ad, q, d, k),
+            super::x86::Vnni::Avx512 => x86::tile_i16_evex(a, ad, q, d, k),
+          }
+        }
       },
     );
   }
@@ -366,55 +373,74 @@ mod x86 {
     }
   }
 
-  /// `MR` rows of `quantize`d `a` with their scales `ad` times a `pack`ed panel: per 32 of k, i16
-  /// products summed exactly in i32 (AVX-VNNI), then scaled into f32.
-  #[target_feature(enable = "avx2,fma,avxvnni")]
-  pub fn tile_i16(
-    a: [&[i16]; MR],
-    ad: [&[f32]; MR],
-    q: &[i16],
-    d: &[f32],
-    k: usize,
-  ) -> [[f32; NR]; MR] {
-    let (q, d) = (&q[..k * NR], &d[..k / 32 * NR]);
-    let mut acc = [[_mm256_setzero_ps(); 2]; MR];
-    for blk in 0..k / 32 {
-      let mut sum = [[_mm256_setzero_si256(); 2]; MR];
-      for pair in 16 * blk..16 * blk + 16 {
-        // SAFETY: 32 i16 of the panel's row pair, and two i16 of each row of `a`.
-        unsafe {
-          let b0 = _mm256_loadu_si256(q.as_ptr().add(pair * 2 * NR).cast());
-          let b1 = _mm256_loadu_si256(q.as_ptr().add(pair * 2 * NR + NR).cast());
-          for (s, a) in sum.iter_mut().zip(a) {
-            let v = _mm256_set1_epi32(a.as_ptr().add(2 * pair).cast::<i32>().read_unaligned());
-            s[0] = _mm256_dpwssd_avx_epi32(s[0], v, b0);
-            s[1] = _mm256_dpwssd_avx_epi32(s[1], v, b1);
+  /// `tile_i16` and `tile_i16_evex`, the same but for the instruction.
+  macro_rules! tile_i16 {
+    ($(#[$doc:meta])* $name:ident, $features:literal, $dpwssd:ident) => {
+      $(#[$doc])*
+      #[target_feature(enable = $features)]
+      pub fn $name(
+        a: [&[i16]; MR],
+        ad: [&[f32]; MR],
+        q: &[i16],
+        d: &[f32],
+        k: usize,
+      ) -> [[f32; NR]; MR] {
+        let (q, d) = (&q[..k * NR], &d[..k / 32 * NR]);
+        let mut acc = [[_mm256_setzero_ps(); 2]; MR];
+        for blk in 0..k / 32 {
+          let mut sum = [[_mm256_setzero_si256(); 2]; MR];
+          for pair in 16 * blk..16 * blk + 16 {
+            // SAFETY: 32 i16 of the panel's row pair, and two i16 of each row of `a`.
+            unsafe {
+              let b0 = _mm256_loadu_si256(q.as_ptr().add(pair * 2 * NR).cast());
+              let b1 = _mm256_loadu_si256(q.as_ptr().add(pair * 2 * NR + NR).cast());
+              for (s, a) in sum.iter_mut().zip(a) {
+                let v = _mm256_set1_epi32(a.as_ptr().add(2 * pair).cast::<i32>().read_unaligned());
+                s[0] = $dpwssd(s[0], v, b0);
+                s[1] = $dpwssd(s[1], v, b1);
+              }
+            }
+          }
+
+          // SAFETY: the block's 16 scales.
+          let (d0, d1) = unsafe {
+            let d = d.as_ptr().add(blk * NR);
+            (_mm256_loadu_ps(d), _mm256_loadu_ps(d.add(8)))
+          };
+          for ((acc, s), ad) in acc.iter_mut().zip(sum).zip(ad) {
+            let da = _mm256_set1_ps(ad[blk]);
+            acc[0] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(s[0]), _mm256_mul_ps(da, d0), acc[0]);
+            acc[1] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(s[1]), _mm256_mul_ps(da, d1), acc[1]);
           }
         }
-      }
 
-      // SAFETY: the block's 16 scales.
-      let (d0, d1) = unsafe {
-        (_mm256_loadu_ps(d.as_ptr().add(blk * NR)), _mm256_loadu_ps(d.as_ptr().add(blk * NR + 8)))
-      };
-      for ((acc, s), ad) in acc.iter_mut().zip(sum).zip(ad) {
-        let da = _mm256_set1_ps(ad[blk]);
-        acc[0] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(s[0]), _mm256_mul_ps(da, d0), acc[0]);
-        acc[1] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(s[1]), _mm256_mul_ps(da, d1), acc[1]);
-      }
-    }
+        let mut out = [[0.0; NR]; MR];
+        for (out, acc) in out.iter_mut().zip(acc) {
+          // SAFETY: 16 floats.
+          unsafe {
+            _mm256_storeu_ps(out.as_mut_ptr(), acc[0]);
+            _mm256_storeu_ps(out.as_mut_ptr().add(8), acc[1]);
+          }
+        }
 
-    let mut out = [[0.0; NR]; MR];
-    for (out, acc) in out.iter_mut().zip(acc) {
-      // SAFETY: 16 floats.
-      unsafe {
-        _mm256_storeu_ps(out.as_mut_ptr(), acc[0]);
-        _mm256_storeu_ps(out.as_mut_ptr().add(8), acc[1]);
+        out
       }
-    }
-
-    out
+    };
   }
+
+  tile_i16!(
+    /// `MR` rows of `quantize`d `a` with their scales `ad` times a `pack`ed panel: per 32 of k,
+    /// i16 products summed exactly in i32 (AVX-VNNI), then scaled into f32.
+    tile_i16,
+    "avx2,fma,avxvnni",
+    _mm256_dpwssd_avx_epi32
+  );
+  tile_i16!(
+    /// `tile_i16` with AVX512-VNNI's `vpdpwssd` on 256-bit vectors: the same sums.
+    tile_i16_evex,
+    "avx2,fma,avx512vnni,avx512vl",
+    _mm256_dpwssd_epi32
+  );
 
   #[target_feature(enable = "avx2,fma")]
   pub fn tile(a: [&[f32]; MR], b: &[f32], k: usize) -> [[f32; NR]; MR] {

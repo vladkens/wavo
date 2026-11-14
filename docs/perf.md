@@ -496,6 +496,13 @@ first call 11.2 / 12.5 s, load 1.3–1.6 s, 0.55 GB (2 / 4 cores).
   rate, with 1.46× its multiply-adds. onnx-asr int8 `nemo-parakeet-tdt-0.6b-v3`: warm 7.81 /
   5.84 s, first call 12.0 / 12.7 s after a 2.0–2.2 s load, 1.62 GB, and "передов" for
   "периодов". Kept.
+- 2026-11-14, Ryzen 9 7945HX (Zen 4: AVX-512 with VNNI but no AVX-VNNI, 512-bit operations in two
+  256-bit halves), warm medians on 2 / 16 threads pinned to separate cores, GigaAM v3 e2e-rnnt and
+  Parakeet V3 on `ru-30s.wav`. f32 ymm tile: 1401 / 412 and 1985 / 615 ms. The same tile on zmm
+  (one vector per row): 1388 / 407 and 1959 / 610. The i16 tile with AVX512-VNNI's `vpdpwssd`
+  on ymm: 1070 / 431 and 1424 / 622; on zmm: 1054 / 435 and 1400 / 626. All bit-identical. Kept
+  the ymm AVX512-VNNI tier (the AVX-VNNI one with the EVEX instruction, −24–28% on two cores; on
+  16 the per-GEMM quantize pass costs about what it saves); zmm rejected at 1–2%.
 
 ### CPU decoders
 

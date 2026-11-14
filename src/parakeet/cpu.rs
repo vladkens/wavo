@@ -124,6 +124,7 @@ impl Encoder {
               let x = if tm < valid && fm < MELS { mel[tm * MELS + fm] } else { 0.0 };
               px.iter_mut().zip(w).for_each(|(p, w)| *p += w * x);
             }
+
             px.iter_mut().for_each(|p| *p = p.max(0.0));
           }
         }
