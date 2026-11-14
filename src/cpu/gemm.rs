@@ -48,6 +48,7 @@ impl Linear {
     if ws.iter().any(|w| w.ty != ws[0].ty || w.len() / w.dims.last().unwrap() != k) {
       bail!("stacked weights differ in type or shape");
     }
+
     let w = match ws[0].ty {
       Type::Q8_0 => Weights::Q8(Q8::new(&ws.iter().collect::<Vec<_>>())?),
       Type::F16 => {
@@ -57,6 +58,7 @@ impl Linear {
             w.extend(piece.as_chunks::<2>().0.iter().map(|b| f16::from_le_bytes(*b)));
           })?;
         }
+
         Weights::F16(w)
       }
       _ => Weights::F32(ws.iter().map(|w| w.to_f32()).collect::<Result<Vec<_>>>()?.concat()),
@@ -64,6 +66,7 @@ impl Linear {
     if !bias.is_empty() && bias.len() != n {
       bail!("linear layer {k}→{n}: bias has {} values", bias.len());
     }
+
     let bias = if bias.is_empty() { vec![0.0; n] } else { bias };
     Ok(Self { n, k, w, bias })
   }
@@ -78,6 +81,7 @@ impl Linear {
         out.iter_mut().skip(j).step_by(NR).for_each(|v| *v = 0.0);
         continue;
       }
+
       match &self.w {
         Weights::Q8(q8) => {
           let (q, d) = (&q8.q[row * k..][..k], &q8.d[row * k / 32..][..k / 32]);
@@ -184,6 +188,7 @@ fn jobs<S>(
       for (i, p) in ps.clone().enumerate() {
         pack(buf, i, p);
       }
+
       let (r0, r1) = (s * rows, ((s + 1) * rows).min(m));
       for row in (r0..r1).step_by(MR) {
         for (i, p) in ps.clone().enumerate() {
@@ -211,6 +216,7 @@ pub fn panels(b: &[f32], ld: usize, n: usize, k: usize, rows: usize, transposed:
       }
     }
   }
+
   out
 }
 
@@ -288,6 +294,7 @@ fn tile(a: [&[f32]; MR], b: &[f32], k: usize) -> [[f32; NR]; MR] {
     // SAFETY: the CPU has AVX2 and FMA.
     return unsafe { x86::tile(a, b, k) };
   }
+
   #[cfg(target_arch = "aarch64")]
   return neon::tile(a, b, k);
   #[allow(unreachable_code)]
@@ -300,6 +307,7 @@ fn tile(a: [&[f32]; MR], b: &[f32], k: usize) -> [[f32; NR]; MR] {
         }
       }
     }
+
     acc
   }
 }
@@ -347,9 +355,11 @@ mod x86 {
         scales.for_each(|d| *d = 0.0);
         continue;
       }
+
       for (l, w) in lanes.zip(w.q[row * k..][..k].as_chunks::<2>().0) {
         l.copy_from_slice(&[w[0] as i16, w[1] as i16]);
       }
+
       for (d, w) in scales.zip(&w.d[row * k / 32..][..k / 32]) {
         *d = *w;
       }
@@ -382,6 +392,7 @@ mod x86 {
           }
         }
       }
+
       // SAFETY: the block's 16 scales.
       let (d0, d1) = unsafe {
         (_mm256_loadu_ps(d.as_ptr().add(blk * NR)), _mm256_loadu_ps(d.as_ptr().add(blk * NR + 8)))
@@ -392,6 +403,7 @@ mod x86 {
         acc[1] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(s[1]), _mm256_mul_ps(da, d1), acc[1]);
       }
     }
+
     let mut out = [[0.0; NR]; MR];
     for (out, acc) in out.iter_mut().zip(acc) {
       // SAFETY: 16 floats.
@@ -400,6 +412,7 @@ mod x86 {
         _mm256_storeu_ps(out.as_mut_ptr().add(8), acc[1]);
       }
     }
+
     out
   }
 
@@ -419,6 +432,7 @@ mod x86 {
         }
       }
     }
+
     let mut out = [[0.0; NR]; MR];
     for (out, acc) in out.iter_mut().zip(acc) {
       // SAFETY: 16 floats.
@@ -427,6 +441,7 @@ mod x86 {
         _mm256_storeu_ps(out.as_mut_ptr().add(8), acc[1]);
       }
     }
+
     out
   }
 }
@@ -453,12 +468,14 @@ mod neon {
           }
         }
       }
+
       let mut out = [[0.0; NR]; MR];
       for (out, acc) in out.iter_mut().zip(acc) {
         for (i, v) in acc.into_iter().enumerate() {
           vst1q_f32(out.as_mut_ptr().add(4 * i), v);
         }
       }
+
       out
     }
   }
@@ -485,6 +502,7 @@ mod tests {
       q8.extend(f16::from_f32(0.125).to_le_bytes());
       q8.extend(b.map(|v| (v * 8.0) as i8 as u8));
     }
+
     let f32s: Vec<u8> = v.iter().flat_map(|v| v.to_le_bytes()).collect();
     let f16s: Vec<u8> = v.iter().flat_map(|v| f16::from_f32(*v).to_le_bytes()).collect();
     let a: Vec<f32> = (0..m * k).map(|i| (i * 31 % 17) as f32 / 8.0 - 1.0).collect();

@@ -46,6 +46,7 @@ fn sum(v: impl Iterator<Item = f32>) -> f32 {
   for (i, v) in v.enumerate() {
     acc[i % 8] += v;
   }
+
   acc.iter().sum()
 }
 
@@ -107,11 +108,13 @@ pub fn im2col(x: &[f32], t: usize, ch: usize, [kernel, stride, pad]: [usize; 3])
       if s < pad || s - pad >= t {
         continue;
       }
+
       for (c, x) in x[(s - pad) * ch..][..ch].iter().enumerate() {
         col[c * kernel + k] = *x;
       }
     }
   }
+
   col
 }
 
@@ -156,6 +159,7 @@ pub fn conv_glu(
             *a += w * x;
           }
         }
+
         let (mean, rstd) = if layer_norm { moments(acc) } else { (0.0, 1.0) };
         for (((y, a), g), b) in y.iter_mut().zip(&*acc).zip(g).zip(beta) {
           *y = silu((a - mean) * rstd * g + b);
@@ -194,6 +198,7 @@ pub fn attention(qk: &[f32], v: &[f32], o: &mut [f32], t: usize, heads: usize) {
           row.iter_mut().for_each(|x| *x *= inv);
           pad.fill(0.0);
         }
+
         product(s, tp, m, &values, tp, &mut out[i * hd..], hd);
       }
     },

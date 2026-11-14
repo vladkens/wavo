@@ -52,6 +52,7 @@ impl Conformer {
     if !matches!(cfg.attention, Attention::Rotary) || !cfg.head_dim().is_multiple_of(NR) {
       bail!("the CPU runs rotary attention with heads of a multiple of {NR} dims");
     }
+
     let c = &cfg;
     let blocks = std::thread::scope(|s| {
       let threads: Vec<_> = (0..c.layers).map(|i| s.spawn(move || Block::load(g, c, i))).collect();
@@ -74,6 +75,7 @@ impl Conformer {
       block.run(c, &mut b, t, rope);
       std::mem::swap(&mut b.x, &mut b.y);
     }
+
     b.x
   }
 }
@@ -94,6 +96,7 @@ impl Block {
       for n in names.iter().filter(|_| c.bias) {
         b.extend(f32s(&format!("{n}.bias"), &dims[dims.len() - 1..])?);
       }
+
       Linear::new(&w.collect::<Result<Vec<_>>>()?, b)
     };
     let norm = |n: &str| {

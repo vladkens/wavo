@@ -24,12 +24,14 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
       *s = x.mul_add(*y, *s);
     }
   }
+
   for n in [8, 4, 2, 1] {
     let (lo, hi) = acc.split_at_mut(n);
     for (l, h) in lo.iter_mut().zip(&*hi) {
       *l += h;
     }
   }
+
   acc[0] + a_tail.iter().zip(b_tail).map(|(x, y)| x * y).sum::<f32>()
 }
 
@@ -91,6 +93,7 @@ pub fn par_each<T: Send, S>(
     for _ in 1..threads() {
       s.spawn(work);
     }
+
     work();
   });
 }
@@ -116,12 +119,14 @@ pub fn matmul(w: &[f32], z: &[f32], k: usize) -> Vec<f32> {
       out[rows + 2 * r..][..2].copy_from_slice(&d1);
     }
   }
+
   if !last.is_empty() {
     let out = out.rchunks_exact_mut(rows).next().unwrap();
     for (w, out) in w.chunks_exact(4 * k).zip(out.as_chunks_mut::<4>().0) {
       [*out] = tile::<4, 1>(w, last, k);
     }
   }
+
   out
 }
 
@@ -146,6 +151,7 @@ fn tile<const R: usize, const F: usize>(w: &[f32], z: &[f32], k: usize) -> [[f32
         }
       }
     }
+
     acc.map(|acc| {
       acc.map(|[a0, a1, a2, a3]| {
         let lanes = vaddq_f32(vaddq_f32(a0, a2), vaddq_f32(a1, a3));
@@ -169,6 +175,7 @@ fn tile<const R: usize, const F: usize>(w: &[f32], z: &[f32], k: usize) -> [[f32
     // SAFETY: the CPU has AVX2 and FMA.
     return unsafe { x86::tile(w, z, k) };
   }
+
   std::array::from_fn(|f| std::array::from_fn(|r| dot(&w[r * k..][..k], &z[f * k..][..k])))
 }
 
@@ -237,6 +244,7 @@ impl Q8 {
         }
       })?;
     }
+
     Ok(Self { k: ts[0].dims[0], q, d })
   }
 
@@ -270,6 +278,7 @@ impl Q8 {
             }
           }
         }
+
         for (o, [a0, a1, a2, a3]) in out.iter_mut().zip(acc) {
           let lanes = vaddq_f32(vaddq_f32(a0, a2), vaddq_f32(a1, a3));
           let pair = vadd_f32(vget_low_f32(lanes), vget_high_f32(lanes));
@@ -286,6 +295,7 @@ impl Q8 {
       // SAFETY: the CPU has AVX2 and FMA.
       return unsafe { x86::rows(self, r0, x, out) };
     }
+
     for (r, o) in out.iter_mut().enumerate() {
       *o = dot(&self.row(r0 + r), x);
     }
@@ -335,6 +345,7 @@ mod x86 {
           // SAFETY: 8 floats below `n` ≤ k of a row of `w`.
           *v = unsafe { _mm256_loadu_ps(w.as_ptr().add(r * k + i + 8 * c)) };
         }
+
         for (f, acc) in acc.iter_mut().enumerate() {
           // SAFETY: 8 floats below `n` ≤ k of a frame of `z`.
           let zv = unsafe { _mm256_loadu_ps(z.as_ptr().add(f * k + i + 8 * c)) };
@@ -344,6 +355,7 @@ mod x86 {
         }
       }
     }
+
     let mut out = [[0.0; R]; F];
     for (f, out) in out.iter_mut().enumerate() {
       for (r, out) in out.iter_mut().enumerate() {
@@ -352,6 +364,7 @@ mod x86 {
         *out = sum(acc[f][r][0], acc[f][r][1]) + tail;
       }
     }
+
     out
   }
 
@@ -377,6 +390,7 @@ mod x86 {
           acc[1] = _mm256_fmadd_ps(_mm256_mul_ps(hi, scale), xs[1], acc[1]);
         }
       }
+
       for (o, [a, b]) in out.iter_mut().zip(acc) {
         *o = sum(a, b);
       }
@@ -402,6 +416,7 @@ pub fn matvecs<const N: usize>(jobs: [(&Matrix, &[f32]); N]) -> [Vec<f32>; N] {
     for _ in 1..4 {
       s.spawn(work);
     }
+
     work();
   });
   out
