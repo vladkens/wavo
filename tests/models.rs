@@ -131,8 +131,13 @@ fn detect(name: &str, expected: &[(&str, &str)]) {
 const START_SLACK_MS: u32 = 80;
 
 fn check(name: &str, samples: &[&str]) {
+  check_on(name, wavo::Backend::Gpu, samples);
+}
+
+/// `check` on `backend`.
+fn check_on(name: &str, backend: wavo::Backend, samples: &[&str]) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
-  let model = wavo::Model::load_with(model_path(name), wavo::Backend::Gpu).unwrap();
+  let model = wavo::Model::load_with(model_path(name), backend).unwrap();
   check_languages(name, &model);
   for sample in samples {
     let (clip, language) = match sample.split_once("+lang=") {
@@ -435,6 +440,33 @@ fn gigaam_multilingual_large_ctc() {
   long("gigaam-multilingual-large-ctc", "ru", true);
 }
 
+// The CPU computes in f32 as the GPU does, in another order: the fixtures hold all the same.
+#[test]
+fn gigaam_v3_e2e_rnnt_cpu() {
+  check_on("gigaam-v3-e2e-rnnt", wavo::Backend::Cpu, GIGAAM);
+}
+
+#[test]
+fn gigaam_v3_e2e_ctc_cpu() {
+  check_on("gigaam-v3-e2e-ctc", wavo::Backend::Cpu, GIGAAM);
+}
+
+#[test]
+fn gigaam_v3_rnnt_cpu() {
+  check_on("gigaam-v3-rnnt", wavo::Backend::Cpu, GIGAAM);
+}
+
+#[test]
+fn gigaam_v3_ctc_cpu() {
+  check_on("gigaam-v3-ctc", wavo::Backend::Cpu, GIGAAM);
+}
+
+#[test]
+fn gigaam_multilingual_large_ctc_cpu() {
+  let samples = &["ru", "ru-short", "ru-long", "jfk"];
+  check_on("gigaam-multilingual-large-ctc", wavo::Backend::Cpu, samples);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn gigaam_v3_e2e_rnnt_ane() {
@@ -467,7 +499,7 @@ fn gigaam_multilingual_large_ctc_ane() {
 
 #[test]
 fn parakeet_tdt_v2() {
-  check("parakeet-tdt-0.6b-v2", &["jfk", "dots", "jobs-silence"]);
+  check("parakeet-tdt-0.6b-v2", ENGLISH);
 }
 
 #[test]
@@ -483,10 +515,26 @@ fn parakeet_ultra() {
   check("parakeet-ultra", &["jfk", "ru-short", "uk-long", "jobs-silence"]);
 }
 
+#[test]
+fn parakeet_tdt_v2_cpu() {
+  check_on("parakeet-tdt-0.6b-v2", wavo::Backend::Cpu, ENGLISH);
+}
+
+#[test]
+fn parakeet_tdt_v3_cpu() {
+  check_on("parakeet-tdt-0.6b-v3", wavo::Backend::Cpu, &["jfk", "ru-short", "uk-short"]);
+}
+
+#[test]
+fn parakeet_ultra_cpu() {
+  let samples = &["jfk", "ru-short", "uk-long", "jobs-silence"];
+  check_on("parakeet-ultra", wavo::Backend::Cpu, samples);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn parakeet_tdt_v2_ane() {
-  check_ane("parakeet-tdt-0.6b-v2", 80, &["jfk", "dots", "jobs-silence"]);
+  check_ane("parakeet-tdt-0.6b-v2", 80, ENGLISH);
 }
 
 #[cfg(target_os = "macos")]
@@ -511,15 +559,32 @@ fn parakeet_tdt_v3_uk() {
   check("parakeet-tdt-0.6b-v3-uk", &["uk-short", "uk-long", "jfk"]);
 }
 
+#[test]
+fn parakeet_tdt_v3_he_cpu() {
+  check_on("parakeet-tdt-0.6b-v3-he", wavo::Backend::Cpu, &["he-short", "he-long"]);
+}
+
+#[test]
+fn parakeet_tdt_v3_uk_cpu() {
+  check_on("parakeet-tdt-0.6b-v3-uk", wavo::Backend::Cpu, &["uk-short", "uk-long", "jfk"]);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn parakeet_tdt_v3_uk_ane() {
   check_ane("parakeet-tdt-0.6b-v3-uk", 80, &["uk-short", "uk-long", "jfk"]);
 }
 
+const WHISPER: &[&str] = &["jfk", "zh-short", "ru-long", "jobs-silence"];
+const ENGLISH: &[&str] = &["jfk", "dots", "jobs-silence"];
+// The last two with the language set: whisper-tiny takes uk-short for Russian, and ru-long is told
+// the wrong one across two windows.
+const WHISPER_TINY: &[&str] =
+  &["jfk", "zh-short", "ru-long", "jobs-silence", "uk-short+lang=uk", "ru-long+lang=uk"];
+
 #[test]
 fn whisper_large_v3_turbo() {
-  check("whisper-large-v3-turbo", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
+  check("whisper-large-v3-turbo", WHISPER);
 }
 
 #[test]
@@ -529,11 +594,7 @@ fn ivrit_whisper_large_v3_turbo() {
 
 #[test]
 fn whisper_tiny() {
-  // The last two with the language set: whisper-tiny takes uk-short for Russian, and ru-long is
-  // told the wrong one across two windows.
-  const SAMPLES: &[&str] =
-    &["jfk", "zh-short", "ru-long", "jobs-silence", "uk-short+lang=uk", "ru-long+lang=uk"];
-  check("whisper-tiny", SAMPLES);
+  check("whisper-tiny", WHISPER_TINY);
   // ru-long is past 30 s: two windows.
   detect(
     "whisper-tiny",
@@ -553,32 +614,32 @@ fn whisper_small() {
 
 #[test]
 fn whisper_medium() {
-  check("whisper-medium", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
+  check("whisper-medium", WHISPER);
 }
 
 #[test]
 fn whisper_large_v3() {
-  check("whisper-large-v3", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
+  check("whisper-large-v3", WHISPER);
 }
 
 #[test]
 fn whisper_tiny_en() {
-  check("whisper-tiny.en", &["jfk", "dots", "jobs-silence"]);
+  check("whisper-tiny.en", ENGLISH);
 }
 
 #[test]
 fn whisper_base_en() {
-  check("whisper-base.en", &["jfk", "dots", "jobs-silence"]);
+  check("whisper-base.en", ENGLISH);
 }
 
 #[test]
 fn whisper_small_en() {
-  check("whisper-small.en", &["jfk", "dots", "jobs-silence"]);
+  check("whisper-small.en", ENGLISH);
 }
 
 #[test]
 fn whisper_medium_en() {
-  check("whisper-medium.en", &["jfk", "dots", "jobs-silence"]);
+  check("whisper-medium.en", ENGLISH);
 }
 
 #[test]
@@ -588,7 +649,7 @@ fn whisper_large() {
 
 #[test]
 fn whisper_large_v2() {
-  check("whisper-large-v2", &["jfk", "zh-short", "ru-long", "jobs-silence"]);
+  check("whisper-large-v2", WHISPER);
 }
 
 #[test]
@@ -598,12 +659,93 @@ fn breeze_asr_25() {
 
 #[test]
 fn moonshine_tiny() {
-  check("moonshine-tiny", &["jfk", "dots", "jobs-silence"]);
+  check("moonshine-tiny", ENGLISH);
   too_long("moonshine-tiny", "dots");
 }
 
 #[test]
 fn moonshine_base() {
-  check("moonshine-base", &["jfk", "dots", "jobs-silence"]);
+  check("moonshine-base", ENGLISH);
   too_long("moonshine-base", "dots");
+}
+
+// As the GPU, the CPU computes in f32 and keeps the decoder caches in f16.
+#[test]
+fn whisper_large_v3_turbo_cpu() {
+  check_on("whisper-large-v3-turbo", wavo::Backend::Cpu, WHISPER);
+}
+
+#[test]
+fn ivrit_whisper_large_v3_turbo_cpu() {
+  check_on("ivrit-whisper-large-v3-turbo", wavo::Backend::Cpu, &["he-short", "he-long"]);
+}
+
+#[test]
+fn whisper_tiny_cpu() {
+  check_on("whisper-tiny", wavo::Backend::Cpu, WHISPER_TINY);
+}
+
+#[test]
+fn whisper_base_cpu() {
+  check_on("whisper-base", wavo::Backend::Cpu, &["jfk", "zh-short", "uk-short", "dots"]);
+}
+
+#[test]
+fn whisper_small_cpu() {
+  check_on("whisper-small", wavo::Backend::Cpu, &["jfk", "zh-short", "ru-long", "uk-short"]);
+}
+
+#[test]
+fn whisper_medium_cpu() {
+  check_on("whisper-medium", wavo::Backend::Cpu, WHISPER);
+}
+
+#[test]
+fn whisper_large_v3_cpu() {
+  check_on("whisper-large-v3", wavo::Backend::Cpu, WHISPER);
+}
+
+#[test]
+fn whisper_tiny_en_cpu() {
+  check_on("whisper-tiny.en", wavo::Backend::Cpu, ENGLISH);
+}
+
+#[test]
+fn whisper_base_en_cpu() {
+  check_on("whisper-base.en", wavo::Backend::Cpu, ENGLISH);
+}
+
+#[test]
+fn whisper_small_en_cpu() {
+  check_on("whisper-small.en", wavo::Backend::Cpu, ENGLISH);
+}
+
+#[test]
+fn whisper_medium_en_cpu() {
+  check_on("whisper-medium.en", wavo::Backend::Cpu, ENGLISH);
+}
+
+#[test]
+fn whisper_large_cpu() {
+  check_on("whisper-large", wavo::Backend::Cpu, &["jfk", "zh-short", "ru-long", "uk-short"]);
+}
+
+#[test]
+fn whisper_large_v2_cpu() {
+  check_on("whisper-large-v2", wavo::Backend::Cpu, WHISPER);
+}
+
+#[test]
+fn breeze_asr_25_cpu() {
+  check_on("Breeze-ASR-25", wavo::Backend::Cpu, &["jfk", "zh-short", "zh-long", "jobs-silence"]);
+}
+
+#[test]
+fn moonshine_tiny_cpu() {
+  check_on("moonshine-tiny", wavo::Backend::Cpu, ENGLISH);
+}
+
+#[test]
+fn moonshine_base_cpu() {
+  check_on("moonshine-base", wavo::Backend::Cpu, ENGLISH);
 }

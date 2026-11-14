@@ -62,6 +62,8 @@ pub enum Api {
   Dx12,
   /// Apple's Core ML, which runs a model on the Neural Engine.
   CoreMl,
+  /// None: wavo's own kernels on the CPU ([`Backend::Cpu`](crate::Backend::Cpu)).
+  Cpu,
 }
 
 /// The kind of adapter a [`Device`] is, as the driver reports it.
@@ -80,6 +82,8 @@ pub enum DeviceKind {
   /// The Neural Engine of an Apple Silicon Mac, reached through Core ML: see
   /// [`Backend::NeuralEngine`](crate::Backend::NeuralEngine).
   NeuralEngine,
+  /// The CPU: see [`Backend::Cpu`](crate::Backend::Cpu).
+  Cpu,
 }
 
 /// The kernels wavo runs on a [`Device`], chosen at load from the adapter's features: a fast tier
@@ -98,6 +102,8 @@ pub enum Kernels {
   /// No wavo kernels: on the [`NeuralEngine`](DeviceKind::NeuralEngine), the encoder is a Core ML
   /// program (F16 with 8-bit weights) that the system compiles.
   CoreMl,
+  /// wavo's kernels on the [`Cpu`](DeviceKind::Cpu): AVX2 and FMA on x86_64, NEON on ARM.
+  Cpu,
 }
 
 /// The GPU adapters for [`crate::devices`], the one `adapter()` picks first, at least up to
@@ -189,13 +195,14 @@ impl std::fmt::Display for Device {
       Api::Vulkan => "Vulkan",
       Api::Dx12 => "DX12",
       Api::CoreMl => "Core ML",
+      Api::Cpu => return write!(f, "{} ({})", self.name, self.driver),
     };
     let kind = match self.kind {
       DeviceKind::DiscreteGpu => "discrete",
       DeviceKind::IntegratedGpu => "integrated",
       DeviceKind::SoftwareGpu => "software",
       DeviceKind::OtherGpu => "other",
-      DeviceKind::NeuralEngine => return write!(f, "{} ({api})", self.name),
+      DeviceKind::NeuralEngine | DeviceKind::Cpu => return write!(f, "{} ({api})", self.name),
     };
     write!(f, "{} ({api}, {kind})", self.name)
   }
