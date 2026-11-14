@@ -59,7 +59,7 @@ Run options:
   -y, --yes                    download a missing model without asking
   --backend auto|gpu|ane|cpu   where the encoder runs: auto (the default) takes the Neural
                                Engine for Parakeet and GigaAM once `wavo pull` prepared
-                               them on a Mac, the CPU for GigaAM without a hardware GPU,
+                               them on a Mac, the CPU for them without a hardware GPU,
                                else the GPU
   --device auto|N|NAME         the GPU to run on: its number in wavo devices or part of its
                                name, ignoring case (the first that matches); auto: wavo's

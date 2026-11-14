@@ -5,6 +5,7 @@
 
 use super::gemm::{NR, panels, product};
 use super::par_each;
+use crate::gpu::pos_rows;
 
 /// e^x as Cephes' `expf` computes it (relative error ~1e-7) without branches or calls, so loops
 /// of it vectorize: x clamped to the normal range, n = round(x·log₂e) by adding 1.5·2²³, the
@@ -190,19 +191,83 @@ pub fn attention(qk: &[f32], v: &[f32], o: &mut [f32], t: usize, heads: usize) {
       for i in (0..t).step_by(QUERIES) {
         let m = QUERIES.min(t - i);
         product(&qk[i * 2 * ch + h * hd..], 2 * ch, m, &keys, hd, s, tp);
-        for row in s.chunks_exact_mut(tp).take(m) {
-          let (row, pad) = row.split_at_mut(t);
-          let max = row.iter().fold(f32::NEG_INFINITY, |m, &x| m.max(x)) * scale;
-          row.iter_mut().for_each(|x| *x = exp(*x * scale - max));
-          let inv = 1.0 / sum(row.iter().copied());
-          row.iter_mut().for_each(|x| *x *= inv);
-          pad.fill(0.0);
-        }
-
+        softmax(s, m, t, scale);
         product(s, tp, m, &values, tp, &mut out[i * hd..], hd);
       }
     },
   );
+  gather(&outs, o, hd);
+}
+
+/// Multi-head attention with Transformer-XL relative positions over `qkv` `[t][q | k | v]`, with
+/// `pos` the projected positions `[pos_rows(t)][ch]` (row r is position t + 15 − r) and `uv` the
+/// biases u and v `[heads][head_dim]`, into `o` `[t][ch]`: score (i, j) is
+/// `((q + u)_i·k_j + (q + v)_i·pos[j − i + t + 15]) / √head_dim`. One head per job; heads of a
+/// multiple of 16 dims.
+pub fn relative_attention(
+  qkv: &[f32],
+  pos: &[f32],
+  uv: (&[f32], &[f32]),
+  o: &mut [f32],
+  t: usize,
+  heads: usize,
+) {
+  let ch = o.len() / t;
+  let (hd, tp) = (ch / heads, t.next_multiple_of(NR));
+  // A step's queries i..i + m read the position rows t + 16 − i − m..2t + 15 − i.
+  let pw = (t + QUERIES + 2 * NR).next_multiple_of(NR);
+  let scale = 1.0 / (hd as f32).sqrt();
+  let mut outs = vec![Vec::new(); heads];
+  par_each(
+    outs.iter_mut().enumerate(),
+    || (vec![0.0; QUERIES * tp], vec![0.0; QUERIES * pw]),
+    |(s, sp), (h, out)| {
+      let keys = panels(&qkv[ch + h * hd..], 3 * ch, t, hd, hd, false);
+      let values = panels(&qkv[2 * ch + h * hd..], 3 * ch, hd, tp, t, true);
+      let positions = panels(&pos[h * hd..], ch, pos_rows(t), hd, hd, false);
+      let q = |b: &[f32]| -> Vec<f32> {
+        let b = &b[h * hd..][..hd];
+        let rows = qkv.chunks_exact(3 * ch).map(|r| &r[h * hd..][..hd]);
+        rows.flat_map(|q| q.iter().zip(b).map(|(q, b)| q + b)).collect()
+      };
+      let (qu, qv) = (q(uv.0), q(uv.1));
+      *out = vec![0.0; t * hd];
+      for i in (0..t).step_by(QUERIES) {
+        let m = QUERIES.min(t - i);
+        product(&qu[i * hd..], hd, m, &keys, hd, s, tp);
+        let (p0, p1) = ((t + 16 - i - m) / NR, (2 * t + 15 - i).div_ceil(NR));
+        product(&qv[i * hd..], hd, m, &positions[p0 * NR * hd..p1 * NR * hd], hd, sp, pw);
+        for (a, (s, sp)) in s.chunks_exact_mut(tp).zip(sp.chunks_exact(pw)).take(m).enumerate() {
+          // Query i + a, key j: position row j − i − a + t + 15, from p0·NR on.
+          let sp = &sp[t + 15 - i - a - p0 * NR..][..t];
+          s.iter_mut().zip(sp).for_each(|(s, p)| *s += p);
+        }
+
+        softmax(s, m, t, scale);
+        product(s, tp, m, &values, tp, &mut out[i * hd..], hd);
+      }
+    },
+  );
+  gather(&outs, o, hd);
+}
+
+/// Softmax of `scores` × `scale` over the first `t` of each of `m` rows; the rest of a row is
+/// zeroed.
+fn softmax(scores: &mut [f32], m: usize, t: usize, scale: f32) {
+  let tp = t.next_multiple_of(NR);
+  for row in scores.chunks_exact_mut(tp).take(m) {
+    let (row, pad) = row.split_at_mut(t);
+    let max = row.iter().fold(f32::NEG_INFINITY, |m, &x| m.max(x)) * scale;
+    row.iter_mut().for_each(|x| *x = exp(*x * scale - max));
+    let inv = 1.0 / sum(row.iter().copied());
+    row.iter_mut().for_each(|x| *x *= inv);
+    pad.fill(0.0);
+  }
+}
+
+/// The heads' outputs `[t][head_dim]` into the rows `[t][heads · head_dim]` of `o`.
+fn gather(outs: &[Vec<f32>], o: &mut [f32], hd: usize) {
+  let ch = outs.len() * hd;
   for (h, out) in outs.iter().enumerate() {
     for (o, out) in o.chunks_exact_mut(ch).zip(out.chunks_exact(hd)) {
       o[h * hd..][..hd].copy_from_slice(out);

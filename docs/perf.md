@@ -488,6 +488,14 @@ first call 11.2 / 12.5 s, load 1.3–1.6 s, 0.55 GB (2 / 4 cores).
 - 2026-11-14, `a` rounded to i8 per 32 values (ggml's Q8_0 × Q8_0, which `vpdpbusd` / `sdot` would
   run twice as fast as i16), simulated on the f32 tile: ru-short loses a comma, multilingual jfk
   a space. Rejected.
+- 2026-11-14, Parakeet V3 (24 layers of d 1024, 8× subsampling): relative attention per head
+  through the same tile, `(q + v)·pos` over the position rows a block of queries reads, added to
+  the scores before the softmax; the subsampling in chunks of 64 frames, conv0 recomputed per
+  conv2 row. Fixtures exact on every Parakeet model. 2 / 4 cores warm 7.70 / 5.63 s, first call
+  (whole process) 7.98 / 5.90 s, 0.84 GB; subsampling 0.15 s of 7.4: the blocks run at GigaAM's
+  rate, with 1.46× its multiply-adds. onnx-asr int8 `nemo-parakeet-tdt-0.6b-v3`: warm 7.81 /
+  5.84 s, first call 12.0 / 12.7 s after a 2.0–2.2 s load, 1.62 GB, and "передов" for
+  "периодов". Kept.
 
 ### CPU decoders
 

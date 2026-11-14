@@ -71,7 +71,7 @@ GPUs other than Apple's use simpler kernels for now, except for matrix multiplic
 
 Without a Vulkan driver, in a VM for example, wavo falls back to DirectX 12 with the simpler kernels. `WGPU_BACKEND=dx12` forces it.
 
-A server without a GPU runs GigaAM on the CPU, with the same text: 30s of Russian take 5.4s on two N100 cores and 0.34GB of memory. Other models need a GPU there for now.
+A server without a GPU runs GigaAM and Parakeet on the CPU, with the same text: 30s of Russian take 5.4s with GigaAM (0.34GB of memory) and 7.7s with Parakeet V3 (0.84GB) on two N100 cores. Other models need a GPU there for now.
 
 </details>
 
@@ -99,7 +99,7 @@ wavo rm parakeet-ultra                # delete one
 wavo bench gigaam-v3 talk.wav         # load time and speed on your machine
 wavo debug                            # your system, GPUs and models, to paste into an issue
 wavo run talk.wav --backend gpu       # the GPU even where the Neural Engine is ready
-wavo run gigaam-v3 talk.wav --backend cpu  # GigaAM on the CPU, as without a GPU
+wavo run gigaam-v3 talk.wav --backend cpu  # on the CPU, as without a GPU
 wavo devices                          # the GPUs, numbered for --device
 wavo run talk.wav --device radeon     # another GPU, by part of its name or its number
 ```

@@ -433,8 +433,9 @@ const DETECT_WINDOWS: usize = 5;
 pub enum Backend {
   /// The faster one for the model's family on this machine: the Neural Engine for Parakeet and
   /// GigaAM once [prepared](Model::prepare) in this program (see
-  /// [Neural Engine](crate#neural-engine)), else the GPU; for GigaAM the [CPU](Self::Cpu) when
-  /// the GPU wavo would pick is a software one, such as llvmpipe, or there is none.
+  /// [Neural Engine](crate#neural-engine)), else the GPU; for Parakeet and GigaAM the
+  /// [CPU](Self::Cpu) when the GPU wavo would pick is a software one, such as llvmpipe, or there is
+  /// none.
   /// [`Model::load`] uses it.
   #[default]
   Auto,
@@ -467,8 +468,9 @@ pub enum Backend {
   /// tokens start one or two encoder frames apart (see [Neural Engine](crate#neural-engine)).
   NeuralEngine,
   /// The CPU, with wavo's own kernels (AVX2 and FMA on x86_64, NEON on ARM) on as many threads
-  /// as the process may use, for GigaAM: for servers and machines without a GPU driver, where it
-  /// is many times faster than a software GPU such as llvmpipe. The same text as on the GPU.
+  /// as the process may use, for Parakeet and GigaAM: for servers and machines without a GPU
+  /// driver, where it is many times faster than a software GPU such as llvmpipe. The same text as
+  /// on the GPU.
   Cpu,
 }
 
@@ -480,7 +482,7 @@ const NEURAL_ENGINE: &[(&str, ane::Build)] =
 
 /// The families whose encoder runs on the CPU: [`Backend::Auto`] takes it when the GPU wavo
 /// would pick is a software one, or there is none.
-const CPU: &[&str] = &["gigaam"];
+const CPU: &[&str] = &["parakeet", "gigaam"];
 
 /// Whether the GPU wavo picks first is a hardware one.
 fn hardware_gpu() -> bool {

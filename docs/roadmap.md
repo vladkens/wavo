@@ -41,8 +41,8 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 
 Open:
 
-- [ ] **CPU backend** for servers without a GPU: GigaAM done, 30 s in 5.4 s on two N100 cores;
-      Parakeet and Whisper next. [Plan](plans/20261114-cpu.md)
+- [ ] **CPU backend** for servers without a GPU: GigaAM and Parakeet done, 30 s in 5.4 and
+      7.7 s on two N100 cores; Whisper next. [Plan](plans/20261114-cpu.md)
 - **Moonshine:** fast (phase 16), the language fine-tunes (17), the streaming variants one-shot
   (18, optional). [Plan](plans/20261011-moonshine.md)
 - **Fast kernels beyond Apple.** The GEMM on F16 16×16 cooperative matrices runs on NVIDIA

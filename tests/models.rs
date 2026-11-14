@@ -515,6 +515,22 @@ fn parakeet_ultra() {
   check("parakeet-ultra", &["jfk", "ru-short", "uk-long", "jobs-silence"]);
 }
 
+#[test]
+fn parakeet_tdt_v2_cpu() {
+  check_on("parakeet-tdt-0.6b-v2", wavo::Backend::Cpu, &["jfk", "dots", "jobs-silence"]);
+}
+
+#[test]
+fn parakeet_tdt_v3_cpu() {
+  check_on("parakeet-tdt-0.6b-v3", wavo::Backend::Cpu, &["jfk", "ru-short", "uk-short"]);
+}
+
+#[test]
+fn parakeet_ultra_cpu() {
+  let samples = &["jfk", "ru-short", "uk-long", "jobs-silence"];
+  check_on("parakeet-ultra", wavo::Backend::Cpu, samples);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn parakeet_tdt_v2_ane() {
@@ -541,6 +557,16 @@ fn parakeet_tdt_v3_he() {
 #[test]
 fn parakeet_tdt_v3_uk() {
   check("parakeet-tdt-0.6b-v3-uk", &["uk-short", "uk-long", "jfk"]);
+}
+
+#[test]
+fn parakeet_tdt_v3_he_cpu() {
+  check_on("parakeet-tdt-0.6b-v3-he", wavo::Backend::Cpu, &["he-short", "he-long"]);
+}
+
+#[test]
+fn parakeet_tdt_v3_uk_cpu() {
+  check_on("parakeet-tdt-0.6b-v3-uk", wavo::Backend::Cpu, &["uk-short", "uk-long", "jfk"]);
 }
 
 #[cfg(target_os = "macos")]
