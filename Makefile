@@ -1,4 +1,4 @@
-.PHONY: prepare check test test-all build update clean
+.PHONY: prepare check test test-all test-kernels build update clean
 
 CARGO_FLAGS := --release --locked
 
@@ -23,6 +23,9 @@ test: test-unit
 
 test-all:
 	cargo test $(CARGO_FLAGS)
+
+# The GPU fixtures again on each kernel tier.
+test-kernels:
 	scripts/test-kernels.py
 
 build:
