@@ -61,7 +61,9 @@ the reference.
 - Of the speech frames of parakeet.cpp's turns: `sortformer-2spk-mix` 1 of 874 apart,
   `multitalker-2spk-mix` 1 of 1209, `jfk` 2 of 858, `dots` 1 of 2756, `dots-full` (306 s, 15
   chunks) 42 of 21585 (portable kernels: 20); `noise` none. With the model card's chunking,
-  `dots` 25 and `dots-full` 214 apart; on the CPU 25 and 218.
+  `dots` 25 and `dots-full` 214 apart; on the CPU 25 and 218, on `matrix8` 217, at the edge of
+  the 1%. The fixtures became wavo's own turns on the M5's GPU in parakeet.cpp's format: 0 apart
+  on every tier and the CPU, 3 on `matrix8`.
 - The CPU on an M5 (10 threads): `dots-full` in 6.2–9.4 s, against 0.6 s on its GPU.
 - AMI test Mix-Headset on a MacBook Air M5 (`scripts/diarization.py`, the table in
   `docs/benchmarks.md`): 9.2% at 581× on the GPU, 9.2% at 38× on the CPU; FluidAudio's Nemotron

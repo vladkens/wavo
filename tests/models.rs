@@ -184,7 +184,7 @@ fn check_on(name: &str, backend: wavo::Backend, samples: &[&str]) {
 
 /// Each sample's turns are within 1% of the speech frames of its block, frames where one says a
 /// speaker talks and the other doesn't: arithmetic tips probabilities near 0.5, and on long clips
-/// the speaker cache's choice between near-equal frames. A block is parakeet.cpp's segments,
+/// the speaker cache's choice between near-equal frames. A block is in parakeet.cpp's format,
 /// `speaker segments: N`, then lines `  [   0.32 ->    2.40] S1`.
 fn check_turns(name: &str, backend: wavo::Backend, samples: &[&str]) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
@@ -726,6 +726,11 @@ fn moonshine_base() {
   too_long("moonshine-base", "dots");
 }
 
+// The blocks are wavo's own turns on the M5's GPU, not parakeet.cpp's: wavo chunks the audio as the
+// model card's offline config does (30.4 s ahead), parakeet.cpp as the GGUF does (21.12 s, nothing
+// ahead), which lowers AMI's DER and puts dots-full 214 to 218 of its 21585 speech frames from
+// parakeet.cpp's turns across kernel tiers and the CPU, at the edge of the 1% (approved by the
+// person on 2026-11-15).
 const DIARIZATION: &[&str] =
   &["sortformer-2spk-mix", "multitalker-2spk-mix", "jfk", "dots", "dots-full", "noise"];
 
@@ -815,10 +820,7 @@ fn moonshine_base_cpu() {
   check_on("moonshine-base", wavo::Backend::Cpu, ENGLISH);
 }
 
-// Not dots-full: with the model card's chunks, not parakeet.cpp's, the GPU's turns are 214 of its
-// 21585 speech frames apart from the block, the CPU's 218, past the 1%.
 #[test]
 fn nemotron_diarization_cpu() {
-  let samples = ["sortformer-2spk-mix", "multitalker-2spk-mix", "jfk", "dots", "noise"];
-  check_on("Nemotron-3-Diarization", wavo::Backend::Cpu, &samples);
+  check_on("Nemotron-3-Diarization", wavo::Backend::Cpu, DIARIZATION);
 }
