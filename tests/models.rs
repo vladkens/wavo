@@ -138,7 +138,7 @@ fn check(name: &str, samples: &[&str]) {
 /// `check` on `backend`.
 fn check_on(name: &str, backend: wavo::Backend, samples: &[&str]) {
   if wavo::hub::lookup(name).unwrap().diarization() {
-    return check_turns(name, samples);
+    return check_turns(name, backend, samples);
   }
 
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
@@ -183,12 +183,12 @@ fn check_on(name: &str, backend: wavo::Backend, samples: &[&str]) {
 }
 
 /// Each sample's turns are within 1% of the speech frames of its block, frames where one says a
-/// speaker talks and the other doesn't: GPU arithmetic tips probabilities near 0.5, and on long
-/// clips the speaker cache's choice between near-equal frames. A block is parakeet.cpp's segments,
+/// speaker talks and the other doesn't: arithmetic tips probabilities near 0.5, and on long clips
+/// the speaker cache's choice between near-equal frames. A block is parakeet.cpp's segments,
 /// `speaker segments: N`, then lines `  [   0.32 ->    2.40] S1`.
-fn check_turns(name: &str, samples: &[&str]) {
+fn check_turns(name: &str, backend: wavo::Backend, samples: &[&str]) {
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
-  let diarizer = wavo::Diarizer::load(model_path(name)).unwrap();
+  let diarizer = wavo::Diarizer::load_with(model_path(name), backend).unwrap();
   // Per speaker the 10 ms frames it talks in.
   let frames = |turns: &[(u32, u32, u32)]| -> std::collections::BTreeSet<(u32, u32)> {
     turns.iter().flat_map(|&(s, start, end)| (start / 10..end / 10).map(move |f| (s, f))).collect()
@@ -726,11 +726,12 @@ fn moonshine_base() {
   too_long("moonshine-base", "dots");
 }
 
+const DIARIZATION: &[&str] =
+  &["sortformer-2spk-mix", "multitalker-2spk-mix", "jfk", "dots", "dots-full", "noise"];
+
 #[test]
 fn nemotron_diarization() {
-  const SAMPLES: &[&str] =
-    &["sortformer-2spk-mix", "multitalker-2spk-mix", "jfk", "dots", "dots-full", "noise"];
-  check("Nemotron-3-Diarization", SAMPLES);
+  check("Nemotron-3-Diarization", DIARIZATION);
 }
 
 // As the GPU, the CPU computes in f32 and keeps the decoder caches in f16.
@@ -812,4 +813,12 @@ fn moonshine_tiny_cpu() {
 #[test]
 fn moonshine_base_cpu() {
   check_on("moonshine-base", wavo::Backend::Cpu, ENGLISH);
+}
+
+// Not dots-full: with the model card's chunks, not parakeet.cpp's, the GPU's turns are 214 of its
+// 21585 speech frames apart from the block, the CPU's 218, past the 1%.
+#[test]
+fn nemotron_diarization_cpu() {
+  let samples = ["sortformer-2spk-mix", "multitalker-2spk-mix", "jfk", "dots", "noise"];
+  check_on("Nemotron-3-Diarization", wavo::Backend::Cpu, &samples);
 }

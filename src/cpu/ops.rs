@@ -338,15 +338,17 @@ pub fn attend(q: &[f32], kv: &[f32], cols: usize, n: usize, o: &mut [f32], heads
 
 /// Rotary embedding in place over rows `[q | k | v]` of `heads` heads of `hd`, row j at the
 /// position of `table` row j (`rot` / 2 cosines, then as many sines): in q's and k's heads the
-/// pairs (2i, 2i + 1) for 2i < `rot` rotate, as the GPU's `rope`.
-pub fn rope(qkv: &mut [f32], table: &[f32], [heads, hd, rot]: [usize; 3]) {
+/// pairs (2i, 2i + 1) for 2i < `rot` rotate, or with `neox` (i, i + rot / 2), as the GPU's `rope`.
+pub fn rope(qkv: &mut [f32], table: &[f32], [heads, hd, rot]: [usize; 3], neox: bool) {
   let half = rot / 2;
+  let (pair, step) = if neox { (half, 1) } else { (1, 2) };
   for (row, t) in qkv.chunks_exact_mut(3 * heads * hd).zip(table.chunks_exact(rot)) {
     let (cos, sin) = t.split_at(half);
     for head in row[..2 * heads * hd].chunks_exact_mut(hd) {
-      for (i, x) in head[..rot].as_chunks_mut::<2>().0.iter_mut().enumerate() {
-        let [a, b] = *x;
-        *x = [a * cos[i] - b * sin[i], a * sin[i] + b * cos[i]];
+      for i in 0..half {
+        let (a, b) = (head[step * i], head[step * i + pair]);
+        head[step * i] = a * cos[i] - b * sin[i];
+        head[step * i + pair] = a * sin[i] + b * cos[i];
       }
     }
   }

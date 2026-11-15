@@ -12,6 +12,7 @@ use crate::error::Result;
 use crate::gguf::Gguf;
 use crate::gpu::{Buffer, Channels, Epilogue, Gpu, Linear, Pass, attend_len};
 
+#[derive(Clone, Copy)]
 pub struct Config {
   pub d: usize,
   pub heads: usize,

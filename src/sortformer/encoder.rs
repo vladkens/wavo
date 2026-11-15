@@ -4,7 +4,8 @@
 //! `predict`, over the speaker cache, the FIFO and the chunk, a LayerNorm, the pre-LN transformer
 //! blocks with rotary positions (GPT-NeoX pairs) and a final LayerNorm, then the head: a projection
 //! to its width, a conv1d (kernel 3) to 8 frames of that width per frame, ReLU, a hidden layer with
-//! ReLU and an output per speaker, through a sigmoid. Both run over one arena.
+//! ReLU and an output per speaker, through a sigmoid. Both run over one arena; `cpu.rs` runs the
+//! same on the CPU.
 
 use std::sync::{Mutex, PoisonError};
 
@@ -44,13 +45,13 @@ struct Arena {
 
 impl Encoder {
   /// Loads the network of `cfg`, the head's `width` and `speakers`, for calls over up to `frames`
-  /// embeddings, with rotary frequencies `theta^(−2i / head_dim)`.
+  /// embeddings, with the rotary `table` of `super::rope`.
   pub fn new(
     gpu: &Gpu,
     g: &Gguf,
     cfg: Config,
     [width, speakers, frames]: [usize; 3],
-    theta: f32,
+    table: &[f32],
   ) -> Result<Self> {
     let (d, f) = (cfg.d, cfg.d_ff);
     let linear =
@@ -70,13 +71,6 @@ impl Encoder {
     let conv_bias = g.tensor(&m("subpixel_upsample.bias"), &[STACK * width])?.to_f32()?;
     let conv = g.tensor(&m("subpixel_upsample.weight"), &[3, width, STACK * width])?;
 
-    let hd = cfg.head_dim();
-    let mut table = Vec::with_capacity(frames * hd);
-    for pos in 0..frames {
-      let angles = (0..hd / 2).map(|i| pos as f32 * theta.powf(-((2 * i) as f32) / hd as f32));
-      table.extend(angles.clone().map(f32::cos).chain(angles.map(f32::sin)));
-    }
-
     let bufs = Buffers {
       x: gpu.buffer(frames * d),
       y: gpu.buffer(frames * d),
@@ -84,13 +78,13 @@ impl Encoder {
       qkv: gpu.buffer(frames * (3 * d).max(STACK * width)),
       // Also the conv's output [t][8·width].
       h: gpu.buffer(frames * f.max(STACK * width)),
-      s: gpu.buffer(gpu.scores_len(frames, cfg.heads, hd, false)),
+      s: gpu.buffer(gpu.scores_len(frames, cfg.heads, cfg.head_dim(), false)),
     };
     let head = linear(&m("single_hidden_to_spks"), &[width, speakers], true)?;
     let out = frames * (STACK * head.width()).max(d);
     let arena = Arena {
       bufs,
-      rope: gpu.upload(&table)?,
+      rope: gpu.upload(table)?,
       mel: gpu.buffer(frames * STACK * MELS),
       out: gpu.buffer(out),
       read: gpu.readback(out),

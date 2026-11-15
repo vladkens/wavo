@@ -354,7 +354,7 @@ fn run(args: &[&str]) -> Result<()> {
     Err(_) => models::diarization(Path::new(model)),
   };
   if diarizer {
-    ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU only, not --backend ane");
+    ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU or the CPU, not --backend ane");
     ensure!(
       !diarize && segment.is_none() && options.language.is_none(),
       "--diarize, --segment and --language are for speech-to-text models; {model} only tells \
@@ -405,7 +405,8 @@ fn run(args: &[&str]) -> Result<()> {
   let utterances = match speakers {
     Some(diarizer) => {
       let bar = spinner();
-      // On the GPU --device names, also when the model runs on the Neural Engine.
+      // On the GPU --device names, also when the model runs on the Neural Engine; on the CPU with
+      // --backend cpu.
       let on = if on == Backend::NeuralEngine { Backend::Gpu } else { on };
       Some(transcript.utterances(&diarize_with(&diarizer, on, &pcm, &bar)?))
     }
@@ -424,8 +425,7 @@ fn run(args: &[&str]) -> Result<()> {
   Ok(std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())?)
 }
 
-/// The turns of `pcm` by the diarization model at `path` on the GPU of `on`, with progress on
-/// `bar`.
+/// The turns of `pcm` by the diarization model at `path` on `on`, with progress on `bar`.
 fn diarize_with(
   path: &Path,
   on: Backend,
@@ -608,7 +608,7 @@ fn bench(model: &str, audio: &str, opts: &[&str]) -> Result<()> {
   let (call, device): (Box<dyn Fn() -> wavo::Result<()>>, String) = match models::diarization(&path)
   {
     true => {
-      ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU only, not --backend ane");
+      ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU or the CPU, not --backend ane");
       let d = wavo::Diarizer::load_with(&path, on)?;
       let device = d.device().to_string();
       (Box::new(move || d.diarize(pcm).map(drop)), device)

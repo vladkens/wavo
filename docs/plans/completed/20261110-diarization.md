@@ -52,6 +52,7 @@ the reference.
 - [x] `Diarizer`, `Turn`, `Transcript::utterances`, rustdoc with units and errors
 - [x] Fixtures pass within 1% of their speech frames
 - [x] CLI: `--diarize`, the turns of `wavo run nemotron-diarization`, `--device`
+- [x] The diarizer on the CPU (`--backend cpu`, `Backend::Auto` without a hardware GPU)
 - [x] Speed against parakeet.cpp
 - [x] `docs/roadmap.md`, `readme.md`
 
@@ -59,7 +60,9 @@ the reference.
 
 - Of the speech frames of parakeet.cpp's turns: `sortformer-2spk-mix` 1 of 874 apart,
   `multitalker-2spk-mix` 1 of 1209, `jfk` 2 of 858, `dots` 1 of 2756, `dots-full` (306 s, 15
-  chunks) 42 of 21585 (portable kernels: 20); `noise` none.
+  chunks) 42 of 21585 (portable kernels: 20); `noise` none. With the model card's chunking,
+  `dots` 25 and `dots-full` 214 apart; on the CPU 25 and 218.
+- The CPU on an M5 (10 threads): `dots-full` in 6.2–9.4 s, against 0.6 s on its GPU.
 - On an M5, the whole CLI run with the load, best of 5, against parakeet.cpp's `diarize` on
   Metal: jfk 0.04 vs 0.08 s, dots 0.08 vs 0.14 s, dots-full 0.52 vs 0.76 s. parakeet.cpp's own
   Metal and CPU turns of dots-full are 10 speech frames apart, wavo's from its Metal ones 34.

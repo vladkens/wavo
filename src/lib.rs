@@ -133,7 +133,7 @@
 //!
 //! [`Diarizer::load`] takes the GGUF of `nemotron-diarization`, NVIDIA's Nemotron 3 Diarization, a
 //! speaker diarization model: [`Diarizer::diarize`] tells who speaks when in audio of any length,
-//! as [`Turn`]s of up to 8 speakers numbered in the order they first talk.
+//! as [`Turn`]s of up to 8 speakers numbered in the order they first talk, on the GPU or the CPU.
 //! [`Transcript::utterances`] then gives each word of a transcript of the same audio its speaker:
 //!
 //! ```no_run
@@ -1063,14 +1063,14 @@ pub struct Diarizer(Box<sortformer::Sortformer>);
 impl Diarizer {
   /// Loads a diarization model from its GGUF file: `nemotron-diarization`'s
   /// `nemotron-3-diarization-q8_0.gguf` (see the [model table](crate#models)). It
-  /// runs on the GPU, as [`Model::load`] picks it; [`load_with`](Self::load_with) picks another.
+  /// runs on the GPU, or on the CPU when the GPU is a software one or there is none, as
+  /// [`Model::load`] picks them; [`load_with`](Self::load_with) picks the backend.
   ///
   /// # Errors
   ///
   /// - [`Error::Io`]: the file can't be read.
   /// - [`Error::Model`]: not a GGUF, not parakeet.cpp's diarization model (a speech-to-text model
   ///   is for [`Model::load`]), or a missing or mismatched tensor or metadata key.
-  /// - [`Error::Adapter`], [`Error::Device`]: no GPU, or not one the model can run on.
   ///
   /// # Examples
   ///
@@ -1079,16 +1079,18 @@ impl Diarizer {
   /// # Ok::<(), wavo::Error>(())
   /// ```
   pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-    Self::load_with(path, Backend::Gpu)
+    Self::load_with(path, Backend::Auto)
   }
 
-  /// Loads the model on the GPU `backend` names: [`Backend::GpuAt`] an adapter of [`devices`],
-  /// [`Auto`](Backend::Auto) and [`Gpu`](Backend::Gpu) the one [`Model::device`] describes.
+  /// Loads the model on `backend`: [`Gpu`](Backend::Gpu) the GPU [`Model::device`] describes,
+  /// [`GpuAt`](Backend::GpuAt) an adapter of [`devices`], [`Cpu`](Backend::Cpu) the CPU, an order
+  /// of magnitude slower than a GPU, and [`Auto`](Backend::Auto) as [`load`](Self::load).
   ///
   /// # Errors
   ///
   /// As [`load`](Self::load); [`Error::Model`] for [`Backend::NeuralEngine`], which doesn't run
-  /// this model, and [`Error::Gpu`] for a `GpuAt` index past the GPUs.
+  /// this model; [`Error::Adapter`], [`Error::Device`] for no GPU, or not one the model can run
+  /// on; and [`Error::Gpu`] for a `GpuAt` index past the GPUs.
   ///
   /// # Examples
   ///
@@ -1103,15 +1105,16 @@ impl Diarizer {
       bail!("not a speaker diarization model: Model::load takes speech-to-text models");
     }
 
-    let gpu = match backend {
-      Backend::Auto | Backend::Gpu => None,
-      Backend::GpuAt(i) => Some(i),
+    let target = match backend {
+      Backend::Auto if !hardware_gpu() => Target::Cpu,
+      Backend::Auto | Backend::Gpu => Target::Gpu(None),
+      Backend::GpuAt(i) => Target::Gpu(Some(i)),
+      Backend::Cpu => Target::Cpu,
       Backend::NeuralEngine => {
-        bail!("the diarization model runs on the GPU, not the Neural Engine")
+        bail!("the diarization model runs on the GPU or the CPU, not the Neural Engine")
       }
-      Backend::Cpu => bail!("the diarization model runs on the GPU, not the CPU"),
     };
-    Ok(Self(Box::new(sortformer::Sortformer::load(&g, gpu)?)))
+    Ok(Self(Box::new(sortformer::Sortformer::load(&g, target)?)))
   }
 
   /// Who speaks when in 16 kHz mono PCM samples in [-1, 1], of any length: the [`Turn`]s of each
@@ -1141,7 +1144,7 @@ impl Diarizer {
     self.0.diarize(pcm)
   }
 
-  /// The GPU the model runs on, as [`Model::device`] reports it.
+  /// The GPU or the CPU the model runs on, as [`Model::device`] reports it.
   pub fn device(&self) -> &Device {
     self.0.device()
   }

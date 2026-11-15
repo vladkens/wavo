@@ -2,16 +2,18 @@
 //! Sortformer: speaker diarization with NVIDIA's Nemotron-3-Diarization in the GGUF of
 //! parakeet.cpp, as its `src/diarization.cpp` runs it. Parakeet's log-mel without the
 //! normalization on the CPU; per chunk of the audio, the transformer and the head on the GPU
-//! (`encoder`); the speaker cache that carries the speakers from chunk to chunk on the CPU
-//! (`stream`). The output is, per 10 ms frame, the probability that each speaker talks, speakers
-//! in order of their first words; a speaker's turns are the runs of at least 0.5.
+//! (`encoder`) or the CPU (`cpu`); the speaker cache that carries the speakers from chunk to chunk
+//! on the CPU (`stream`). The output is, per 10 ms frame, the probability that each speaker talks,
+//! speakers in order of their first words; a speaker's turns are the runs of at least 0.5.
 
+mod cpu;
 mod encoder;
 mod stream;
 
 use encoder::{Encoder, STACK};
 use stream::{Params, State};
 
+use crate::ane::{Backend, Target};
 use crate::error::{Result, bail};
 use crate::gguf::Gguf;
 use crate::gpu::Gpu;
@@ -28,16 +30,15 @@ const PARAMS: Params =
   Params { chunk: 340, right: 40, fifo: 40, cache: 264, period: 300, silence: 1 };
 
 pub struct Sortformer {
-  gpu: Gpu,
   frontend: Frontend,
-  encoder: Encoder,
+  backend: Backend<Encoder, cpu::Encoder>,
   silence: Vec<f32>,
   speakers: usize,
 }
 
 impl Sortformer {
-  /// The model of `g` on the adapter at `gpu` of `devices`, or the default one.
-  pub fn load(g: &Gguf, gpu: Option<usize>) -> Result<Self> {
+  /// The model of `g` on the GPU or the CPU.
+  pub fn load(g: &Gguf, target: Target) -> Result<Self> {
     for (key, want) in [
       ("parakeet.arch", "diarization"),
       ("parakeet.preprocessor.normalize", "NA"),
@@ -89,14 +90,16 @@ impl Sortformer {
     let theta = g.get::<f32>("parakeet.encoder.rope_base")?;
     // Flash attention reads rows up to a multiple of 64.
     let frames = (PARAMS.cache + PARAMS.fifo + PARAMS.chunk + PARAMS.right).next_multiple_of(64);
-    let gpu = Gpu::new(true, gpu)?;
-    let shape = [u("diar.tf_d_model")?, speakers, frames];
-    let encoder = Encoder::new(&gpu, g, cfg, shape, theta)?;
-    Ok(Self { gpu, frontend: Frontend::new(), encoder, silence, speakers })
+    let table = rope(frames, cfg.head_dim(), theta);
+    let width = u("diar.tf_d_model")?;
+    let gpu = |gpu: &Gpu| Encoder::new(gpu, g, cfg, [width, speakers, frames], &table);
+    let cpu = || cpu::Encoder::new(g, cfg, width, speakers, table.clone());
+    let backend = Backend::new(target, gpu, cpu)?;
+    Ok(Self { frontend: Frontend::new(), backend, silence, speakers })
   }
 
   pub fn device(&self) -> &Device {
-    self.gpu.info()
+    self.backend.device()
   }
 
   /// The turns of 16 kHz PCM, by start then speaker.
@@ -113,9 +116,18 @@ impl Sortformer {
     for start in (0..frames).step_by(PARAMS.chunk * STACK) {
       let end = (start + PARAMS.chunk * STACK).min(frames);
       let ahead = (end + PARAMS.right * STACK).min(frames);
-      let embs = self.encoder.embed(&self.gpu, &self.frontend.log_mel(pcm, start..ahead))?;
+      let mel = self.frontend.log_mel(pcm, start..ahead);
+      let embs = match &self.backend {
+        Backend::Gpu(b) => b.1.embed(&b.0, &mel)?,
+        Backend::Cpu(encoder) => encoder.embed(&mel),
+        Backend::Ane(_) => unreachable!("the diarizer has no Neural Engine program"),
+      };
       let x: Vec<f32> = state.context().chain(&embs).copied().collect();
-      let out = self.encoder.predict(&self.gpu, &x)?;
+      let out = match &self.backend {
+        Backend::Gpu(b) => b.1.predict(&b.0, &x)?,
+        Backend::Cpu(encoder) => encoder.predict(&x),
+        Backend::Ane(_) => unreachable!("the diarizer has no Neural Engine program"),
+      };
       // The chunk's frames follow the context's, and those ahead the chunk's; past the last mel
       // frame are the padding's.
       let context = (x.len() - embs.len()) / d;
@@ -133,6 +145,18 @@ impl Sortformer {
 
     Ok(probs)
   }
+}
+
+/// The rotary table from position 0 for `frames` positions: per position `hd` / 2 cosines of
+/// `pos · theta^(−2i / hd)`, then as many sines.
+fn rope(frames: usize, hd: usize, theta: f32) -> Vec<f32> {
+  let mut table = Vec::with_capacity(frames * hd);
+  for pos in 0..frames {
+    let angles = (0..hd / 2).map(|i| pos as f32 * theta.powf(-((2 * i) as f32) / hd as f32));
+    table.extend(angles.clone().map(f32::cos).chain(angles.map(f32::sin)));
+  }
+
+  table
 }
 
 /// Per speaker, each run of frames with probability of at least 0.5, sorted by start then speaker.

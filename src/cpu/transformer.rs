@@ -13,10 +13,10 @@ use crate::gpu::Epilogue;
 use crate::transformer::Config;
 
 /// LayerNorm weights and biases.
-type Norm = (Vec<f32>, Vec<f32>);
+pub type Norm = (Vec<f32>, Vec<f32>);
 
 /// A LayerNorm `{name}.weight`, with `.bias` when `bias`, else zeros.
-fn norm(g: &Gguf, name: &str, d: usize, bias: bool) -> Result<Norm> {
+pub fn norm(g: &Gguf, name: &str, d: usize, bias: bool) -> Result<Norm> {
   let t = |p: &str| g.tensor(&format!("{name}.{p}"), &[d])?.to_f32();
   Ok((t("weight")?, if bias { t("bias")? } else { vec![0.0; d] }))
 }
@@ -39,7 +39,7 @@ fn stacked(g: &Gguf, prefix: &str, names: &[&str], d: usize, bias: bool) -> Resu
 }
 
 /// `name`, `dims` (ggml order), with its bias when `bias`.
-fn linear(g: &Gguf, name: &str, dims: &[usize], bias: bool) -> Result<Linear> {
+pub fn linear(g: &Gguf, name: &str, dims: &[usize], bias: bool) -> Result<Linear> {
   let b = match bias {
     true => g.tensor(&format!("{name}.bias"), &dims[dims.len() - 1..])?.to_f32()?,
     false => Vec::new(),
@@ -48,7 +48,7 @@ fn linear(g: &Gguf, name: &str, dims: &[usize], bias: bool) -> Result<Linear> {
 }
 
 /// `load(i)` for each of `n` layers on its own thread.
-fn parallel<T: Send>(n: usize, load: impl Fn(usize) -> Result<T> + Sync) -> Result<Vec<T>> {
+pub fn parallel<T: Send>(n: usize, load: impl Fn(usize) -> Result<T> + Sync) -> Result<Vec<T>> {
   std::thread::scope(|s| {
     let load = &load;
     let threads: Vec<_> = (0..n).map(|i| s.spawn(move || load(i))).collect();
@@ -58,17 +58,18 @@ fn parallel<T: Send>(n: usize, load: impl Fn(usize) -> Result<T> + Sync) -> Resu
 
 pub struct Encoder {
   pub cfg: Config,
-  blocks: Vec<Block>,
-  norm: Norm,
+  pub blocks: Vec<Block>,
+  /// The final LayerNorm.
+  pub norm: Norm,
 }
 
-struct Block {
-  norm_attn: Norm,
-  qkv: Linear,
-  out: Linear,
-  norm_ffn: Norm,
-  fc1: Linear,
-  fc2: Linear,
+pub struct Block {
+  pub norm_attn: Norm,
+  pub qkv: Linear,
+  pub out: Linear,
+  pub norm_ffn: Norm,
+  pub fc1: Linear,
+  pub fc2: Linear,
 }
 
 impl Encoder {
@@ -100,7 +101,7 @@ impl Encoder {
       layer_norm(&x, n(&k.norm_attn), &mut y, None);
       gemm(&y, &k.qkv, &mut qkv, t, Epilogue::Bias);
       if let Some(table) = table {
-        rope(&mut qkv, table, [c.heads, hd, c.rot]);
+        rope(&mut qkv, table, [c.heads, hd, c.rot], c.neox);
       }
 
       attention(&qkv, 3 * d, &qkv[2 * d..], 3 * d, &mut y, t, c.heads);
@@ -236,7 +237,7 @@ impl Decoder {
       layer_norm(&x, n(&l.norm_self), &mut y, None);
       gemv(&y, &l.qkv, &mut qkv, Epilogue::Bias);
       if let Some(table) = table {
-        rope(&mut qkv, &table[pos * cfg.rot..], [heads, hd, cfg.rot]);
+        rope(&mut qkv, &table[pos * cfg.rot..], [heads, hd, cfg.rot], cfg.neox);
       }
 
       self.pack(&qkv[d..], own, self.context, pos);
