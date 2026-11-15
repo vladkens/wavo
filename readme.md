@@ -24,6 +24,7 @@
 - 🦀 Pure Rust library: no CMake, C++ toolchain, Python or ONNX Runtime to install
 - 📦 `pull` / `list` / `rm` models, shared with the Hugging Face cache that `hf` uses
 - 📝 Plain text, JSON with a start time for every token, or SRT subtitles
+- 🗣️ Who speaks when: `--diarize` puts a speaker on every line, up to 8 speakers
 - 🔌 `wavo serve`: a local server for apps built on OpenAI's transcription API
 
 ## 📥 Installation
@@ -93,6 +94,8 @@ wavo pull parakeet-ultra              # download a model
 wavo pull gigaam-v3 whisper-turbo     # or several at once
 wavo run talk.wav --json              # text, its language and every token with its start time
 wavo run talk.wav --srt > talk.srt    # subtitles
+wavo run talk.wav --diarize           # Speaker 1: ... lines, also with --json and --srt
+wavo run nemotron-diarization talk.wav  # only who speaks when
 wavo run whisper-turbo talk.mp3 --language he  # Whisper: set the language, not detect it
 wavo list                             # downloaded models
 wavo rm parakeet-ultra                # delete one
@@ -107,6 +110,7 @@ wavo run talk.wav --device radeon     # another GPU, by part of its name or its 
 - Long recordings are split at pauses by themselves. `--segment SECS` sets the piece length.
 - `wavo run` asks before downloading a model. `-y` skips the question.
 - Whisper detects the language. `--language CODE` sets it.
+- `--diarize` tells up to 8 speakers apart with NVIDIA's Nemotron 3 Diarization (0.11GB), downloaded like any model. Speakers are numbered in the order they first talk. In subtitles no cue spans two speakers.
 - Models live in the Hugging Face cache, shared with `hf download`.
 - On a Mac, `wavo pull` prepares Parakeet and GigaAM for the Neural Engine, once, in 15–30s.
 - `--backend gpu` stays on the GPU even where the Neural Engine is ready.
@@ -157,7 +161,7 @@ How fast each engine gives you the text. Every engine runs the same model (Parak
 
 *5s phrase* is the whole cycle of a short recording: start the program, load the model, transcribe, exit. *Long audio* is how many times faster than real time an hour-long recording goes. *Energy* is what that hour costs on the CPU, GPU and Neural Engine, measured with [macmon](https://github.com/vladkens/macmon). ANE is Apple's Neural Engine. Measured on a MacBook Pro with an Apple M5.
 
-GigaAM, Windows and the method are in [docs/benchmarks.md](docs/benchmarks.md).
+GigaAM, Windows, speaker diarization and the method are in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## 📚 Library usage
 

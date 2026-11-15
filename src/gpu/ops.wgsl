@@ -188,9 +188,10 @@ fn softmax(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index
   }
 }
 
-// Rotary embedding in place over rows x [t][ch], GPT-J pairs (`GGML_ROPE_TYPE_NORMAL`): in the
-// first p.stride heads, (2i, 2i + 1) for 2i < p.kernel rotate by row r's position p.pad + r, from a
-// table of p.kernel / 2 cosines, then sines, per position.
+// Rotary embedding in place over rows x [t][ch]: in the first p.stride heads, for 2i < p.kernel,
+// the pair (2i, 2i + 1) (GPT-J, `GGML_ROPE_TYPE_NORMAL`), or with p.layer_norm = 1 the pair
+// (i, i + p.kernel / 2) (GPT-NeoX), rotates by row r's position p.pad + r, from a table of
+// p.kernel / 2 cosines, then sines, per position.
 
 @group(0) @binding(0) var<storage, read> rp_table: array<f32>;
 @group(0) @binding(1) var<storage, read_write> rp_x: array<f32>;
@@ -203,12 +204,14 @@ fn rotary(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index)
     return;
   }
   let i = e % half;
-  let o = wg.y * p.ch + e / half * p.head_dim + 2u * i;
+  let neox = p.layer_norm == 1u;
+  let o = wg.y * p.ch + e / half * p.head_dim + select(2u * i, i, neox);
+  let o2 = o + select(1u, half, neox);
   let row = (p.pad + wg.y) * p.kernel;
   let cs = vec2(rp_table[row + i], rp_table[row + half + i]);
-  let x = vec2(rp_x[o], rp_x[o + 1u]);
+  let x = vec2(rp_x[o], rp_x[o2]);
   rp_x[o] = x.x * cs.x - x.y * cs.y;
-  rp_x[o + 1u] = x.x * cs.y + x.y * cs.x;
+  rp_x[o2] = x.x * cs.y + x.y * cs.x;
 }
 
 // GroupNorm with one group, in place over x [t][ch] as one workgroup: the mean and variance of all
@@ -247,6 +250,17 @@ fn swiglu(@builtin(global_invocation_id) id: vec3<u32>) {
   if (c < p.ch) {
     let g = sw_h[p.ch + c];
     sw_h[c] = g / (1.0 + exp(-g)) * sw_h[c];
+  }
+}
+
+// ReLU in place over x[0..p.t].
+
+@group(0) @binding(0) var<storage, read_write> rl_x: array<f32>;
+
+@compute @workgroup_size(256)
+fn relu(@builtin(global_invocation_id) id: vec3<u32>) {
+  if (id.x < p.t) {
+    rl_x[id.x] = max(rl_x[id.x], 0.0);
   }
 }
 

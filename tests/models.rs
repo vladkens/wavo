@@ -1,6 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! Transcripts must match the reference fixtures (`make fixtures`) exactly: text, every token piece
-//! and its start time (for Whisper every segment's text and start). Every GGUF must list the
+//! and its start time (for Whisper every segment's text and start); a diarization model's turns,
+//! its speaker segments. Every GGUF must list the
 //! languages `hub::MODELS` gives its model. Missing models or samples fail the test. A sample
 //! `<clip>+lang=<code>` is `<clip>` transcribed with `Options::language` set to `<code>`. On macOS
 //! the Neural Engine runs the Parakeet and GigaAM models too, in agreement with the fixtures rather
@@ -17,8 +18,8 @@ use std::sync::{Mutex, PoisonError};
 /// memory of an 8 GB card.
 static GPU: Mutex<()> = Mutex::new(());
 
-/// The Q8_0 GGUF of `name` in the Hugging Face cache (`make models`), in its owner's repository
-/// in `hub::MODELS`, with the root resolved as `wavo::hub::Hub::new` does (`src/hub/cache.rs`).
+/// The GGUF of `name` in the Hugging Face cache (`make models`), in its repository in
+/// `hub::MODELS`, with the root resolved as `wavo::hub::Hub::new` does (`src/hub/cache.rs`).
 fn model_path(name: &str) -> PathBuf {
   let var = |k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
   let user = || var("HOME").or_else(|| var("USERPROFILE")).unwrap_or_default();
@@ -26,11 +27,11 @@ fn model_path(name: &str) -> PathBuf {
   let home = || var("HF_HOME").unwrap_or_else(|| cache().join("huggingface"));
   let hub = var("HF_HUB_CACHE").or_else(|| var("HUGGINGFACE_HUB_CACHE"));
   let hub = hub.unwrap_or_else(|| home().join("hub"));
-  let owner = wavo::hub::lookup(name).unwrap().owner;
-  let repo = hub.join(format!("models--{owner}--{name}-gguf"));
+  let model = wavo::hub::lookup(name).unwrap();
+  let repo = hub.join(format!("models--{}", model.repo().replace('/', "--")));
   let rev = std::fs::read_to_string(repo.join("refs/main"))
     .unwrap_or_else(|e| panic!("{name} is not downloaded, run `make models MODELS={name}`: {e}"));
-  repo.join("snapshots").join(rev.trim()).join(format!("{name}-Q8_0.gguf"))
+  repo.join("snapshots").join(rev.trim()).join(model.file())
 }
 
 /// A test clip: `3rd/samples/` has the ones transcribe.cpp's `samples/` lacks (`make samples-he`).
@@ -136,6 +137,10 @@ fn check(name: &str, samples: &[&str]) {
 
 /// `check` on `backend`.
 fn check_on(name: &str, backend: wavo::Backend, samples: &[&str]) {
+  if wavo::hub::lookup(name).unwrap().diarization() {
+    return check_turns(name, backend, samples);
+  }
+
   let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
   let model = wavo::Model::load_with(model_path(name), backend).unwrap();
   check_languages(name, &model);
@@ -175,6 +180,58 @@ fn check_on(name: &str, backend: wavo::Backend, samples: &[&str]) {
     let same = got.len() == tokens.len() && got.iter().zip(&tokens).all(close);
     assert!(same, "{name} {sample}: tokens\n got {got:?}\nwant {tokens:?}");
   }
+}
+
+/// Each sample's turns are within 1% of the speech frames of its block, frames where one says a
+/// speaker talks and the other doesn't: arithmetic tips probabilities near 0.5, and on long clips
+/// the speaker cache's choice between near-equal frames. A block is in parakeet.cpp's format,
+/// `speaker segments: N`, then lines `  [   0.32 ->    2.40] S1`.
+fn check_turns(name: &str, backend: wavo::Backend, samples: &[&str]) {
+  let _gpu = GPU.lock().unwrap_or_else(PoisonError::into_inner);
+  let diarizer = wavo::Diarizer::load_with(model_path(name), backend).unwrap();
+  // Per speaker the 10 ms frames it talks in.
+  let frames = |turns: &[(u32, u32, u32)]| -> std::collections::BTreeSet<(u32, u32)> {
+    turns.iter().flat_map(|&(s, start, end)| (start / 10..end / 10).map(move |f| (s, f))).collect()
+  };
+  for sample in samples {
+    let (got, want) = (turns(&diarizer, sample), read_turns(name, sample));
+    let (a, b) = (frames(&got), frames(&want));
+    let apart = a.symmetric_difference(&b).count();
+    println!("{name} {sample}: {apart} of {} speech frames apart", b.len());
+    assert!(
+      apart * 100 <= b.len(),
+      "{name} {sample}: {apart} frames apart\n got {got:?}\nwant {want:?}"
+    );
+  }
+}
+
+/// `(speaker from 1, start ms, end ms)` sorted, as the fixtures list them.
+fn turns(diarizer: &wavo::Diarizer, sample: &str) -> Vec<(u32, u32, u32)> {
+  let turns = diarizer.diarize(&read_sample(sample)).unwrap();
+  let mut got: Vec<_> = turns.iter().map(|t| (t.speaker + 1, t.start_ms, t.end_ms)).collect();
+  got.sort();
+  got
+}
+
+fn read_turns(name: &str, sample: &str) -> Vec<(u32, u32, u32)> {
+  let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}.txt"));
+  let fixture = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+  let header = format!("## {sample}");
+  let mut lines = fixture.lines().skip_while(|l| *l != header);
+  assert!(lines.next().is_some(), "{path:?}: no {header}");
+  let mut lines = lines.take_while(|l| !l.starts_with("## ")).filter(|l| !l.is_empty());
+  let count = lines.next().and_then(|l| l.strip_prefix("speaker segments: ")).expect("count");
+  let want: Vec<(u32, u32, u32)> = lines
+    .map(|line| {
+      let (times, speaker) =
+        line.trim_start().strip_prefix('[').unwrap().split_once("] S").unwrap();
+      let (start, end) = times.split_once("->").unwrap();
+      let ms = |s: &str| (s.trim().parse::<f64>().unwrap() * 1000.0).round() as u32;
+      (speaker.parse().unwrap(), ms(start), ms(end))
+    })
+    .collect();
+  assert_eq!(want.len(), count.parse::<usize>().unwrap(), "{path:?}: {sample}: count");
+  want
 }
 
 /// A clip played twice, past 1.5 times the model's `max_audio_ms`, fails with `AudioTooLong`.
@@ -669,6 +726,19 @@ fn moonshine_base() {
   too_long("moonshine-base", "dots");
 }
 
+// The blocks are wavo's own turns on the M5's GPU, not parakeet.cpp's: wavo chunks the audio as the
+// model card's offline config does (30.4 s ahead), parakeet.cpp as the GGUF does (21.12 s, nothing
+// ahead), which lowers AMI's DER and puts dots-full 214 to 218 of its 21585 speech frames from
+// parakeet.cpp's turns across kernel tiers and the CPU, at the edge of the 1% (approved by the
+// person on 2026-11-15).
+const DIARIZATION: &[&str] =
+  &["sortformer-2spk-mix", "multitalker-2spk-mix", "jfk", "dots", "dots-full", "noise"];
+
+#[test]
+fn nemotron_diarization() {
+  check("Nemotron-3-Diarization", DIARIZATION);
+}
+
 // As the GPU, the CPU computes in f32 and keeps the decoder caches in f16.
 #[test]
 fn whisper_large_v3_turbo_cpu() {
@@ -748,4 +818,9 @@ fn moonshine_tiny_cpu() {
 #[test]
 fn moonshine_base_cpu() {
   check_on("moonshine-base", wavo::Backend::Cpu, ENGLISH);
+}
+
+#[test]
+fn nemotron_diarization_cpu() {
+  check_on("Nemotron-3-Diarization", wavo::Backend::Cpu, DIARIZATION);
 }

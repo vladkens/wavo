@@ -59,10 +59,12 @@ pub struct ModelInfo {
   pub full_name: &'static str,
   /// Size of the Q8_0 GGUF file in bytes.
   pub size: u64,
-  /// The languages it transcribes, for people: `English`, `Russian`, `25 European languages`, …
+  /// The languages it transcribes, for people: `English`, `Russian`, `25 European languages`, …;
+  /// `any language` for the [diarization](Self::diarization) model.
   pub languages: &'static str,
   /// The languages it is meant for, for programs: `["he"]` for the Hebrew fine-tunes, `["zh",
-  /// "en"]` for Breeze-ASR-25, every language for the multilingual models. The codes are short
+  /// "en"]` for Breeze-ASR-25, every language for the multilingual models, none for the
+  /// [diarization](Self::diarization) model, which tells voices apart in any. The codes are short
   /// BCP-47, ISO 639-1 where one exists (`en`, `ru`), else ISO 639-3 (`haw`, `yue`); Whisper's
   /// keep its own `jw` for Javanese (ISO `jv`).
   ///
@@ -87,9 +89,11 @@ pub struct ModelInfo {
   /// assert_eq!(he, ["parakeet-he", "whisper-turbo-he"]);
   /// ```
   pub langs: &'static [&'static str],
-  /// Whether the text comes cased and punctuated; `false` is lowercase without punctuation.
+  /// Whether the text comes cased and punctuated; `false` is lowercase without punctuation, and
+  /// for a [diarization](Self::diarization) model, which writes no text.
   pub punctuated: bool,
-  /// The model family, as the crate docs name it: `Parakeet`, `GigaAM`, `Whisper` or `Moonshine`.
+  /// The model family, as the crate docs name it: `Parakeet`, `GigaAM`, `Whisper` or `Moonshine`,
+  /// or `Sortformer` for the speaker diarization model.
   pub family: &'static str,
   /// Who made the model, such as `NVIDIA` or `ivrit.ai`; for a fine-tune, who tuned it.
   pub maker: &'static str,
@@ -100,14 +104,30 @@ pub struct ModelInfo {
 
 impl ModelInfo {
   /// The Hugging Face repository `<owner>/<full name>-gguf`, such as
-  /// `handy-computer/parakeet-tdt-0.6b-v3-gguf`.
+  /// `handy-computer/parakeet-tdt-0.6b-v3-gguf`; `-GGUF` for `mudler` (parakeet.cpp's author),
+  /// `mudler/Nemotron-3-Diarization-GGUF`. Downloads need the name's exact case.
   pub fn repo(&self) -> String {
-    format!("{}/{}-gguf", self.owner, self.full_name)
+    let suffix = if self.owner == MU { "GGUF" } else { "gguf" };
+    format!("{}/{}-{suffix}", self.owner, self.full_name)
   }
 
-  /// The file name in [`repo`](Self::repo), such as `parakeet-tdt-0.6b-v3-Q8_0.gguf`.
+  /// The file name in [`repo`](Self::repo), such as `parakeet-tdt-0.6b-v3-Q8_0.gguf`; lowercase
+  /// for `mudler`, `nemotron-3-diarization-q8_0.gguf`.
   pub fn file(&self) -> String {
-    format!("{}-Q8_0.gguf", self.full_name)
+    let file = format!("{}-Q8_0.gguf", self.full_name);
+    if self.owner == MU { file.to_lowercase() } else { file }
+  }
+
+  /// Whether it is a speaker diarization model, for [`Diarizer::load`](crate::Diarizer::load)
+  /// rather than [`Model::load`](crate::Model::load): `nemotron-diarization`.
+  ///
+  /// ```
+  /// let speech_to_text = wavo::hub::MODELS.iter().filter(|m| !m.diarization());
+  /// assert!(speech_to_text.clone().any(|m| m.name == "parakeet-v3"));
+  /// assert!(speech_to_text.clone().all(|m| m.name != "nemotron-diarization"));
+  /// ```
+  pub fn diarization(&self) -> bool {
+    self.family == "Sortformer"
   }
 
   /// Whether the model's family runs on the Neural Engine (Parakeet, GigaAM).
@@ -166,6 +186,8 @@ impl ModelInfo {
 const HC: &str = "handy-computer";
 /// wavo's author's account, for conversions transcribe.cpp doesn't publish.
 const VK: &str = "vladkens";
+/// parakeet.cpp's author's account, for the diarization model.
+const MU: &str = "mudler";
 
 static EN: &[&str] = &["en"];
 static HE: &[&str] = &["he"];
@@ -229,6 +251,7 @@ pub static MODELS: &[ModelInfo] = &[
   ModelInfo { name: "breeze-asr-25", owner: HC, full_name: "Breeze-ASR-25", size: 1_667_964_224, languages: "Taiwanese Mandarin and English", langs: ZH_EN, punctuated: true, family: "Whisper", maker: "MediaTek Research", card: "https://huggingface.co/MediaTek-Research/Breeze-ASR-25" },
   ModelInfo { name: "moonshine-tiny", owner: HC, full_name: "moonshine-tiny", size: 35_466_912, languages: "English", langs: EN, punctuated: true, family: "Moonshine", maker: "Useful Sensors", card: "https://huggingface.co/UsefulSensors/moonshine-tiny" },
   ModelInfo { name: "moonshine-base", owner: HC, full_name: "moonshine-base", size: 77_476_480, languages: "English", langs: EN, punctuated: true, family: "Moonshine", maker: "Useful Sensors", card: "https://huggingface.co/UsefulSensors/moonshine-base" },
+  ModelInfo { name: "nemotron-diarization", owner: MU, full_name: "Nemotron-3-Diarization", size: 108_674_112, languages: "any language", langs: &[], punctuated: false, family: "Sortformer", maker: "NVIDIA", card: "https://huggingface.co/nvidia/Nemotron-3-Diarization" },
 ];
 
 /// The model a short or full name stands for.
@@ -593,6 +616,9 @@ mod tests {
     assert_eq!(m.file(), "parakeet-tdt-0.6b-v3-he-Q8_0.gguf");
     assert_eq!(name("gigaam-multilingual-large-ctc"), "gigaam-multilingual");
     assert_eq!(name("parakeet-tdt-0.6b-v3-uk"), "parakeet-uk");
+    let m = lookup("nemotron-diarization").unwrap();
+    assert_eq!(m.repo(), "mudler/Nemotron-3-Diarization-GGUF");
+    assert_eq!(m.file(), "nemotron-3-diarization-q8_0.gguf");
   }
 
   #[test]
@@ -611,7 +637,7 @@ mod tests {
   fn langs() {
     for m in MODELS {
       let codes = m.langs;
-      assert!(!codes.is_empty(), "{}", m.name);
+      assert_eq!(codes.is_empty(), m.diarization(), "{}", m.name);
       for c in codes {
         let ok = (2..=3).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_lowercase());
         assert!(ok, "{}: {c:?}", m.name);
@@ -629,7 +655,8 @@ mod tests {
   #[test]
   fn catalog_fields() {
     for m in MODELS {
-      assert!(["Parakeet", "GigaAM", "Whisper", "Moonshine"].contains(&m.family), "{}", m.name);
+      let families = ["Parakeet", "GigaAM", "Whisper", "Moonshine", "Sortformer"];
+      assert!(families.contains(&m.family), "{}", m.name);
       assert!(!m.maker.is_empty() && !m.languages.is_empty(), "{}", m.name);
       let repo: Vec<&str> =
         m.card.strip_prefix("https://huggingface.co/").unwrap_or("").split('/').collect();
@@ -714,7 +741,11 @@ mod tests {
   fn model_lists_match() {
     let read = |path: &str| fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path));
     let row = |m: &ModelInfo| {
-      let output = if m.punctuated { "cased, punctuated" } else { "lowercase, no punctuation" };
+      let output = match (m.diarization(), m.punctuated) {
+        (true, _) => "speaker turns",
+        (_, true) => "cased, punctuated",
+        _ => "lowercase, no punctuation",
+      };
       format!("{:.2} GB | {} | {output} |", m.size as f64 / 1e9, m.languages)
     };
 

@@ -9,7 +9,7 @@ pub mod ane;
 mod cpu;
 mod decoder;
 mod encoder;
-mod frontend;
+pub(crate) mod frontend;
 
 use decoder::Decoder;
 use encoder::Encoder;

@@ -102,6 +102,9 @@ pub fn serve(args: &[&str]) -> Result<()> {
       _ => names.push(crate::named(arg)?),
     }
   }
+  if let Some(m) = names.iter().find(|m| m.diarization()) {
+    bail!("{} is a speaker diarization model; wavo serve serves speech-to-text models", m.name);
+  }
 
   let on = crate::target(on, gpu)?;
   let key = key.or_else(|| std::env::var("WAVO_API_KEY").ok()).filter(|k| !k.is_empty());
@@ -306,7 +309,8 @@ impl Server {
 
   /// The downloaded models in OpenAI's list format, the ones given on the command line first.
   fn list(&self) -> Reply {
-    let mut found: Vec<_> = Hub::new().downloaded().into_iter().map(|(m, _)| m).collect();
+    let found = Hub::new().downloaded().into_iter().map(|(m, _)| m);
+    let mut found: Vec<_> = found.filter(|m| !m.diarization()).collect();
     let given = |m: &ModelInfo| self.models.iter().position(|x| x.0.name == m.name);
     found.sort_by_key(|m| given(m).unwrap_or(usize::MAX));
     let model = |m: &ModelInfo| {
@@ -484,9 +488,10 @@ fn duration(s: &str) -> Option<Duration> {
 }
 
 /// The wavo model a request's `model` names exactly, by its short or full name; `None` for the
-/// default: an empty or unknown name, such as OpenAI's `whisper-1`.
+/// default: an empty or unknown name, such as OpenAI's `whisper-1`, or the diarization model's.
 fn wanted(name: &str) -> Option<&'static ModelInfo> {
-  hub::MODELS.iter().find(|m| m.name == name || m.full_name == name)
+  let mut speech_to_text = hub::MODELS.iter().filter(|m| !m.diarization());
+  speech_to_text.find(|m| m.name == name || m.full_name == name)
 }
 
 /// The audio of the form field `name`: a file, or with `raw` 16 kHz mono 16-bit PCM. Takes the
