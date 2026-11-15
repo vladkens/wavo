@@ -63,6 +63,9 @@ the reference.
   chunks) 42 of 21585 (portable kernels: 20); `noise` none. With the model card's chunking,
   `dots` 25 and `dots-full` 214 apart; on the CPU 25 and 218.
 - The CPU on an M5 (10 threads): `dots-full` in 6.2–9.4 s, against 0.6 s on its GPU.
+- AMI test Mix-Headset on a MacBook Air M5 (`scripts/diarization.py`, the table in
+  `docs/benchmarks.md`): 9.2% at 581× on the GPU, 9.2% at 38× on the CPU; FluidAudio's Nemotron
+  9.5% at 499×, pyannote community-1 34.7% at 13× (17.1% against the manual labels, wavo 26.0%).
 - On an M5, the whole CLI run with the load, best of 5, against parakeet.cpp's `diarize` on
   Metal: jfk 0.04 vs 0.08 s, dots 0.08 vs 0.14 s, dots-full 0.52 vs 0.76 s. parakeet.cpp's own
   Metal and CPU turns of dots-full are 10 speech frames apart, wavo's from its Metal ones 34.

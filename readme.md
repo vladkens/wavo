@@ -161,7 +161,7 @@ How fast each engine gives you the text. Every engine runs the same model (Parak
 
 *5s phrase* is the whole cycle of a short recording: start the program, load the model, transcribe, exit. *Long audio* is how many times faster than real time an hour-long recording goes. *Energy* is what that hour costs on the CPU, GPU and Neural Engine, measured with [macmon](https://github.com/vladkens/macmon). ANE is Apple's Neural Engine. Measured on a MacBook Pro with an Apple M5.
 
-GigaAM, Windows and the method are in [docs/benchmarks.md](docs/benchmarks.md).
+GigaAM, Windows, speaker diarization and the method are in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## 📚 Library usage
 

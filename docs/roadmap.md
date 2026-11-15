@@ -43,7 +43,8 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       [Plan](plans/completed/20261114-cpu.md)
 
 - [x] **21. Speaker diarization:** NVIDIA's Nemotron 3 Diarization (8 speakers), `wavo::Diarizer`
-      and `wavo run --diarize`, 1.5× parakeet.cpp's speed on Metal on an M5 (#100).
+      and `wavo run --diarize` on the GPU or the CPU, 1.5× parakeet.cpp's speed on Metal on an M5
+      (#100).
       [Plan](plans/completed/20261110-diarization.md)
 
 Open:
