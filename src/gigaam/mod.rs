@@ -5,6 +5,7 @@
 //! pieces, the others characters.
 
 pub mod ane;
+mod cpu;
 mod decoder;
 mod encoder;
 mod frontend;
@@ -13,7 +14,7 @@ use decoder::Decoder;
 use encoder::Encoder;
 use frontend::Frontend;
 
-use crate::ane::Backend;
+use crate::ane::{Backend, Target};
 use crate::conformer::{self, Attention};
 use crate::error::{Result, bail};
 use crate::gguf::Gguf;
@@ -31,7 +32,7 @@ enum Head {
 }
 
 pub struct Gigaam {
-  backend: Backend<Encoder>,
+  backend: Backend<Encoder, cpu::Encoder>,
   frontend: Frontend,
   head: Head,
   tok: Tokenizer,
@@ -82,9 +83,21 @@ fn config(g: &Gguf) -> Result<Config> {
   })
 }
 
+/// The rotary table for `frames` positions: per position head_dim / 2 cosines, then as many sines.
+/// Computed in f64 because Metal's fast-math sin/cos are inaccurate for large angles.
+fn rope(frames: usize, hd: usize, theta: f64) -> Vec<f32> {
+  (0..frames)
+    .flat_map(|t| {
+      let angles: Vec<f64> =
+        (0..hd / 2).map(|i| t as f64 * theta.powf(-2.0 * i as f64 / hd as f64)).collect();
+      let cos = angles.iter().map(|a| a.cos() as f32);
+      cos.chain(angles.iter().map(|a| a.sin() as f32)).collect::<Vec<_>>()
+    })
+    .collect()
+}
+
 impl Gigaam {
-  /// Runs the encoder on `ane` when given, else on the GPU at `gpu` (see `ane::Backend::new`).
-  pub fn load(g: &Gguf, ane: Option<crate::ane::Model>, gpu: Option<usize>) -> Result<Self> {
+  pub fn load(g: &Gguf, target: Target) -> Result<Self> {
     let cfg = config(g)?;
     let u = |key: &str| g.get::<u32>(&format!("stt.gigaam.{key}")).map(|v| v as usize);
     let tok = Tokenizer::new(&g.array("tokenizer.ggml.tokens")?);
@@ -104,10 +117,14 @@ impl Gigaam {
       Head::Ctc { blank }
     };
     let frontend = Frontend::new(g, cfg.mels)?;
-    let backend = Backend::new(ane, gpu, |gpu| {
-      let (name, dims) = &cfg.head;
-      Encoder::new(gpu, g, cfg.conformer, cfg.mels, cfg.theta, (name, dims))
-    })?;
+    let backend = Backend::new(
+      target,
+      |gpu| {
+        let (name, dims) = &cfg.head;
+        Encoder::new(gpu, g, cfg.conformer, cfg.mels, cfg.theta, (name, dims))
+      },
+      || cpu::Encoder::new(g, config(g)?),
+    )?;
     Ok(Self { backend, frontend, head, tok, chars })
   }
 
@@ -127,6 +144,7 @@ impl Gigaam {
     let enc = match &self.backend {
       Backend::Gpu(gpu) => gpu.1.run(&gpu.0, &mel)?,
       Backend::Ane(model) => ane::run(model, &mel, self.frontend.mels())?,
+      Backend::Cpu(encoder) => encoder.run(&mel),
     };
     let ids = match &self.head {
       Head::Rnnt(decoder) => decoder.decode(&enc),

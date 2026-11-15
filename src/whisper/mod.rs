@@ -1,14 +1,16 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-//! Whisper: log-mel frontend on the CPU, encoder and autoregressive decoder on the GPU, greedy
+//! Whisper: log-mel frontend on the CPU, encoder and autoregressive decoder on the GPU or the CPU,
+//! greedy
 //! search with segment timestamps on the CPU. Audio runs in 30 s windows, the next one starting
 //! where the last segment closed, as transcribe.cpp does for every input length.
 
+mod cpu;
 mod encoder;
 mod frontend;
 mod search;
 pub(crate) mod tokenizer;
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use encoder::Encoder;
 pub(crate) use frontend::SAMPLES;
@@ -16,6 +18,8 @@ use frontend::{Frontend, HOP, N_FFT};
 use search::Ids;
 use tokenizer::Tokenizer;
 
+use crate::ane::{Backend, Target};
+use crate::cpu::transformer::{self as on_cpu, Cache};
 use crate::error::{Result, bail};
 use crate::gguf::Gguf;
 use crate::gpu::{Buffer, Gpu, Groups, Recorded};
@@ -26,9 +30,10 @@ use crate::{Token, Transcript};
 /// average log-probability of its tokens below `LOGPROB`.
 pub(crate) const NO_SPEECH: f32 = 0.6;
 const LOGPROB: f32 = -1.0;
+/// Encoder frames of a window.
+const FRAMES: usize = SAMPLES / HOP / 2;
 
 pub struct Whisper {
-  pub gpu: Gpu,
   frontend: Frontend,
   tok: Tokenizer,
   ids: Ids,
@@ -36,9 +41,25 @@ pub struct Whisper {
   transcribe: usize,
   no_speech: usize,
   languages: Vec<usize>,
+  mels: usize,
+  backend: Backend<OnGpu, OnCpu>,
+}
+
+struct OnGpu {
   encoder: Encoder,
   decoder: Decoder,
   arena: Mutex<Arena>,
+}
+
+struct OnCpu {
+  encoder: cpu::Encoder,
+  decoder: on_cpu::Decoder,
+}
+
+/// A transcription's hold on its backend: the GPU's arena, or the CPU's caches of the window.
+enum Run<'a> {
+  Gpu(&'a Gpu, &'a OnGpu, MutexGuard<'a, Arena>),
+  Cpu(&'a OnCpu, Option<Cache>),
 }
 
 /// Activations, caches and the bind groups recorded over them, one list per kind of pass.
@@ -55,8 +76,7 @@ struct Arena {
 }
 
 impl Whisper {
-  /// Runs on the GPU at `gpu`, an index of `crate::devices`, else the default one.
-  pub fn load(g: &Gguf, gpu: Option<usize>) -> Result<Self> {
+  pub fn load(g: &Gguf, target: Target) -> Result<Self> {
     let u = |key: &str| g.get::<u32>(&format!("stt.whisper.{key}")).map(|v| v as usize);
     for (key, want) in [
       ("stt.frontend.type", "mel"),
@@ -132,38 +152,52 @@ impl Whisper {
       bail!("special token ids out of the vocabulary");
     }
 
-    let gpu = Gpu::new(true, gpu)?;
     let mels = u("encoder.num_mel_bins")?;
     let frontend = Frontend::new(g, mels)?;
-    let encoder = Encoder::load(&gpu, g, encoder::Config { mels, frames: SAMPLES / HOP / 2 }, enc)?;
-    let decoder = Decoder::load(&gpu, g, dec, vocab, context)?;
-    let frames = encoder.cfg.frames;
-    let arena = Arena {
-      enc: encoder.buffers(&gpu),
-      dec: decoder.steps(&gpu, frames),
-      ids: gpu.buffer(2),
-      read: gpu.readback(vocab),
-      window: Vec::new(),
-      steps: Vec::new(),
-      next: None,
+    let cfg = || encoder::Config { mels, frames: FRAMES };
+    let gpu = |gpu: &Gpu| {
+      let encoder = Encoder::load(gpu, g, cfg(), config("encoder")?)?;
+      let decoder = Decoder::load(gpu, g, config("decoder")?, vocab, context)?;
+      let arena = Arena {
+        enc: encoder.buffers(gpu),
+        dec: decoder.steps(gpu, FRAMES),
+        ids: gpu.buffer(2),
+        read: gpu.readback(vocab),
+        window: Vec::new(),
+        steps: Vec::new(),
+        next: None,
+      };
+      Ok(OnGpu { encoder, decoder, arena: Mutex::new(arena) })
+    };
+    let cpu = || {
+      let encoder = cpu::Encoder::load(g, cfg(), config("encoder")?)?;
+      Ok(OnCpu { encoder, decoder: on_cpu::Decoder::load(g, config("decoder")?, vocab, context)? })
     };
     Ok(Self {
       sot: u("sot_token_id")?,
       transcribe: u("transcribe_token_id")?,
       no_speech: no_timestamps - 1,
       languages,
-      gpu,
       frontend,
       tok,
       ids,
-      encoder,
-      decoder,
-      arena: Mutex::new(arena),
+      mels,
+      backend: Backend::new(target, gpu, cpu)?,
     })
   }
 
-  fn lock(&self) -> std::sync::MutexGuard<'_, Arena> {
-    self.arena.lock().unwrap_or_else(PoisonError::into_inner)
+  pub fn device(&self) -> &crate::Device {
+    self.backend.device()
+  }
+
+  fn lock(&self) -> Run<'_> {
+    match &self.backend {
+      Backend::Gpu(b) => {
+        Run::Gpu(&b.0, &b.1, b.1.arena.lock().unwrap_or_else(PoisonError::into_inner))
+      }
+      Backend::Cpu(c) => Run::Cpu(c, None),
+      Backend::Ane(_) => unreachable!("Whisper has no Neural Engine program"),
+    }
   }
 
   /// Whether the model has language tokens: the multilingual ones, not `.en`.
@@ -179,8 +213,7 @@ impl Whisper {
     pcm: &[f32],
     mut language: Option<usize>,
   ) -> Result<(Transcript, Option<usize>)> {
-    let mels = self.encoder.cfg.mels;
-    let window = 2 * self.encoder.cfg.frames;
+    let (mels, window) = (self.mels, 2 * FRAMES);
     let mel = self.frontend.compute(pcm);
     let total = mel.len() / mels;
     let mut a = self.lock();
@@ -231,7 +264,7 @@ impl Whisper {
   /// The logits of the language tokens on SOT, in the order of `general.languages`, and the
   /// no-speech probability of up to 30 s of audio: one window, as `transcribe` runs its first.
   pub fn detect(&self, pcm: &[f32]) -> Result<(Vec<f32>, f32)> {
-    let window = 2 * self.encoder.cfg.frames * self.encoder.cfg.mels;
+    let window = 2 * FRAMES * self.mels;
     let mut mel = self.frontend.compute(&pcm[..pcm.len().min(SAMPLES)]);
     mel.resize(window, 0.0);
     let sot = self.window(&mut self.lock(), &mel)?;
@@ -244,30 +277,48 @@ impl Whisper {
 
   /// Encodes a window of mel frames, computes the cross K/V and runs the decoder on SOT; returns
   /// its logits.
-  fn window(&self, a: &mut Arena, mel: &[f32]) -> Result<Vec<f32>> {
+  fn window(&self, run: &mut Run, mel: &[f32]) -> Result<Vec<f32>> {
+    let (gpu, on, a) = match run {
+      Run::Gpu(gpu, on, a) => (gpu, on, &mut **a),
+      Run::Cpu(on, cache) => {
+        let enc = on.encoder.run(mel);
+        let c = cache.insert(on.decoder.cache(&enc, FRAMES));
+        return Ok(on.decoder.step(c, self.sot, 0, None));
+      }
+    };
     let Arena { enc, dec, ids, read, window, .. } = a;
-    let t = self.encoder.cfg.frames;
-    self.gpu.write(&enc.mel, mel);
-    self.gpu.write(&enc.t.x, &self.encoder.positions);
-    self.gpu.write(ids, &[f32::from_bits(self.sot as u32)]);
-    self.gpu.run(window, &dec.logits, read, self.decoder.vocab, |p| {
-      self.encoder.record(p, enc, t);
-      self.decoder.record_cross(p, dec, &enc.t.y, &enc.t.h, t);
-      self.decoder.record_step(p, dec, (ids, 0), 0, t, None);
+    gpu.write(&enc.mel, mel);
+    gpu.write(&enc.t.x, &on.encoder.positions);
+    gpu.write(ids, &[f32::from_bits(self.sot as u32)]);
+    gpu.run(window, &dec.logits, read, on.decoder.vocab, |p| {
+      on.encoder.record(p, enc, FRAMES);
+      on.decoder.record_cross(p, dec, &enc.t.y, &enc.t.h, FRAMES);
+      on.decoder.record_step(p, dec, (ids, 0), 0, FRAMES, None);
     })
   }
 
-  /// Runs the decoder on `tokens` (at most 2) from position `pos` in one pass; returns the last
-  /// one's logits. While the GPU runs it, the CPU records a step at the position after, which the
-  /// next call takes if it is for that position. Every step has the same dispatches over the same
-  /// buffers, so the bind groups are shared.
-  fn steps(&self, a: &mut Arena, tokens: &[usize], pos: usize) -> Result<Vec<f32>> {
-    let frames = self.encoder.cfg.frames;
+  /// Runs the decoder on `tokens` (at most 2) from position `pos`; returns the last one's logits.
+  /// On the GPU in one pass, and while the GPU runs it, the CPU records a step at the position
+  /// after, which the next call takes if it is for that position. Every step has the same
+  /// dispatches over the same buffers, so the bind groups are shared.
+  fn steps(&self, run: &mut Run, tokens: &[usize], pos: usize) -> Result<Vec<f32>> {
+    let (gpu, on, a) = match run {
+      Run::Gpu(gpu, on, a) => (gpu, on, &mut **a),
+      Run::Cpu(on, cache) => {
+        let c = cache.as_mut().expect("a window before its steps");
+        let mut logits = Vec::new();
+        for (i, &token) in tokens.iter().enumerate() {
+          logits = on.decoder.step(c, token, pos + i, None);
+        }
+
+        return Ok(logits);
+      }
+    };
     let Arena { dec, ids, read, steps, next, .. } = a;
     let record = |steps: &mut Groups, pos: usize, n: usize| {
-      self.gpu.record(steps, &dec.logits, read, self.decoder.vocab, |p| {
+      gpu.record(steps, &dec.logits, read, on.decoder.vocab, |p| {
         for i in 0..n {
-          self.decoder.record_step(p, dec, (ids, i), pos + i, frames, None);
+          on.decoder.record_step(p, dec, (ids, i), pos + i, FRAMES, None);
         }
       })
     };
@@ -276,10 +327,10 @@ impl Whisper {
       _ => record(steps, pos, tokens.len()),
     };
     let bits: Vec<f32> = tokens.iter().map(|&t| f32::from_bits(t as u32)).collect();
-    self.gpu.write(ids, &bits);
+    gpu.write(ids, &bits);
     let after = pos + tokens.len();
-    self.gpu.finish(r, read, || {
-      if after < self.decoder.context {
+    gpu.finish(r, read, || {
+      if after < on.decoder.context {
         *next = Some((after, record(steps, after, 1)));
       }
     })

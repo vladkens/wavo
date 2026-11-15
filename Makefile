@@ -1,4 +1,4 @@
-.PHONY: prepare check test test-all build update clean
+.PHONY: prepare check test test-all test-kernels build update clean
 
 CARGO_FLAGS := --release --locked
 
@@ -23,6 +23,9 @@ test: test-unit
 
 test-all:
 	cargo test $(CARGO_FLAGS)
+
+# The GPU fixtures again on each kernel tier.
+test-kernels:
 	scripts/test-kernels.py
 
 build:
@@ -46,7 +49,7 @@ ALL_MODELS := $(shell sed -n 's/.*full_name: "\([^"]*\)".*/\1/p' src/hub/mod.rs)
 # `make test-all` covers them all. CI caches the downloads under a key made from this line, so
 # keep it on one line.
 MODELS := gigaam-v3-e2e-rnnt parakeet-tdt-0.6b-v3 parakeet-tdt-0.6b-v2 whisper-tiny moonshine-tiny Nemotron-3-Diarization
-SMOKE_TESTS := gigaam_v3_e2e_rnnt parakeet_tdt_v3 parakeet_tdt_v2 whisper_tiny moonshine_tiny nemotron_diarization
+SMOKE_TESTS := gigaam_v3_e2e_rnnt gigaam_v3_e2e_rnnt_cpu parakeet_tdt_v3 parakeet_tdt_v2 whisper_tiny moonshine_tiny nemotron_diarization
 REFERENCE_REV := 5bb2deb2a4afb1fd50534ecb51cfcb521ef94944
 # Whisper has segment timestamps only: TIMESTAMPS=segment; Moonshine none: TIMESTAMPS=none.
 TIMESTAMPS := token

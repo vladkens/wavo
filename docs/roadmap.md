@@ -38,6 +38,9 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
 - [x] **Spoken language:** `Model::detect_language`, `Transcript::language` and Bazarr's
       `POST /detect-language`; for Parakeet v3 and ultra, the language of Parakeet's text
       (whatlang) (#77).
+- [x] **CPU backend** for servers without a GPU: every family on the CPU, text as on the GPU;
+      30 s of Russian in 5.3 s with GigaAM and 7.7 s with Parakeet V3 on two N100 cores (#104).
+      [Plan](plans/completed/20261114-cpu.md)
 
 - [x] **21. Speaker diarization:** NVIDIA's Nemotron 3 Diarization (8 speakers), `wavo::Diarizer`
       and `wavo run --diarize`, 1.5× parakeet.cpp's speed on Metal on an M5 (#100).
