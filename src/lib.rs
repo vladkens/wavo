@@ -1041,14 +1041,15 @@ fn softmax(logits: &[f32]) -> Vec<f32> {
 
 /// A speaker diarization model loaded on the GPU: who speaks when (see [Speakers](crate#speakers)).
 ///
-/// Load it once with [`Diarizer::load`], then call [`Diarizer::diarize`] for each recording. It is
-/// `Send` and `Sync`: share it between threads, and concurrent calls take turns.
+/// Load it once with [`Diarizer::load`] or [`Diarizer::load_with`], then call [`Diarizer::diarize`]
+/// for each recording. It is `Send` and `Sync`: share it between threads, and concurrent calls take
+/// turns.
 pub struct Diarizer(Box<sortformer::Sortformer>);
 
 impl Diarizer {
   /// Loads a diarization model from its GGUF file: `nemotron-diarization`'s
   /// `nemotron-3-diarization-q8_0.gguf` (see the [model table](crate#models)). It
-  /// runs on the GPU, as [`Model::load`] picks it.
+  /// runs on the GPU, as [`Model::load`] picks it; [`load_with`](Self::load_with) picks another.
   ///
   /// # Errors
   ///
@@ -1064,12 +1065,38 @@ impl Diarizer {
   /// # Ok::<(), wavo::Error>(())
   /// ```
   pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+    Self::load_with(path, Backend::Gpu)
+  }
+
+  /// Loads the model on the GPU `backend` names: [`Backend::GpuAt`] an adapter of [`devices`],
+  /// [`Auto`](Backend::Auto) and [`Gpu`](Backend::Gpu) the one [`Model::device`] describes.
+  ///
+  /// # Errors
+  ///
+  /// As [`load`](Self::load); [`Error::Model`] for [`Backend::NeuralEngine`], which doesn't run
+  /// this model, and [`Error::Gpu`] for a `GpuAt` index past the GPUs.
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// let on = wavo::Backend::GpuAt(1);
+  /// let diarizer = wavo::Diarizer::load_with("nemotron-3-diarization-q8_0.gguf", on)?;
+  /// # Ok::<(), wavo::Error>(())
+  /// ```
+  pub fn load_with(path: impl AsRef<Path>, backend: Backend) -> Result<Self> {
     let g = gguf::Gguf::open(path.as_ref())?;
     if !diarization(&g) {
       bail!("not a speaker diarization model: Model::load takes speech-to-text models");
     }
 
-    Ok(Self(Box::new(sortformer::Sortformer::load(&g)?)))
+    let gpu = match backend {
+      Backend::Auto | Backend::Gpu => None,
+      Backend::GpuAt(i) => Some(i),
+      Backend::NeuralEngine => {
+        bail!("the diarization model runs on the GPU, not the Neural Engine")
+      }
+    };
+    Ok(Self(Box::new(sortformer::Sortformer::load(&g, gpu)?)))
   }
 
   /// Who speaks when in 16 kHz mono PCM samples in [-1, 1], of any length: the [`Turn`]s of each
@@ -1078,7 +1105,7 @@ impl Diarizer {
   /// those of two speakers overlap where both talk. Silence, noise and audio of less than 10 ms
   /// give none.
   ///
-  /// The model runs over the audio in chunks of 21 s with a cache of each speaker's voice, so its
+  /// The model runs over the audio in chunks of 27 s with a cache of each speaker's voice, so its
   /// time grows linearly with the audio and its memory beyond `pcm` stays that of one chunk.
   ///
   /// # Errors

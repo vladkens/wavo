@@ -56,8 +56,7 @@ Open:
   GigaAM, Parakeet and Whisper 1.5–1.9× faster there, ahead of transcribe.cpp on every model.
 - **Server, more:** a Docker image and the Wyoming protocol (Home Assistant); OpenAI's
   `diarized_json` from `--diarize`'s utterances.
-- **Diarization, more:** the low-latency streaming presets, `--device` for the diarizer, the
-  Neural Engine (fixed shapes).
+- **Diarization, more:** the low-latency streaming presets, the Neural Engine (fixed shapes).
 - **Fast build.** The in-house FFT replaced `rustfft` (#15); left: wgpu features per target.
   [Plan](plans/20261010-fast-build.md)
 - **Other engines.** Measure wavo against the other ways to run the same models on a Mac, not

@@ -374,7 +374,7 @@ fn run(args: &[&str]) -> Result<()> {
   bar.set_message("decoding the audio");
   let pcm = audio::read(audio)?;
   if diarizer {
-    let turns = diarize_with(&path, &pcm, &bar)?;
+    let turns = diarize_with(&path, on, &pcm, &bar)?;
     bar.finish_and_clear();
     if turns.is_empty() {
       eprintln!("no speech found in {audio}");
@@ -402,7 +402,9 @@ fn run(args: &[&str]) -> Result<()> {
   let utterances = match speakers {
     Some(diarizer) => {
       let bar = spinner();
-      Some(transcript.utterances(&diarize_with(&diarizer, &pcm, &bar)?))
+      // On the GPU --device names, also when the model runs on the Neural Engine.
+      let on = if on == Backend::NeuralEngine { Backend::Gpu } else { on };
+      Some(transcript.utterances(&diarize_with(&diarizer, on, &pcm, &bar)?))
     }
     None => None,
   };
@@ -419,11 +421,17 @@ fn run(args: &[&str]) -> Result<()> {
   Ok(std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())?)
 }
 
-/// The turns of `pcm` by the diarization model at `path`, with progress on `bar`.
-fn diarize_with(path: &Path, pcm: &[f32], bar: &ProgressBar) -> Result<Vec<wavo::Turn>> {
+/// The turns of `pcm` by the diarization model at `path` on the GPU of `on`, with progress on
+/// `bar`.
+fn diarize_with(
+  path: &Path,
+  on: Backend,
+  pcm: &[f32],
+  bar: &ProgressBar,
+) -> Result<Vec<wavo::Turn>> {
   bar.set_message("loading the diarization model");
   let diarizer =
-    wavo::Diarizer::load(path).with_context(|| format!("loading {}", path.display()))?;
+    wavo::Diarizer::load_with(path, on).with_context(|| format!("loading {}", path.display()))?;
   bar.set_message("telling the speakers apart");
   Ok(diarizer.diarize(pcm)?)
 }
@@ -598,7 +606,7 @@ fn bench(model: &str, audio: &str, opts: &[&str]) -> Result<()> {
   {
     true => {
       ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU only, not --backend ane");
-      let d = wavo::Diarizer::load(&path)?;
+      let d = wavo::Diarizer::load_with(&path, on)?;
       let device = d.device().to_string();
       (Box::new(move || d.diarize(pcm).map(drop)), device)
     }
