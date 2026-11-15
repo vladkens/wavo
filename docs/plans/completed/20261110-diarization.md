@@ -16,10 +16,12 @@ the reference.
   layer with ReLU and an 8-way sigmoid: per 10 ms frame the probability that each of 8 speakers
   talks, in order of first appearance.
 - Frontend: Parakeet's log-mel without normalization, ⌊n / 160⌋ frames.
-- Streaming (`diarization_streaming.cpp`): chunks of 264 embedding frames (21.12 s), no context;
-  per chunk the stacking runs on the chunk's mel, the rest over `[speaker cache | chunk]`, and the
-  speaker cache (264 frames) is compressed to the frames that best represent each speaker (AOSC),
-  the model's silence embedding in empty slots. Audio of any length, in linear time.
+- Streaming (`diarization_streaming.cpp`, NeMo's `streaming_update`): the model card's 30.4 s
+  config, chunks of 340 embedding frames (27.2 s) with 40 more ahead; per chunk the stacking runs
+  on the chunk's mel and those ahead, the rest over `[speaker cache | FIFO | chunk | ahead]`, the
+  FIFO (40 frames) moves 300 frames at a time to the speaker cache (264 frames), which is
+  compressed to the frames that best represent each speaker (AOSC), the model's silence embedding
+  in empty slots. Audio of any length, in linear time.
 - Turns: per speaker, each run of frames with probability ≥ 0.5.
 
 ## API (for the person's review in the PR)
@@ -49,7 +51,7 @@ the reference.
       the head on the GPU, the streaming state on the CPU
 - [x] `Diarizer`, `Turn`, `Transcript::utterances`, rustdoc with units and errors
 - [x] Fixtures pass within 1% of their speech frames
-- [x] CLI: `--diarize`, the turns of `wavo run nemotron-diarization`
+- [x] CLI: `--diarize`, the turns of `wavo run nemotron-diarization`, `--device`
 - [x] Speed against parakeet.cpp
 - [x] `docs/roadmap.md`, `readme.md`
 
@@ -61,9 +63,20 @@ the reference.
 - On an M5, the whole CLI run with the load, best of 5, against parakeet.cpp's `diarize` on
   Metal: jfk 0.04 vs 0.08 s, dots 0.08 vs 0.14 s, dots-full 0.52 vs 0.76 s. parakeet.cpp's own
   Metal and CPU turns of dots-full are 10 speech frames apart, wavo's from its Metal ones 34.
-- DER, collar 0, against the datasets' own labels: AMI test SDM (16 meetings, 8.9 h, 3–4
-  speakers) wavo 28.2%, parakeet.cpp 27.5% on Metal and on the CPU; VoxConverse dev, its first 44
-  files (4.2 h, 1–17 speakers) wavo 5.2%, parakeet.cpp 6.1% on Metal and on the CPU. A long
-  recording now and then flips a speaker for minutes on one build and not another: AMI's ES2004a
-  53.5% on the M5's tensor kernels against 32–35% on the others, VoxConverse's vmaiq (17 speakers)
-  28% against 45–46%.
+- The same against parakeet.cpp on Vulkan: RTX 4060 jfk 0.27 vs 0.29 s, dots 0.30 vs 0.33 s,
+  dots-full 0.65 vs 0.78 s; Radeon 610M 0.41 vs 0.40 s, 0.89 vs 0.97 s, 7.3 vs 8.5 s; Intel N100
+  (Linux) 0.52 vs 0.95 s, 1.9 vs 3.5 s, 20.1 vs 37.6 s. The fixtures' frames apart are the M5's
+  on the M2, the Radeon 610M (Vulkan and DX12), the RTX 4060 (DX12 too) and the N100, on each
+  kernel tier of the last two.
+- DER, collar 0, on an M5. Against the datasets' own labels: AMI test SDM (16 meetings, 8.9 h,
+  3–4 speakers) wavo 27.7%, parakeet.cpp 27.5%; VoxConverse dev (216 files, 20.1 h, 1–20 speakers)
+  5.7% and 6.2%, test (232 files, 43.3 h, 1–21) 8.5% and 8.3%. Against the forced-alignment labels
+  of the model card (nttcslab-sp/diar-forced-alignment), AMI test Mix-Headset 9.2% (the card:
+  9.25%), SDM 11.7%; FluidAudio's CoreML port with the same chunking 9.5% and 11.4%, VoxConverse
+  test 8.2%. parakeet.cpp's 21.12 s chunks with nothing ahead gave wavo 28.2%, 6.0%, 8.4%, 9.3%
+  and 12.3%. The chunking alone moves a long recording's DER by up to 27 points either way, as a
+  speaker flips for minutes: AMI's ES2004a (SDM) 43.4% with the old chunks, 16.7% with the new.
+- Words given to the wrong speaker (WDER, diarizationlm) by `--diarize` with parakeet-v3 against
+  AMI's word-level labels, its 16 test meetings: 6.06%, 5.63% once a word's span ends 200 ms after
+  its last token starts rather than at the next word (better on 15 meetings, the same on 1), 5.55%
+  with the new chunks.

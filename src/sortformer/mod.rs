@@ -20,9 +20,12 @@ use crate::{Device, Turn, transformer};
 
 /// Output frame length: the 10 ms hop.
 const FRAME_MS: u32 = 10;
-/// The chunking of NeMo's `diarize()` for this model, in embedding frames of 80 ms (21.12 s
-/// chunks): parakeet.cpp's defaults, as its GGUF doesn't carry them.
-const PARAMS: Params = Params { chunk: 264, fifo: 0, cache: 264, period: 264, silence: 1 };
+/// The chunking of NeMo's `diarize()` for this model, in embedding frames of 80 ms: the model
+/// card's 30.4 s latency config (27.2 s chunks, 3.2 s ahead), as the GGUF doesn't carry it.
+/// parakeet.cpp's 21.12 s chunks with nothing ahead give a DER of 12.3% instead of 11.7% on AMI's
+/// test meetings (SDM, forced-alignment labels) and 6.0% instead of 5.7% on VoxConverse dev.
+const PARAMS: Params =
+  Params { chunk: 340, right: 40, fifo: 40, cache: 264, period: 300, silence: 1 };
 
 pub struct Sortformer {
   gpu: Gpu,
@@ -33,7 +36,8 @@ pub struct Sortformer {
 }
 
 impl Sortformer {
-  pub fn load(g: &Gguf) -> Result<Self> {
+  /// The model of `g` on the adapter at `gpu` of `devices`, or the default one.
+  pub fn load(g: &Gguf, gpu: Option<usize>) -> Result<Self> {
     for (key, want) in [
       ("parakeet.arch", "diarization"),
       ("parakeet.preprocessor.normalize", "NA"),
@@ -84,8 +88,8 @@ impl Sortformer {
     let silence = g.tensor("sortformer_modules.learnable_sil_emb", &[d])?.to_f32()?;
     let theta = g.get::<f32>("parakeet.encoder.rope_base")?;
     // Flash attention reads rows up to a multiple of 64.
-    let frames = (PARAMS.cache + PARAMS.fifo + PARAMS.chunk).next_multiple_of(64);
-    let gpu = Gpu::new(true, None)?;
+    let frames = (PARAMS.cache + PARAMS.fifo + PARAMS.chunk + PARAMS.right).next_multiple_of(64);
+    let gpu = Gpu::new(true, gpu)?;
     let shape = [u("diar.tf_d_model")?, speakers, frames];
     let encoder = Encoder::new(&gpu, g, cfg, shape, theta)?;
     Ok(Self { gpu, frontend: Frontend::new(), encoder, silence, speakers })
@@ -108,18 +112,22 @@ impl Sortformer {
     let mut probs = Vec::with_capacity(frames * n);
     for start in (0..frames).step_by(PARAMS.chunk * STACK) {
       let end = (start + PARAMS.chunk * STACK).min(frames);
-      let embs = self.encoder.embed(&self.gpu, &self.frontend.log_mel(pcm, start..end))?;
+      let ahead = (end + PARAMS.right * STACK).min(frames);
+      let embs = self.encoder.embed(&self.gpu, &self.frontend.log_mel(pcm, start..ahead))?;
       let x: Vec<f32> = state.context().chain(&embs).copied().collect();
       let out = self.encoder.predict(&self.gpu, &x)?;
-      // The chunk's frames follow the context's; past the last mel frame are the padding's.
+      // The chunk's frames follow the context's, and those ahead the chunk's; past the last mel
+      // frame are the padding's.
       let context = (x.len() - embs.len()) / d;
       probs.extend_from_slice(&out[context * STACK * n..][..(end - start) * n]);
       if end < frames {
         // Per embedding, the mean of its 8 frames.
         let mean = |f: &[f32], s: usize| f.iter().skip(s).step_by(n).sum::<f32>() / STACK as f32;
-        let preds: Vec<f32> =
-          out.chunks(STACK * n).flat_map(|f| (0..n).map(move |s| mean(f, s))).collect();
-        state.update(&PARAMS, &embs, &preds);
+        let rows = context + PARAMS.chunk;
+        let preds: Vec<f32> = (out.chunks(STACK * n).take(rows))
+          .flat_map(|f| (0..n).map(move |s| mean(f, s)))
+          .collect();
+        state.update(&PARAMS, &embs[..PARAMS.chunk * d], &preds);
       }
     }
 

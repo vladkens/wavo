@@ -15,8 +15,9 @@ const MIN_POS_SCORES_RATE: f32 = 0.5;
 
 /// The chunking, in embedding frames.
 pub struct Params {
-  /// Frames per chunk.
+  /// Frames per chunk, and of the audio after it that the forward sees too.
   pub chunk: usize,
+  pub right: usize,
   /// Frames of the FIFO and of the speaker cache.
   pub fifo: usize,
   pub cache: usize,
@@ -210,7 +211,7 @@ mod tests {
 
   #[test]
   fn fifo_cache_and_compression() {
-    let p = Params { chunk: 4, fifo: 2, cache: 5, period: 4, silence: 3 };
+    let p = Params { chunk: 4, right: 0, fifo: 2, cache: 5, period: 4, silence: 3 };
     let mut st = State::new(1, vec![9.0]);
     // Frame i has embedding i; the speaker talks in even frames.
     let preds = |frames: std::ops::Range<usize>| -> Vec<f32> {
