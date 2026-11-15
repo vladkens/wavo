@@ -435,9 +435,9 @@ mod tests {
     assert!(rendered.contains("\"piece\": \"▁Yes.\", \"start_ms\": 1000},"), "{rendered}");
     assert!(
       rendered.ends_with(
-        "\"utterances\": [\n  {\"speaker\": 1, \"start_ms\": 0, \"end_ms\": 1000, \"text\": \"Hi.\"},\
-         \n  {\"speaker\": 2, \"start_ms\": 1000, \"end_ms\": 2000, \"text\": \"Yes.\"},\
-         \n  {\"speaker\": 1, \"start_ms\": 4000, \"end_ms\": 5200, \"text\": \"And then\"}\n]}"
+        "\"utterances\": [\n  {\"speaker\": 1, \"start_ms\": 0, \"end_ms\": 200, \"text\": \"Hi.\"},\
+         \n  {\"speaker\": 2, \"start_ms\": 1000, \"end_ms\": 1200, \"text\": \"Yes.\"},\
+         \n  {\"speaker\": 1, \"start_ms\": 4000, \"end_ms\": 4400, \"text\": \"And then\"}\n]}"
       ),
       "{rendered}"
     );

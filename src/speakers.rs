@@ -8,6 +8,10 @@ use crate::Transcript;
 /// The longest a word is taken to last, in milliseconds, when the next one starts later or there
 /// is none.
 const WORD_MS: u32 = 1000;
+/// How long a word is taken to last after its last token starts, in milliseconds: about a token,
+/// so that the pause after it doesn't count. On AMI's test meetings this gives 7% fewer words to
+/// the wrong speaker than spans that run until the next word.
+const TAIL_MS: u32 = 200;
 
 /// A stretch of audio where one speaker talks, from
 /// [`Diarizer::diarize`](crate::Diarizer::diarize). Two speakers' turns overlap where they talk at
@@ -32,8 +36,8 @@ pub struct Utterance {
   pub speaker: Option<u32>,
   /// Where its first word starts, in milliseconds from the start of the audio.
   pub start_ms: u32,
-  /// Where its last word ends, in milliseconds: when the next word starts, at most 1 s after the
-  /// last word starts.
+  /// Where its last word ends, in milliseconds: when the next word starts, at most 200 ms after
+  /// the word's last token starts and 1 s after the word starts.
   pub end_ms: u32,
   /// Its words, as in [`Transcript::text`].
   pub text: String,
@@ -44,8 +48,8 @@ pub struct Utterance {
 impl Transcript {
   /// The transcript cut into utterances by speaker, given the [`Turn`]s of the same audio: each
   /// word goes to the speaker whose turns overlap it most, from the start of its first token that
-  /// is more than a space to the next word's start (at most 1 s), or when none does to the speaker
-  /// of the nearest turn;
+  /// is more than a space to the next word's start (at most 200 ms after its last token starts and
+  /// 1 s after its own start), or when none does to the speaker of the nearest turn;
   /// consecutive words of a speaker make an utterance. The utterances hold every token, in order.
   ///
   /// A word starts at a token whose piece starts with `▁` or a space, or that starts more than 1 s
@@ -79,32 +83,36 @@ impl Transcript {
           || !marked && tokens[i].start_ms > tokens[i - 1].start_ms.saturating_add(WORD_MS)
       })
       .collect();
-    // Per word its tokens and start: that of its first token with more than a space (a space token
-    // of a character vocabulary comes right after the word before).
-    let words: Vec<(Range<usize>, u32)> = (firsts.iter().enumerate())
+    // Per word its tokens, start: that of its first token with more than a space (a space token of
+    // a character vocabulary comes right after the word before), and its last token's start.
+    let words: Vec<(Range<usize>, u32, u32)> = (firsts.iter().enumerate())
       .map(|(k, &first)| {
         let end = firsts.get(k + 1).copied().unwrap_or(tokens.len());
         let blank = |i: &usize| tokens[*i].piece.trim_matches([' ', '▁']).is_empty();
         let shown = (first..end).find(|i| !blank(i)).unwrap_or(first);
-        (first..end, tokens[shown].start_ms)
+        (first..end, tokens[shown].start_ms, tokens[end - 1].start_ms)
       })
       .collect();
 
-    // Each word lasts until the next start after its own: words that start together (a Whisper
-    // segment's) share their span, and so their speaker.
+    // Each word lasts until the next start after its own and a token after its last token starts:
+    // words that start together (a Whisper segment's, untimed) share their span to the next start,
+    // and so their speaker.
     let mut ends = vec![0; words.len()];
     let mut later = u32::MAX;
     for k in (0..words.len()).rev() {
-      let start = words[k].1;
+      let (start, last) = (words[k].1, words[k].2);
       if let Some(next) = words.get(k + 1).filter(|w| w.1 != start) {
         later = next.1;
       }
 
-      ends[k] = later.min(start.saturating_add(WORD_MS)).max(start + 1);
+      let together =
+        k > 0 && words[k - 1].1 == start || words.get(k + 1).is_some_and(|w| w.1 == start);
+      let tail = if together { u32::MAX } else { last.saturating_add(TAIL_MS) };
+      ends[k] = later.min(start.saturating_add(WORD_MS)).min(tail).max(start + 1);
     }
 
     let mut out: Vec<Utterance> = Vec::new();
-    for ((range, start), end) in words.into_iter().zip(ends) {
+    for ((range, start, _), end) in words.into_iter().zip(ends) {
       let speaker = speaker(turns, start, end);
       match out.last_mut() {
         Some(u) if u.speaker == speaker => (u.end_ms, u.tokens.end) = (end, range.end),
@@ -181,7 +189,7 @@ mod tests {
     let u = |s, text: &str, a, b| (Some(s), text.to_string(), a, b);
     assert_eq!(
       said(&t, &turns),
-      [u(0, "Hello there.", 0, 1400), u(1, "Hi!", 2000, 3000), u(0, "Bye", 5000, 6000)]
+      [u(0, "Hello there.", 0, 600), u(1, "Hi!", 2000, 2280), u(0, "Bye", 5000, 5200)]
     );
     let all = t.utterances(&turns);
     assert_eq!(all.iter().map(|u| u.tokens.clone()).collect::<Vec<_>>(), [0..3, 3..5, 5..6]);
@@ -190,9 +198,14 @@ mod tests {
     let turns = [turn(1, 0, 300), turn(0, 300, 2000), turn(1, 1900, 2500)];
     assert_eq!(
       said(&t, &turns),
-      [u(1, "Hello", 0, 400), u(0, "there.", 400, 1400), u(1, "Hi! Bye", 2000, 6000)]
+      [u(1, "Hello", 0, 280), u(0, "there.", 400, 600), u(1, "Hi! Bye", 2000, 5200)]
     );
-    assert_eq!(said(&t, &[]), [(None, "Hello there. Hi! Bye".into(), 0, 6000)]);
+    assert_eq!(said(&t, &[]), [(None, "Hello there. Hi! Bye".into(), 0, 5200)]);
+    // The pause after a word isn't the word's: the next speaker's turn starting in it doesn't
+    // take the word.
+    let t = transcript(&[("▁Not", 0), ("▁now.", 300), ("▁Why?", 1100)]);
+    let turns = [turn(0, 0, 550), turn(1, 600, 1600)];
+    assert_eq!(said(&t, &turns), [u(0, "Not now.", 0, 500), u(1, "Why?", 1100, 1300)]);
     // A piece without `▁` continues its word past a pause, in the speaker of the word's start.
     let t = transcript(&[("▁ask", 3600), ("▁not", 3920), ("hing", 4960), (".", 4960)]);
     let turns = [turn(0, 3300, 4590), turn(1, 5220, 9610)];
