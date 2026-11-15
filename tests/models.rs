@@ -18,8 +18,8 @@ use std::sync::{Mutex, PoisonError};
 /// memory of an 8 GB card.
 static GPU: Mutex<()> = Mutex::new(());
 
-/// The Q8_0 GGUF of `name` in the Hugging Face cache (`make models`), in its owner's repository
-/// in `hub::MODELS`, with the root resolved as `wavo::hub::Hub::new` does (`src/hub/cache.rs`).
+/// The GGUF of `name` in the Hugging Face cache (`make models`), in its repository in
+/// `hub::MODELS`, with the root resolved as `wavo::hub::Hub::new` does (`src/hub/cache.rs`).
 fn model_path(name: &str) -> PathBuf {
   let var = |k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
   let user = || var("HOME").or_else(|| var("USERPROFILE")).unwrap_or_default();
@@ -27,11 +27,11 @@ fn model_path(name: &str) -> PathBuf {
   let home = || var("HF_HOME").unwrap_or_else(|| cache().join("huggingface"));
   let hub = var("HF_HUB_CACHE").or_else(|| var("HUGGINGFACE_HUB_CACHE"));
   let hub = hub.unwrap_or_else(|| home().join("hub"));
-  let owner = wavo::hub::lookup(name).unwrap().owner;
-  let repo = hub.join(format!("models--{owner}--{name}-gguf"));
+  let model = wavo::hub::lookup(name).unwrap();
+  let repo = hub.join(format!("models--{}", model.repo().replace('/', "--")));
   let rev = std::fs::read_to_string(repo.join("refs/main"))
     .unwrap_or_else(|e| panic!("{name} is not downloaded, run `make models MODELS={name}`: {e}"));
-  repo.join("snapshots").join(rev.trim()).join(format!("{name}-Q8_0.gguf"))
+  repo.join("snapshots").join(rev.trim()).join(model.file())
 }
 
 /// A test clip: `3rd/samples/` has the ones transcribe.cpp's `samples/` lacks (`make samples-he`).
