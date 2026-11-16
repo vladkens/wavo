@@ -110,6 +110,7 @@ wavo run talk.wav --device radeon     # another GPU, by part of its name or its 
 - Long recordings are split at pauses by themselves. `--segment SECS` sets the piece length.
 - `wavo run` asks before downloading a model. `-y` skips the question.
 - Whisper detects the language. `--language CODE` sets it.
+- Subtitles follow Netflix's style guide: two lines of up to 42 characters, 5/6s to 7s a cue, cut at sentences, pauses and commas.
 - `--diarize` tells up to 8 speakers apart with NVIDIA's Nemotron 3 Diarization (0.11GB), downloaded like any model. Speakers are numbered in the order they first talk. In subtitles no cue spans two speakers.
 - Models live in the Hugging Face cache, shared with `hf download`.
 - On a Mac, `wavo pull` prepares Parakeet and GigaAM for the Neural Engine, once, in 15–30s.

@@ -8,10 +8,22 @@ use std::ops::Range;
 
 use wavo::{Token, Transcript, Turn, Utterance};
 
-/// A cue ends before it would grow past this many characters.
-const MAX_CUE: usize = 80;
-/// A cue shows at most this long after its last token starts.
-const LINGER_MS: u32 = 1500;
+// Cues as Netflix's Timed Text Style Guide sets them: two lines of 42 characters, 5/6 s to 7 s,
+// two frames apart, shown about half a second past the speech.
+/// The characters of a cue's line; a cue has two.
+const LINE: usize = 42;
+/// The shortest and the longest cue, in milliseconds.
+const MIN_MS: u32 = 833;
+const MAX_MS: u32 = 7000;
+/// Between a cue's end and the next one's start: two frames at 24 fps.
+const GAP_MS: u32 = 83;
+/// A cue shows this long after its last token starts: the token, then half a second.
+const LINGER_MS: u32 = 1000;
+/// From a word's last token to the next word's start, a pause: a new cue.
+const PAUSE_MS: u32 = 700;
+/// Whisper's segments carry their start alone: their words are spread over them at this pace,
+/// that of speech, faster when the next segment starts sooner.
+const CHAR_MS: u32 = 70;
 
 /// `{"text": ..., "language": ..., "tokens": [{"id", "piece", "start_ms"}, ...]}`, one token per
 /// line; `language` only when the model says it. With `utterances`,
@@ -128,16 +140,17 @@ pub struct Cue {
 /// The cues of `tokens` over `audio_ms` of audio: from token times when `timed`, else (Whisper,
 /// Moonshine) from segments. `starts` holds the first token of each split part, sorted.
 pub fn cues(tokens: &[Token], starts: &[usize], audio_ms: u32, timed: bool) -> Vec<Cue> {
-  if timed { word_cues(tokens, starts, audio_ms) } else { segment_cues(tokens, audio_ms) }
+  if timed { word_cues(tokens, starts, audio_ms, true) } else { segment_cues(tokens, audio_ms) }
 }
 
 /// Words from pieces (`▁` or a space starts a word, and so does each token index in `starts`)
-/// grouped into cues that end after sentence punctuation or before passing `MAX_CUE` characters.
-/// A cue shows until the next one starts, the audio ends or `LINGER_MS` after its last token,
-/// whichever is first; a word until the next word starts or its cue ends.
-fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32) -> Vec<Cue> {
-  // first and last token start, text, tokens
-  let mut words: Vec<(u32, u32, String, Range<usize>)> = Vec::new();
+/// grouped into phrases that end after a sentence (that lasted `MIN_MS`) or at a pause, and those
+/// into cues of at most two lines and `MAX_MS` by `split`. A cue shows until
+/// `LINGER_MS` after its last token, at least `MIN_MS`, and at most until `GAP_MS` before the next
+/// one or the audio's end; a word until the next word starts or its cue ends. Without `pauses`
+/// the token times are spread, not heard, and tell no pause.
+fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32, pauses: bool) -> Vec<Cue> {
+  let mut words: Vec<Word> = Vec::new();
   for (i, t) in tokens.iter().enumerate() {
     let piece = t.piece.replace('▁', " ");
     match words.last_mut() {
@@ -149,33 +162,48 @@ fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32) -> Vec<Cue> {
     }
   }
 
-  // A cue's `end` holds its last token's start until the loop below.
-  let mut cues: Vec<Cue> = Vec::new();
-  for (first, last, text, tokens) in words {
-    let text = text.trim();
-    match cues.last_mut() {
-      _ if text.is_empty() => {}
-      // A word that starts with the cue (several in one frame) stays in it, else the cue would
-      // last no time at all.
-      Some(cue)
-        if first == cue.start
-          || !cue.text.ends_with(['.', '!', '?', '…'])
-            && cue.text.chars().count() + 1 + text.chars().count() <= MAX_CUE =>
-      {
-        (cue.end, cue.tokens.end) = (last, tokens.end);
-        cue.text = format!("{} {text}", cue.text);
-        cue.words.push((first, first, text.into()));
-      }
-      _ => {
-        let words = vec![(first, first, text.into())];
-        cues.push(Cue { start: first, end: last, text: text.into(), tokens, words });
-      }
+  words.iter_mut().for_each(|w| w.2 = w.2.trim().to_string());
+  words.retain(|w| !w.2.is_empty());
+
+  // Phrases: a new one after a sentence that lasted `MIN_MS` (a shorter one shares its cue with
+  // the next) or at a pause. A word that starts with the phrase (several in one frame) stays in
+  // it, else its cue would last no time at all.
+  let mut phrases: Vec<Range<usize>> = Vec::new();
+  for (i, (first, ..)) in words.iter().enumerate() {
+    let Some(p) = phrases.last_mut() else {
+      phrases.push(i..i + 1);
+      continue;
+    };
+
+    let (prev, start) = (&words[i - 1], words[p.start].0);
+    let sentence = prev.2.ends_with(['.', '!', '?', '…']) && *first >= start + MIN_MS;
+    if *first != start && (sentence || pauses && *first > prev.1 + PAUSE_MS) {
+      phrases.push(i..i + 1);
+    } else {
+      p.end = i + 1;
     }
   }
 
-  let nexts: Vec<u32> = cues.iter().skip(1).map(|c| c.start).chain([audio_ms]).collect();
+  let mut groups: Vec<Range<usize>> = Vec::new();
+  phrases.into_iter().for_each(|p| split(&words, p, &mut groups));
+  let mut cues: Vec<Cue> = (groups.iter())
+    .map(|g| {
+      let words = &words[g.clone()];
+      let text: Vec<&str> = words.iter().map(|w| w.2.as_str()).collect();
+      Cue {
+        start: words[0].0,
+        end: words[words.len() - 1].1,
+        text: text.join(" "),
+        tokens: words[0].3.start..words[words.len() - 1].3.end,
+        words: words.iter().map(|w| (w.0, w.0, w.2.clone())).collect(),
+      }
+    })
+    .collect();
+
+  let nexts: Vec<u32> =
+    cues.iter().skip(1).map(|c| c.start.saturating_sub(GAP_MS)).chain([audio_ms]).collect();
   for (cue, next) in cues.iter_mut().zip(nexts) {
-    cue.end = next.min(cue.end + LINGER_MS).max(cue.start);
+    cue.end = (cue.end + LINGER_MS).max(cue.start + MIN_MS).min(next).max(cue.start);
     let ends: Vec<u32> = cue.words.iter().skip(1).map(|w| w.0).chain([cue.end]).collect();
     cue.words.iter_mut().zip(ends).for_each(|(w, end)| w.1 = end);
   }
@@ -183,30 +211,109 @@ fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32) -> Vec<Cue> {
   cues
 }
 
-/// One cue per segment of a model that times segments, not tokens (Whisper: every token carries
-/// its segment's start; Moonshine: 0 in each piece of the audio), shown until the next one starts
-/// or the audio ends.
-fn segment_cues(tokens: &[Token], audio_ms: u32) -> Vec<Cue> {
-  let mut cues: Vec<Cue> = Vec::new();
-  for (i, t) in tokens.iter().enumerate() {
-    let piece = t.piece.replace('▁', " ");
-    match cues.last_mut() {
-      Some(cue) if cue.start == t.start_ms => {
-        cue.text += &piece;
-        cue.tokens.end = i + 1;
+/// A word's first and last token start, text and tokens.
+type Word = (u32, u32, String, Range<usize>);
+
+/// The characters of `words` with a space between each two.
+fn chars(words: &[Word]) -> usize {
+  words.iter().map(|w| w.2.chars().count() + 1).sum::<usize>().saturating_sub(1)
+}
+
+/// The phrase `r` of `words` as cues into `out`: the fewest cues of at most two lines and `MAX_MS`,
+/// of the most even length and time, cut after a comma when one is near, and between words of one
+/// frame only when nothing else fits.
+fn split(words: &[Word], r: Range<usize>, out: &mut Vec<Range<usize>>) {
+  let (a, n) = (r.start, r.len());
+  // Per count of the phrase's first words: the cost of their best cues, and where the last starts.
+  let mut best: Vec<(u64, usize)> = vec![(u64::MAX, 0); n + 1];
+  best[0] = (0, 0);
+  for j in 1..=n {
+    for i in (0..j).rev() {
+      let w = &words[a + i..a + j];
+      let (chars, ms) = (chars(w) as u64, (w[w.len() - 1].1 + LINGER_MS - w[0].0) as u64);
+      if j - i > 1 && (chars > 2 * LINE as u64 || ms > MAX_MS as u64) {
+        break;
       }
-      _ => {
-        let (start, tokens, words) = (t.start_ms, i..i + 1, Vec::new());
-        cues.push(Cue { start, end: start, text: piece, tokens, words });
+
+      let cut = match i {
+        0 => 0,
+        _ if words[a + i].0 == words[a + i - 1].0 => 1 << 40,
+        _ if words[a + i - 1].2.ends_with([',', ';', ':']) => 0,
+        _ => 400,
+      };
+      // A cue costs more than any evening of the others; then the squares of its characters and
+      // of its time at a character's pace.
+      let cost = best[i].0 + (1 << 32) + chars * chars + ms * ms / 6400 + cut;
+      if cost < best[j].0 {
+        best[j] = (cost, i);
       }
     }
   }
 
-  cues.iter_mut().for_each(|c| c.text = c.text.trim().to_string());
-  cues.retain(|c| !c.text.is_empty());
-  let nexts: Vec<u32> = cues.iter().skip(1).map(|c| c.start).chain([audio_ms]).collect();
-  cues.iter_mut().zip(nexts).for_each(|(c, next)| c.end = next.max(c.start));
+  let mut cues = Vec::new();
+  let mut j = n;
+  while j > 0 {
+    cues.push(a + best[j].1..a + j);
+    j = best[j].1;
+  }
+  out.extend(cues.into_iter().rev());
+}
+
+/// The cues of a model that times segments, not tokens (Whisper: every token carries its
+/// segment's start; Moonshine: 0 in each piece of the audio): each segment's words spread over it
+/// at `CHAR_MS` a character, or faster to fit before the next segment, then cut as `word_cues`
+/// does. They have no words of their own.
+fn segment_cues(tokens: &[Token], audio_ms: u32) -> Vec<Cue> {
+  let mut segments: Vec<Range<usize>> = Vec::new();
+  for (i, t) in tokens.iter().enumerate() {
+    match segments.last_mut() {
+      Some(s) if tokens[s.start].start_ms == t.start_ms => s.end = i + 1,
+      _ => segments.push(i..i + 1),
+    }
+  }
+
+  let mut cues = Vec::new();
+  for (k, r) in segments.iter().enumerate() {
+    let start = tokens[r.start].start_ms;
+    let next = segments.get(k + 1).map_or(audio_ms, |n| tokens[n.start].start_ms);
+    let chars: usize = tokens[r.clone()].iter().map(|t| t.piece.chars().count()).sum();
+    let pace = CHAR_MS.min(next.saturating_sub(start) / chars.max(1) as u32);
+    let mut spread = tokens[r.clone()].to_vec();
+    let mut at = 0;
+    for t in &mut spread {
+      t.start_ms = start + at * pace;
+      at += t.piece.chars().count() as u32;
+    }
+
+    for mut cue in word_cues(&spread, &[], next, false) {
+      cue.tokens = cue.tokens.start + r.start..cue.tokens.end + r.start;
+      cue.words.clear();
+      cues.push(cue);
+    }
+  }
+
   cues
+}
+
+/// A cue's text in at most two lines of `LINE` characters where it fits: broken at the space that
+/// balances them best, after punctuation when nearly as balanced.
+fn lines(text: &str) -> String {
+  let n = text.chars().count();
+  if n <= LINE {
+    return text.into();
+  }
+
+  // A line past `LINE` only when no break keeps both within it.
+  let at = (text.char_indices().filter(|&(_, c)| c == ' ').map(|(i, _)| i)).min_by_key(|&i| {
+    let left = text[..i].chars().count();
+    let punct = text[..i].ends_with([',', '.', ';', ':', '!', '?', '…']);
+    let over = left.max(n - 1 - left) > LINE;
+    (over, left.abs_diff(n - 1 - left) + if punct { 0 } else { 12 })
+  });
+  match at {
+    Some(i) => format!("{}\n{}", &text[..i], &text[i + 1..]),
+    None => text.into(),
+  }
 }
 
 /// SubRip subtitles: numbered cues with times like `00:00:01,500`.
@@ -214,7 +321,7 @@ pub fn srt(cues: &[Cue]) -> String {
   let mut out = String::new();
   for (i, c) in cues.iter().enumerate() {
     let (start, end) = (time(c.start, ','), time(c.end, ','));
-    write!(out, "{}\n{start} --> {end}\n{}\n\n", i + 1, c.text).unwrap();
+    write!(out, "{}\n{start} --> {end}\n{}\n\n", i + 1, lines(&c.text)).unwrap();
   }
   out
 }
@@ -224,7 +331,7 @@ pub fn srt(cues: &[Cue]) -> String {
 pub fn vtt(cues: &[Cue]) -> String {
   let mut out = String::from("WEBVTT\n\n");
   for c in cues {
-    let text = c.text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let text = lines(&c.text).replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     write!(out, "{} --> {}\n{text}\n\n", time(c.start, '.'), time(c.end, '.')).unwrap();
   }
   out
@@ -344,16 +451,28 @@ mod tests {
     let t = tokens(&[("▁Hel", 0), ("lo", 80), (".", 160), ("▁How", 4000), ("▁are", 4100)]);
     assert_eq!(
       srt_of(&t, &[], 6000),
-      "1\n00:00:00,000 --> 00:00:01,660\nHello.\n\n2\n00:00:04,000 --> 00:00:05,600\nHow are\n\n"
+      "1\n00:00:00,000 --> 00:00:01,160\nHello.\n\n2\n00:00:04,000 --> 00:00:05,100\nHow are\n\n"
     );
-    let long: Vec<(String, u32)> = (0..30).map(|i| (format!("▁w{i:02}"), i * 100)).collect();
-    let long: Vec<(&str, u32)> = long.iter().map(|(p, s)| (p.as_str(), *s)).collect();
-    let srt = srt_of(&tokens(&long), &[], 3000);
-    let lines: Vec<&str> = srt.lines().filter(|l| l.starts_with('w')).collect();
-    assert_eq!(lines.len(), 2);
-    assert_eq!(lines[0].len(), 79, "20 words of 3 chars and their spaces");
-    assert!(srt.contains("00:00:00,000 --> 00:00:02,000\n"), "ends where the next cue starts");
-    assert!(srt.contains("00:00:02,000 --> 00:00:03,000\n"), "the last ends with the audio");
+    let words = |n: u32, ms: u32| -> Vec<Token> {
+      let pieces: Vec<(String, u32)> = (0..n).map(|i| (format!("▁w{i:02}"), i * ms)).collect();
+      tokens(&pieces.iter().map(|(p, s)| (p.as_str(), *s)).collect::<Vec<_>>())
+    };
+    // 30 words of 3 characters and their spaces need two cues of even length; a cue ends two
+    // frames before the next, the last with the audio, and its shorter line comes first.
+    let c = cues(&words(30, 100), &[], 3000, true);
+    let texts: Vec<usize> = c.iter().map(|c| c.text.len()).collect();
+    assert_eq!((texts, c[0].end, c[1].end), (vec![59, 59], 1417, 3000));
+    assert_eq!(srt(&c[..1]).lines().nth(2), Some("w00 w01 w02 w03 w04 w05 w06"));
+    // At most 7 s, and after a comma when one is near the middle.
+    let c = cues(&words(20, 500), &[], 12_000, true);
+    assert_eq!(c.iter().map(|c| c.words.len()).collect::<Vec<_>>(), [10, 10]);
+    let mut t = words(24, 100);
+    t[10].piece = "▁w10,".into();
+    let c = cues(&t, &[], 3000, true);
+    assert_eq!(c.iter().map(|c| c.words.len()).collect::<Vec<_>>(), [11, 13]);
+    // A pause.
+    let t = tokens(&[("▁So", 0), ("▁we", 200), ("▁go", 1500)]);
+    assert_eq!(cues(&t, &[], 3000, true).len(), 2);
   }
 
   #[test]
@@ -365,11 +484,14 @@ mod tests {
       ("н", 3_600_120),
       (" ", 3_600_200),
     ]);
-    assert_eq!(srt_of(&t, &[], 3_700_000), "1\n01:00:00,000 --> 01:00:01,620\nда н\n\n");
+    assert_eq!(srt_of(&t, &[], 3_700_000), "1\n01:00:00,000 --> 01:00:01,120\nда н\n\n");
     assert_eq!(srt_of(&[], &[], 1000), "");
     // A segment of a split recording starts a word without a space token.
     let t = tokens(&[("д", 0), ("а", 40), ("н", 25_000), ("е", 25_040), ("т", 25_080)]);
-    assert_eq!(srt_of(&t, &[0, 2], 30_000), "1\n00:00:00,000 --> 00:00:26,580\nда нет\n\n");
+    assert_eq!(
+      srt_of(&t, &[0, 2], 30_000),
+      "1\n00:00:00,000 --> 00:00:01,040\nда\n\n2\n00:00:25,000 --> 00:00:26,080\nнет\n\n"
+    );
   }
 
   #[test]
@@ -377,7 +499,7 @@ mod tests {
     let t = tokens(&[("▁Yes.", 400), ("▁Right", 400), ("▁now.", 600), ("▁Go", 3000)]);
     assert_eq!(
       srt_of(&t, &[], 4000),
-      "1\n00:00:00,400 --> 00:00:02,100\nYes. Right now.\n\n2\n00:00:03,000 --> 00:00:04,000\nGo\n\n"
+      "1\n00:00:00,400 --> 00:00:01,600\nYes. Right now.\n\n2\n00:00:03,000 --> 00:00:04,000\nGo\n\n"
     );
   }
 
@@ -387,19 +509,19 @@ mod tests {
     let t = tokens(&[(" Ask", 0), (" not.", 0), (" Ask", 0), (" what.", 0), (" Next", 5000)]);
     assert_eq!(
       srt_segments(&t, 6000),
-      "1\n00:00:00,000 --> 00:00:05,000\nAsk not. Ask what.\n\n2\n00:00:05,000 --> 00:00:06,000\nNext\n\n"
+      "1\n00:00:00,000 --> 00:00:01,910\nAsk not. Ask what.\n\n2\n00:00:05,000 --> 00:00:06,000\nNext\n\n"
     );
     // Without spaces, and a one-token segment.
     let t = tokens(&[("我们", 0), ("走吧。", 0), ("好", 2000)]);
     assert_eq!(
       srt_segments(&t, 3000),
-      "1\n00:00:00,000 --> 00:00:02,000\n我们走吧。\n\n2\n00:00:02,000 --> 00:00:03,000\n好\n\n"
+      "1\n00:00:00,000 --> 00:00:01,140\n我们走吧。\n\n2\n00:00:02,000 --> 00:00:03,000\n好\n\n"
     );
     // SentencePiece pieces (Moonshine).
     let t = tokens(&[("▁And", 0), ("▁so", 0), ("▁ask", 4000)]);
     assert_eq!(
       srt_segments(&t, 5000),
-      "1\n00:00:00,000 --> 00:00:04,000\nAnd so\n\n2\n00:00:04,000 --> 00:00:05,000\nask\n\n"
+      "1\n00:00:00,000 --> 00:00:01,280\nAnd so\n\n2\n00:00:04,000 --> 00:00:05,000\nask\n\n"
     );
   }
 
@@ -408,7 +530,7 @@ mod tests {
     let t = tokens(&[("▁Hel", 0), ("lo.", 80), ("▁Bye", 3_600_500)]);
     assert_eq!(
       vtt(&cues(&t, &[], 3_601_000, true)),
-      "WEBVTT\n\n00:00:00.000 --> 00:00:01.580\nHello.\n\n01:00:00.500 --> 01:00:01.000\nBye\n\n"
+      "WEBVTT\n\n00:00:00.000 --> 00:00:01.080\nHello.\n\n01:00:00.500 --> 01:00:01.000\nBye\n\n"
     );
     assert_eq!(vtt(&[]), "WEBVTT\n\n");
     let t = tokens(&[("▁a<b>&c", 0)]);
@@ -425,11 +547,11 @@ mod tests {
     assert_eq!(
       verbose_json(&t, &cues, "en", 4500),
       "{\"task\": \"transcribe\", \"language\": \"en\", \"duration\": 4.5, \"text\": \"Hello you. Go\", \"segments\": [\
-       \n  {\"id\": 0, \"seek\": 0, \"start\": 0.0, \"end\": 1.9, \"text\": \"Hello you.\", \"tokens\": [0, 1, 2], \"temperature\": 0.0},\
+       \n  {\"id\": 0, \"seek\": 0, \"start\": 0.0, \"end\": 1.4, \"text\": \"Hello you.\", \"tokens\": [0, 1, 2], \"temperature\": 0.0},\
        \n  {\"id\": 1, \"seek\": 0, \"start\": 4.0, \"end\": 4.5, \"text\": \"Go\", \"tokens\": [3], \"temperature\": 0.0}\
        \n], \"words\": [\
        \n  {\"word\": \"Hello\", \"start\": 0.0, \"end\": 0.4},\
-       \n  {\"word\": \"you.\", \"start\": 0.4, \"end\": 1.9},\
+       \n  {\"word\": \"you.\", \"start\": 0.4, \"end\": 1.4},\
        \n  {\"word\": \"Go\", \"start\": 4.0, \"end\": 4.5}\
        \n]}"
     );
@@ -458,8 +580,8 @@ mod tests {
     // No cue spans two speakers; each shows until the next speaker's starts.
     assert_eq!(
       srt(&speaker_cues(&t.tokens, &[], &u, 6000, true)),
-      "1\n00:00:00,000 --> 00:00:01,000\nHi.\n\n2\n00:00:01,000 --> 00:00:02,500\nYes.\n\n\
-       3\n00:00:04,000 --> 00:00:05,700\nAnd then\n\n"
+      "1\n00:00:00,000 --> 00:00:01,000\nHi.\n\n2\n00:00:01,000 --> 00:00:02,000\nYes.\n\n\
+       3\n00:00:04,000 --> 00:00:05,200\nAnd then\n\n"
     );
     let rendered = json(&t, Some(&u));
     assert!(rendered.contains("\"piece\": \"▁Yes.\", \"start_ms\": 1000},"), "{rendered}");
