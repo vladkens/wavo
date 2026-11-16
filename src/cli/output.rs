@@ -275,7 +275,7 @@ pub fn verbose_json(t: &Transcript, cues: &[Cue], language: &str, audio_ms: u32)
 /// `audio_ms`, as its cues do: the library ends them a word's length after their start.
 pub fn stretch(utterances: &mut [Utterance], audio_ms: u32) {
   let nexts: Vec<u32> = utterances.iter().skip(1).map(|u| u.start_ms).chain([audio_ms]).collect();
-  utterances.iter_mut().zip(nexts).for_each(|(u, next)| u.end_ms = next.max(u.end_ms));
+  utterances.iter_mut().zip(nexts).for_each(|(u, next)| u.end_ms = next.max(u.start_ms));
 }
 
 /// OpenAI's `diarized_json`: the text, and the utterances as segments with times in seconds and
