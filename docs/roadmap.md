@@ -67,6 +67,19 @@ Open:
 - **GPU headroom on Parakeet.** Core ML on the same M2 GPU takes 8–15% less time end to end
   (FluidAudio GPU 134 vs wavo 145 ms on jfk, 372 vs 437 ms on dots). Profile our encoder against
   it and close the gap.
+- **Auto language** (#31): `wavo run`, `serve` and wavo-app pick the downloaded model for the
+  spoken language. [Plan](plans/20261116-auto-language.md)
+- **Subtitles for Bazarr, Plex and Jellyfin.** [Plan](plans/20261116-subtitles.md)
+- **GigaAM on the Neural Engine** in overlapping windows with one decode, as Parakeet (#78):
+  its 15 s pieces break sentences too.
+- **Other kinds of models,** each its own type beside `Model` and `Diarizer`, not a mode of a
+  speech model; `ModelInfo` gains the kind later, additively (`diarization()` stays):
+  - translation (#83): a separate model from the text, for every speech model; candidates
+    NLLB, MADLAD-400, small LLMs, to research;
+  - text cleanup, text to text: punctuation, numbers as digits (#78; wavo-app's Russian rules),
+    filler words;
+  - speaker names: a voice-print model and a sample per person, as OpenAI's
+    `known_speaker_names` and `known_speaker_references`; then names in SRT and WebVTT `<v>`.
 
 Later research: **accuracy against the originals.** Plan: [docs/plans/20261011-accuracy.md](plans/20261011-accuracy.md).
 
