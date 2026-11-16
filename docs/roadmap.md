@@ -68,12 +68,8 @@ Open:
 - **GPU headroom on Parakeet.** Core ML on the same M2 GPU takes 8–15% less time end to end
   (FluidAudio GPU 134 vs wavo 145 ms on jfk, 372 vs 437 ms on dots). Profile our encoder against
   it and close the gap.
-- **Auto language** (#31): `--model auto` and `serve` pick the user's model per recording by
-  the spoken language, whatever languages the model itself knows. A small language-ID model with
-  a prior on the user's languages: whisper-tiny picked the right model on 91–100% of clips,
-  +0.15 s; ECAPA VoxLingua107 did worse on short clips. Rebase #31 on `detect_language` (#77).
-  The same in the library for wavo-app's dictation: notice a recording in another language and
-  switch the model, without a manual language switch.
+- **Auto language** (#31): `wavo run`, `serve` and wavo-app pick the downloaded model for the
+  spoken language. [Plan](plans/20261116-auto-language.md)
 - **Subtitles for Bazarr, Plex and Jellyfin.** [Plan](plans/20261116-subtitles.md)
 - **GigaAM on the Neural Engine** in overlapping windows with one decode, as Parakeet (#78):
   its 15 s pieces break sentences too.
