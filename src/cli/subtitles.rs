@@ -100,9 +100,19 @@ fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32, pauses: bool) ->
     }
   }
 
+  // Spread times end at the next segment: the last phrase needs `MIN_MS` before it too, else it
+  // joins the one before.
+  let last = |p: &[Range<usize>]| words[p[p.len() - 1].start].first;
+  while !pauses && phrases.len() > 1 && last(&phrases) + MIN_MS > audio_ms {
+    let p = phrases.pop().unwrap();
+    phrases.last_mut().unwrap().end = p.end;
+  }
+
   let mut groups: Vec<Range<usize>> = Vec::new();
-  let nexts: Vec<u32> =
-    phrases.iter().skip(1).map(|p| words[p.start].first).chain([u32::MAX]).collect();
+  let nexts: Vec<u32> = (phrases.iter().skip(1))
+    .map(|p| words[p.start].first)
+    .chain([if pauses { u32::MAX } else { audio_ms.saturating_add(GAP_MS) }])
+    .collect();
   for (p, next) in phrases.into_iter().zip(nexts) {
     split(&words, p, next, &mut groups);
   }
@@ -177,8 +187,10 @@ fn split(words: &[Word], r: Range<usize>, next: u32, out: &mut Vec<Range<usize>>
         break;
       }
 
-      // The phrase rule leaves the whole phrase room; a part may have none.
-      if best[i].0 == u64::MAX || start(j) < w[0].first + MIN_MS + GAP_MS {
+      // The phrase rules leave the whole phrase room, unless it is all there is; a part may have
+      // none.
+      let whole = i == 0 && j == n;
+      if best[i].0 == u64::MAX || !whole && start(j) < w[0].first + MIN_MS + GAP_MS {
         continue;
       }
 
@@ -204,20 +216,25 @@ fn split(words: &[Word], r: Range<usize>, next: u32, out: &mut Vec<Range<usize>>
 /// The cues of a model that times segments, not tokens (Whisper: every token carries its
 /// segment's start; Moonshine: 0 in each piece of the audio): each segment's words spread over it
 /// at `CHAR_MS` a character's width, or faster to fit before the next segment, then cut as
-/// `word_cues` does. They have no words of their own.
+/// `word_cues` does. They have no words of their own. A segment that starts before the one before
+/// it (Whisper may time a part's last segment past the part's end), or too soon for that one to
+/// show `MIN_MS`, joins it.
 fn segment_cues(tokens: &[Token], audio_ms: u32) -> Vec<Cue> {
-  let mut segments: Vec<Range<usize>> = Vec::new();
+  let mut segments: Vec<(u32, Range<usize>)> = Vec::new();
   for (i, t) in tokens.iter().enumerate() {
-    match segments.last_mut() {
-      Some(s) if tokens[s.start].start_ms == t.start_ms => s.end = i + 1,
-      _ => segments.push(i..i + 1),
+    segments.push((t.start_ms, i..i + 1));
+    // A joined segment may start before the one before it in turn.
+    while let [.., (a, r), (b, s)] = &mut segments[..]
+      && *b < *a + MIN_MS + GAP_MS
+    {
+      (*a, r.end) = ((*b).min(*a), s.end);
+      segments.pop();
     }
   }
 
   let mut cues = Vec::new();
-  for (k, r) in segments.iter().enumerate() {
-    let start = tokens[r.start].start_ms;
-    let next = segments.get(k + 1).map_or(audio_ms, |n| tokens[n.start].start_ms);
+  for (k, (start, r)) in segments.iter().enumerate() {
+    let (start, next) = (*start, segments.get(k + 1).map_or(audio_ms, |n| n.0));
     let chars: usize = tokens[r.clone()].iter().map(|t| width(&t.piece)).sum();
     let pace = CHAR_MS.min(next.saturating_sub(start) / chars.max(1) as u32);
     let mut spread = tokens[r.clone()].to_vec();
@@ -474,6 +491,28 @@ pub mod tests {
       srt_segments(&t, 3000),
       "1\n00:00:00,000 --> 00:00:01,280\n我们走吧。\n\n2\n00:00:02,000 --> 00:00:03,000\n好\n\n"
     );
+    // A segment that starts before the one before, or too soon after it, joins it.
+    let t = tokens(&[
+      (" Hi.", 0),
+      (" Late.", 9000),
+      (" So", 6000),
+      (" Thanks.", 12_000),
+      (" Go", 12_100),
+    ]);
+    assert_eq!(
+      srt_segments(&t, 14_000),
+      "1\n00:00:00,000 --> 00:00:01,000\nHi.\n\n2\n00:00:06,000 --> 00:00:07,420\nLate. So\n\n3\n00:00:12,000 --> 00:00:13,560\nThanks. Go\n\n"
+    );
+    // Joins chain: D joins C, and then B, which C started before.
+    let t = tokens(&[(" A.", 0), (" B.", 5000), (" C.", 9000), (" D", 4500)]);
+    let starts: Vec<u32> = cues(&t, &[], 12_000, false).iter().map(|c| c.start).collect();
+    assert_eq!(starts, [0, 4500]);
+    // A sentence too near the next segment to show joins the one before.
+    let pieces = [" Well,", " that's", " the", " thing", " to", " do.", " I...", " Go"];
+    let mut t = tokens(&pieces.map(|p| (p, 0)));
+    t[7].start_ms = 2300;
+    let texts: Vec<String> = cues(&t, &[], 4000, false).into_iter().map(|c| c.text).collect();
+    assert_eq!(texts, ["Well, that's the thing to do. I...", "Go"]);
     // SentencePiece pieces (Moonshine).
     let t = tokens(&[("▁And", 0), ("▁so", 0), ("▁ask", 4000)]);
     assert_eq!(
