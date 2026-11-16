@@ -16,6 +16,7 @@ mod models;
 mod output;
 mod serve;
 mod split;
+mod subtitles;
 
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -421,8 +422,8 @@ fn run(args: &[&str]) -> Result<()> {
 
   let text = match (format, &utterances) {
     (Some("--json"), _) => output::json(&transcript, utterances.as_deref()) + "\n",
-    (Some(_), Some(u)) => output::srt(&output::speaker_cues(tokens, &starts, u, ms, timed)),
-    (Some(_), None) => output::srt(&output::cues(tokens, &starts, ms, timed)),
+    (Some(_), Some(u)) => subtitles::srt(&subtitles::speaker_cues(tokens, &starts, u, ms, timed)),
+    (Some(_), None) => subtitles::srt(&subtitles::cues(tokens, &starts, ms, timed)),
     (None, Some(u)) => output::by_speaker(u),
     (None, None) if transcript.text.is_empty() => String::new(),
     (None, None) => format!("{}\n", transcript.text),
