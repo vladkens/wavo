@@ -461,12 +461,12 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
 /// `context`, and each gives the frames nearest its middle, so every frame given has at least
 /// `context` frames of its window on each side, but at the ends of the audio. The last window
 /// starts at `n − t + 1`, so its input fits the window whatever the subsampling rounds. One window
-/// when `n` fits.
+/// when `n` is under `t`: at `t` the input may pass the window by a few rows.
 ///
 /// Cutting at pauses instead gives each piece no context past its cut, and its own decoder: the
 /// model then ends sentences at the cuts and spells out numbers it writes as digits in one pass.
 pub fn windows(n: usize, t: usize, context: usize) -> Vec<(usize, Range<usize>)> {
-  if n <= t {
+  if n < t {
     return vec![(0, 0..n)];
   }
 
@@ -510,7 +510,7 @@ mod tests {
   fn windows_cover_the_audio_with_context() {
     assert_eq!(windows(100, 188, 25), [(0, 0..100)]);
     for (t, context) in [(188, 25), (375, 50), (188, 0)] {
-      for n in t + 1..t * 12 {
+      for n in t..t * 12 {
         let w = windows(n, t, context);
         assert!(w.len() >= 2, "{n}: {w:?}");
         let mut from = 0;
