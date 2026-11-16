@@ -102,9 +102,10 @@ compare:
 bench-compare:
 	scripts/ci-bench.sh
 
-# The Docker image's Linux binaries in dist/, cross-built by cargo-solo (needs clang).
+# The Docker image's Linux binaries in dist/, cross-built by cargo-solo (needs clang), without
+# their line tables (52MB of 67MB).
 docker-dist:
-	cargo solo build --locked --profile dist --bin wavo \
+	CARGO_PROFILE_DIST_STRIP=debuginfo cargo solo build --locked --profile dist --bin wavo \
 		--target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu
 	mkdir -p dist/linux-amd64 dist/linux-arm64
 	cp target/x86_64-unknown-linux-gnu/dist/wavo dist/linux-amd64/

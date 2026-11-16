@@ -79,7 +79,7 @@ A server without a GPU runs every model on the CPU, with the same text: 30s of R
 <details>
 <summary>Docker</summary>
 
-The image `ghcr.io/vladkens/wavo` (Linux, x86_64 and arm64) has Mesa's Vulkan drivers for Intel and AMD GPUs. `--device /dev/dri` passes the GPU; without it wavo runs on the CPU. Keep `/root/.cache` in a volume: it holds the models and the driver's compiled kernels, which otherwise take seconds at every start.
+The image `ghcr.io/vladkens/wavo` (a 47MB download on x86_64, 36MB on arm64) has Mesa's Vulkan drivers for Intel and AMD GPUs on x86_64. `--device /dev/dri` passes the GPU; without one wavo runs on the CPU, as it does on arm64. Keep `/root/.cache` in a volume: it holds the models and the driver's compiled kernels, which otherwise take seconds at every start.
 
 ```sh
 docker run --rm --device /dev/dri -v wavo:/root/.cache -v "$PWD:/data" ghcr.io/vladkens/wavo run /data/talk.mp3 -y
