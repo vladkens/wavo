@@ -53,7 +53,11 @@ fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32, pauses: bool) ->
     let piece = t.piece.replace('▁', " ");
     match words.last_mut() {
       Some(word) if !piece.starts_with(' ') && starts.binary_search(&i).is_err() => {
-        (word.1, word.3.end) = (t.start_ms, i + 1);
+        // Punctuation may come seconds after its word, at the end of a pause: not speech.
+        if piece.chars().any(char::is_alphanumeric) {
+          word.1 = t.start_ms;
+        }
+        word.3.end = i + 1;
         word.2 += &piece;
       }
       _ => words.push((t.start_ms, t.start_ms, piece, i..i + 1)),
@@ -109,12 +113,18 @@ fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32, pauses: bool) ->
   cues
 }
 
-/// A word's first and last token start, text and tokens.
+/// A word's first and last spoken token start (not a punctuation one), text and tokens.
 type Word = (u32, u32, String, Range<usize>);
 
 /// The characters of `words` with a space between each two.
 fn chars(words: &[Word]) -> usize {
   words.iter().map(|w| w.2.chars().count() + 1).sum::<usize>().saturating_sub(1)
+}
+
+/// Whether `words` fit two lines of `LINE` characters, broken between words.
+fn fits(words: &[Word]) -> bool {
+  chars(words) <= LINE
+    || (1..words.len()).any(|k| chars(&words[..k]).max(chars(&words[k..])) <= LINE)
 }
 
 /// The phrase `r` of `words` as cues into `out`: the fewest cues of at most two lines and `MAX_MS`,
@@ -129,7 +139,7 @@ fn split(words: &[Word], r: Range<usize>, out: &mut Vec<Range<usize>>) {
     for i in (0..j).rev() {
       let w = &words[a + i..a + j];
       let (chars, ms) = (chars(w) as u64, (w[w.len() - 1].1 + LINGER_MS - w[0].0) as u64);
-      if best[j].0 != u64::MAX && (chars > 2 * LINE as u64 || ms > MAX_MS as u64) {
+      if best[j].0 != u64::MAX && (ms > MAX_MS as u64 || !fits(w)) {
         break;
       }
 
@@ -294,8 +304,11 @@ pub mod tests {
     let t = tokens(&[("▁Hel", 0), ("lo", 80), (".", 160), ("▁How", 4000), ("▁are", 4100)]);
     assert_eq!(
       srt_of(&t, &[], 6000),
-      "1\n00:00:00,000 --> 00:00:01,160\nHello.\n\n2\n00:00:04,000 --> 00:00:05,100\nHow are\n\n"
+      "1\n00:00:00,000 --> 00:00:01,080\nHello.\n\n2\n00:00:04,000 --> 00:00:05,100\nHow are\n\n"
     );
+    // Punctuation at the end of a pause isn't speech: the cue ends a second after its word.
+    let t = tokens(&[("▁them", 0), (".", 7000), ("▁If", 7300)]);
+    assert_eq!(cues(&t, &[], 9000, true).iter().map(|c| c.end).collect::<Vec<_>>(), [1000, 8300]);
     let words = |n: u32, ms: u32| -> Vec<Token> {
       let pieces: Vec<(String, u32)> = (0..n).map(|i| (format!("▁w{i:02}"), i * ms)).collect();
       tokens(&pieces.iter().map(|(p, s)| (p.as_str(), *s)).collect::<Vec<_>>())
@@ -306,6 +319,13 @@ pub mod tests {
     let texts: Vec<usize> = c.iter().map(|c| c.text.len()).collect();
     assert_eq!((texts, c[0].end, c[1].end), (vec![59, 59], 1417, 3000));
     assert_eq!(srt(&c[..1]).lines().nth(2), Some("w00 w01 w02 w03 w04 w05 w06"));
+    // 82 characters that no break puts in two lines of 42: two cues.
+    let (a, b, c) = (
+      "▁".to_string() + &"a".repeat(30),
+      "▁".to_string() + &"b".repeat(30),
+      "▁".to_string() + &"c".repeat(20),
+    );
+    assert_eq!(cues(&tokens(&[(&a, 0), (&b, 100), (&c, 200)]), &[], 3000, true).len(), 2);
     // At most 7 s, and after a comma when one is near the middle.
     let c = cues(&words(20, 500), &[], 12_000, true);
     assert_eq!(c.iter().map(|c| c.words.len()).collect::<Vec<_>>(), [10, 10]);
