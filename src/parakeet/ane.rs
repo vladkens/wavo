@@ -1,11 +1,11 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! The encoder (subsampling, blocks, the joint's encoder projection) as a Core ML program over a
-//! 15 s window, as `encoder.rs` runs it on the GPU: the mel past the valid frames is zero, and
-//! each subsampling stage's rows past their valid length are zeroed where the GPU path's convs
-//! see zero padding. With kestrel masking the GPU zeroes conv2's rows past its valid length but
-//! conv5 still reads conv3's output of them, ReLU(bias), up to conv3's full length (one row more
-//! when the mel frames are 1 mod 4), as transcribe.cpp's extent mask does: so `m2` comes after
-//! conv2 and the extent mask `e2` after conv3.
+//! 15 s window, as `encoder.rs` runs it on the GPU (longer audio in overlapping windows): the mel
+//! past the valid frames is zero, and each subsampling stage's rows past their valid length are
+//! zeroed where the GPU path's convs see zero padding. With kestrel masking the GPU zeroes conv2's
+//! rows past its valid length but conv5 still reads conv3's output of them, ReLU(bias), up to
+//! conv3's full length (one row more when the mel frames are 1 mod 4), as transcribe.cpp's extent
+//! mask does: so `m2` comes after conv2 and the extent mask `e2` after conv3.
 
 use super::encoder_frames;
 use super::frontend::{HOP, MELS};
@@ -59,10 +59,33 @@ pub fn build(g: &Gguf, p: &mut Program) -> Result<Vec<Var>> {
   Ok(vec![out])
 }
 
-/// Runs the program on `mel` `[frames][MELS]` (at most the window's), of which the first `valid`
-/// the subsampling keeps (all but the last with kestrel masking), and returns the joint's encoder
-/// projections `[encoder_frames][width]` with their width.
+/// Encoder frames of context a window keeps on each side of the frames it gives (2 s).
+const CONTEXT: usize = 25;
+
+/// Runs the encoder on `mel` `[frames][MELS]`, of which the first `valid` the subsampling keeps
+/// (all but the last with kestrel masking), and returns the joint's encoder projections
+/// `[encoder_frames][width]` with their width. Mel past the window runs in overlapping windows
+/// (`ane::windows`), whose frames the decoder then reads in one pass, as the GPU's.
 pub fn run(model: &ane::Model, mel: &[f32], valid: usize) -> Result<(Vec<f32>, usize)> {
+  let frames = mel.len() / MELS;
+  if frames <= MEL_FRAMES {
+    return window(model, mel, valid);
+  }
+
+  let (mut out, mut width) = (Vec::new(), 0);
+  for (start, keep) in ane::windows(encoder_frames(frames), T, CONTEXT) {
+    let (begin, end) = (8 * start, (8 * start + MEL_FRAMES).min(frames));
+    let valid = if end == frames { valid - begin } else { end - begin };
+    let (enc, w) = window(model, &mel[begin * MELS..end * MELS], valid)?;
+    out.extend_from_slice(&enc[(keep.start - start) * w..(keep.end - start) * w]);
+    width = w;
+  }
+
+  Ok((out, width))
+}
+
+/// The program over `mel` of at most the window.
+fn window(model: &ane::Model, mel: &[f32], valid: usize) -> Result<(Vec<f32>, usize)> {
   let frames = mel.len() / MELS;
   let (n1, n2, n3) = (half(valid), half(half(valid)), encoder_frames(frames));
   let mut padded = mel[..valid * MELS].to_vec();

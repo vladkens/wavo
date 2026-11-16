@@ -302,11 +302,13 @@ fn long(name: &str, sample: &str, chars: bool) {
 
 /// Neural Engine agreement. F16 activations, 8-bit weights and arithmetic that differs between
 /// chip generations change a word now and then, drop a comma or move a token by a frame or two,
-/// so per clip, against the fixture when it fits the 15 s window, else against the GPU's
-/// transcript of the same pieces (the cuts change punctuation at them):
+/// so per clip, against the fixture when it fits GigaAM's 15 s window or the model is Parakeet
+/// (whose longer audio runs in overlapping windows), else against the GPU's transcript of the same
+/// pieces (the cuts change punctuation at them):
 /// - the words, case and punctuation aside, are within max(1, 2%) word edits of the expected ones;
 ///   a word split in two or two merged into one (equal once the space is removed) is no edit;
-/// - at most one aligned word differs in punctuation or case alone (each printed);
+/// - at most as many aligned words differ in punctuation or case alone (each printed): Parakeet's
+///   windows past 15 s give a sentence end now and then where the GPU's one pass has a comma;
 /// - of the word tokens that align with the expected ones, at least 95% start within two encoder
 ///   frames of them.
 ///
@@ -323,7 +325,8 @@ fn check_ane(name: &str, frame_ms: u32, samples: &[&str]) {
   assert!(prepared, "{name}: this Mac has no Neural Engine");
   let ane = Model::load_with(&path, Backend::NeuralEngine).unwrap();
   assert_eq!(ane.device().kind, DeviceKind::NeuralEngine);
-  let window = ane.max_audio_ms().unwrap();
+  // GigaAM's window there; Parakeet's longer audio runs in overlapping windows, as one pass.
+  let window = ane.max_audio_ms();
   let mut gpu = None;
   let tokens = |t: &wavo::Transcript| -> Tokens {
     t.tokens.iter().map(|t| (t.piece.replace('▁', " "), t.start_ms)).collect()
@@ -340,10 +343,9 @@ fn check_ane(name: &str, frame_ms: u32, samples: &[&str]) {
   for sample in samples {
     let at = format!("{name} {sample}");
     let pcm = read_sample(sample);
-    let pieces: Vec<(String, Tokens, wavo::Transcript)> = if pcm.len() / 16 <= window as usize {
-      let (text, want, _) = read_fixture(name, sample);
-      vec![(text, want.unwrap(), ane.transcribe(&pcm).unwrap())]
-    } else {
+    let pieces: Vec<(String, Tokens, wavo::Transcript)> = if let Some(window) = window
+      && pcm.len() / 16 > window as usize
+    {
       // `transcribe_long`'s pieces stay within the window even when asked for longer ones.
       let gpu = gpu.get_or_insert_with(|| Model::load_with(&path, Backend::Gpu).unwrap());
       let mut options = wavo::Options::default();
@@ -366,6 +368,9 @@ fn check_ane(name: &str, frame_ms: u32, samples: &[&str]) {
           (want.text.clone(), shifted, got)
         })
         .collect()
+    } else {
+      let (text, want, _) = read_fixture(name, sample);
+      vec![(text, want.unwrap(), ane.transcribe(&pcm).unwrap())]
     };
 
     let (mut expected, mut actual, mut offsets) = (Vec::new(), Vec::new(), Vec::new());
@@ -396,7 +401,8 @@ fn check_ane(name: &str, frame_ms: u32, samples: &[&str]) {
       println!("{at}: {got:?} instead of {want:?}");
     }
 
-    assert!(restyled.len() <= 1, "{at}: {} words differ in punctuation or case", restyled.len());
+    let n = restyled.len();
+    assert!(n <= allowed, "{at}: {n} words differ in punctuation or case");
     let close = offsets.iter().filter(|&&d| d <= 2 * frame_ms).count();
     let worst = offsets.iter().max().copied().unwrap_or(0);
     let moved = offsets.iter().filter(|&&d| d > 0).count();

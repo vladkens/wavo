@@ -108,12 +108,12 @@
 //! Models are trained on pieces of up to [`Model::max_audio_ms`]: 25 s for GigaAM, 30 s for
 //! Whisper and Moonshine. Past that, `transcribe` loses accuracy, and GigaAM and Moonshine return
 //! [`Error::AudioTooLong`] past 1.5 times it; Whisper runs its own 30 s windows and Parakeet takes
-//! any length in one pass; on the Neural Engine, `transcribe` splits audio past its fixed 15 s
-//! window at pauses itself. [`Model::transcribe_long`] takes audio of any length: it cuts it at its
-//! quietest moments with [`split`] into pieces of up to the model's window (60 s for Parakeet, or
-//! [`Options::window_ms`]), transcribes each, and joins the transcripts with token times from the
-//! start of the audio. After each piece it passes a [`Piece`] to a callback, which can show
-//! progress or the text so far, and cancel the rest by returning [`ControlFlow::Break`]:
+//! any length in one pass; on the Neural Engine, `transcribe` splits GigaAM's audio past its fixed
+//! 15 s window at pauses itself. [`Model::transcribe_long`] takes audio of any length: it cuts it
+//! at its quietest moments with [`split`] into pieces of up to the model's window (60 s for
+//! Parakeet, or [`Options::window_ms`]), transcribes each, and joins the transcripts with token
+//! times from the start of the audio. After each piece it passes a [`Piece`] to a callback, which
+//! can show progress or the text so far, and cancel the rest by returning [`ControlFlow::Break`]:
 //!
 //! ```no_run
 //! # fn main() -> wavo::Result<()> {
@@ -243,8 +243,9 @@
 //! # }
 //! ```
 //!
-//! The Neural Engine runs a fixed 15 s window in F16 with 8-bit weights: shorter audio is padded,
-//! longer audio split at pauses. Its text is close to the GPU's, not equal: on an hour of English
+//! The Neural Engine runs a fixed 15 s window in F16 with 8-bit weights: shorter audio is padded;
+//! Parakeet's longer audio runs in overlapping windows decoded in one pass, as on the GPU, and
+//! GigaAM's is split at pauses. Its text is close to the GPU's, not equal: on an hour of English
 //! read speech in pieces of up to 15 s, 0.05–0.07% of the words differ (case and punctuation
 //! aside), 3–4% of the pieces differ at all, mostly in a comma or a capital letter, and a few
 //! tokens start one or two encoder frames apart. The GPU stays the exact path.
@@ -423,8 +424,8 @@ pub struct Options {
   /// The longest piece, in milliseconds, [`Model::transcribe_long`] cuts the audio into with
   /// [`split`]. `None`, the default, takes the model's [`max_audio_ms`](Model::max_audio_ms), or
   /// 60 000 for Parakeet, which has none. Below 5000 counts as 5000; `u32::MAX` runs the whole
-  /// audio in one piece, as `transcribe_with` does. On the Neural Engine the pieces never pass its
-  /// 15 s window. GigaAM and Moonshine fail on pieces past 1.5 times their window: see
+  /// audio in one piece, as `transcribe_with` does. On the Neural Engine GigaAM's pieces never
+  /// pass its 15 s window. GigaAM and Moonshine fail on pieces past 1.5 times their window: see
   /// [`Error::AudioTooLong`]. `transcribe_with` ignores it.
   pub window_ms: Option<u32>,
 }
@@ -492,8 +493,9 @@ pub enum Backend {
   GpuAt(usize),
   /// Apple's Neural Engine through Core ML, on Apple Silicon with macOS 15 or later, for Parakeet
   /// and GigaAM once [prepared](Model::prepare). It runs in F16 with 8-bit weights in a fixed
-  /// 15 s window: now and then a word, a comma or a capital letter differs from the GPU's, and some
-  /// tokens start one or two encoder frames apart (see [Neural Engine](crate#neural-engine)).
+  /// 15 s window, Parakeet's longer audio in overlapping ones: now and then a word, a comma or a
+  /// capital letter differs from the GPU's, and some tokens start one or two encoder frames apart
+  /// (see [Neural Engine](crate#neural-engine)).
   NeuralEngine,
   /// The CPU, with wavo's own kernels (AVX2 and FMA on x86_64, NEON on ARM) on as many threads
   /// as the process may use, for every family: for servers and machines without a GPU driver, where
@@ -621,9 +623,9 @@ impl Model {
   /// For audio longer than [`max_audio_ms`](Self::max_audio_ms), use
   /// [`transcribe_long`](Self::transcribe_long) (see [Long audio](crate#long-audio)): GigaAM and
   /// Moonshine on the GPU run it in one pass, which loses text past the window and fails past 1.5
-  /// times it. Whisper and Parakeet take any length, and on the Neural Engine audio past its 15 s
-  /// window is split at pauses here, as `transcribe_long` would. Audio too short for one encoder
-  /// frame gives an empty transcript.
+  /// times it. Whisper and Parakeet take any length, and on the Neural Engine GigaAM's audio past
+  /// its 15 s window is split at pauses here, as `transcribe_long` would. Audio too short for one
+  /// encoder frame gives an empty transcript.
   ///
   /// # Errors
   ///
@@ -668,7 +670,7 @@ impl Model {
       None => None,
     };
 
-    if self.on_ane() && pcm.len() > ane::WINDOW {
+    if self.windowed() && pcm.len() > ane::WINDOW {
       return self.pieces(pcm, (ane::WINDOW / 16) as u32, options, |_| ControlFlow::Continue(()));
     }
 
@@ -761,15 +763,15 @@ impl Model {
     Ok(ranked)
   }
 
-  /// The longest audio, in milliseconds, the model takes in one piece: 15 000 on the Neural
-  /// Engine, its fixed window; else the length it was trained on, 25 000 for GigaAM and 30 000 for
-  /// Whisper and Moonshine. [`transcribe_long`](Self::transcribe_long) splits long audio into
-  /// pieces of up to this length: Whisper runs longer audio in windows of it, the Neural Engine
-  /// splits it at pauses, GigaAM and Moonshine on the GPU lose text past it and
-  /// [`transcribe`](Self::transcribe) rejects 1.5 times it. `None` for Parakeet on the GPU, which
-  /// has no such window.
+  /// The longest audio, in milliseconds, the model takes in one piece: 15 000 for GigaAM on the
+  /// Neural Engine, its fixed window; else the length it was trained on, 25 000 for GigaAM and
+  /// 30 000 for Whisper and Moonshine. [`transcribe_long`](Self::transcribe_long) splits long
+  /// audio into pieces of up to this length: Whisper runs longer audio in windows of it, the
+  /// Neural Engine splits it at pauses, GigaAM and Moonshine on the GPU lose text past it and
+  /// [`transcribe`](Self::transcribe) rejects 1.5 times it. `None` for Parakeet, which has no such
+  /// window.
   pub fn max_audio_ms(&self) -> Option<u32> {
-    if self.on_ane() {
+    if self.windowed() {
       return Some((ane::WINDOW / 16) as u32);
     }
 
@@ -831,7 +833,7 @@ impl Model {
     on_piece: impl FnMut(Piece<'_>) -> ControlFlow<()>,
   ) -> Result<Transcript> {
     let mut window = options.window_ms.or(self.max_audio_ms()).unwrap_or(WINDOW_MS);
-    if self.on_ane() {
+    if self.windowed() {
       // Within its window, so that no piece is split again out of `on_piece`'s sight.
       window = window.min((ane::WINDOW / 16) as u32);
     }
@@ -930,6 +932,12 @@ impl Model {
 
   fn on_ane(&self) -> bool {
     self.device().kind == DeviceKind::NeuralEngine
+  }
+
+  /// Whether audio past the Neural Engine's window is cut into pieces of it: GigaAM's there.
+  /// Parakeet runs its encoder there in overlapping windows and decodes them in one pass.
+  fn windowed(&self) -> bool {
+    self.on_ane() && matches!(self.family, Family::Gigaam(_))
   }
 
   /// Where the model's encoder runs, as chosen at load: a GPU and the API it reaches it through,

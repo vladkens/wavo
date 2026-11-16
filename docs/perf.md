@@ -76,8 +76,11 @@ Q8_0 linear weights re-quantized to int8 with an F16 scale per output row
 (`constexpr_blockwise_shift_scale`), the rest F16, relative positions projected on the CPU into a
 constant per block, BatchNorm folded into the depthwise conv. Per call the CPU mel (padded with
 zeros to the window, F16), per-stage frame masks and an additive key mask go in, the head's
-projection `[t][width]` in F16 comes out, and the decoders run as on the GPU path. The system
-compiles the program for the ANE at the first load per program (10–30 s) and caches it.
+projection `[t][width]` in F16 comes out, and the decoders run as on the GPU path. Parakeet's
+longer audio runs in evenly spread windows that overlap by at least 2 × 2 s (`ane::windows`), each
+giving its middle frames, over one mel and into one decoder pass; GigaAM's is cut into pieces at
+pauses. The system compiles the program for the ANE at the first load per program (10–30 s) and
+caches it.
 
 ## Not tried yet
 
@@ -854,6 +857,16 @@ Speed, load and prepare times are in the [plan's Result](plans/completed/2026101
   squared error (50–100% of the max) instead of the max: 8 moved instead of 11, the same outliers,
   4× slower build. LayerNorm input scaled by 1/16: no change (per-block cosine against Core ML's
   GPU falls from 0.99999 to 0.99985 over the blocks, then 0.9994 after the last `norm_out`).
+- 2026-11-16, issue #78 (M5): cutting Parakeet's long audio into 15 s pieces at pauses breaks
+  sentences ("на дачу. Которая") and spells numbers ("пяти комнат"), as GPU `--segment 15` does.
+  A longer window, prepare / 3 s / 15 s / 30 s / 60 s (ms): 15 s 10.1 s / 35 / 66 / 164 / 307;
+  30 s 14.2 s / 91 / 121 / 160 / 431; 60 s 26.5 s / 282 / 344 / 360 / 737, all still on the ANE,
+  0.65–0.70 GB compiled. Rejected: a 30 s window costs every short clip 2.6×. Kept: overlapping
+  15 s windows (2 s context each side) and one decoder pass: the clip's text as the GPU's but for
+  one word, the same speed as the pieces. On an hour of Russian (74 pieces of 30–60 s) WER against
+  the book GPU 6.27%, pieces 6.25%, windows 6.45% (context 6–50 frames 6.45–6.52%, word flips
+  scattered, not at seams); sentence ends right / false 430 / 159, 413 / 190, 409 / 165. Seams at
+  pauses instead of evenly spread: no gain, rejected.
 - 2026-10-12, Parakeet V3 jfk on the M2: the spike's 35 ms encoder becomes 55 ms per call with
   the mel, F16 input conversion and the TDT decoder; GigaAM 41 ms on ru-short.
 

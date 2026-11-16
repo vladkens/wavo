@@ -53,7 +53,7 @@ Run options:
   --segment SECS               split longer audio at pauses into parts of up to SECS
                                (25 for GigaAM, 30 for Whisper and Moonshine, else 60;
                                0 for one pass, up to 37.5 s for GigaAM and 45 s for
-                               Moonshine; at most 15 on the Neural Engine)
+                               Moonshine; at most 15 for GigaAM on the Neural Engine)
   --language CODE              the language of the speech (en, he, ...) for multilingual
                                Whisper models, instead of detecting it
   --diarize                    tell who speaks with nemotron-diarization (downloaded as
