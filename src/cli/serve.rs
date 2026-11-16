@@ -24,7 +24,7 @@ use wavo::hub::{self, Hub, ModelInfo};
 
 use crate::http::{self, Head, Part, Res, fail};
 use crate::output::{self, quote};
-use crate::{Download, audio, lid, models, split};
+use crate::{Download, audio, lid, models, split, subtitles};
 
 const USAGE: &str = "usage: wavo serve [MODEL...] [--host ADDR] [--port PORT] [--api-key KEY] [-y]";
 /// Connections served at once; as many more get 503, and past that they are dropped.
@@ -626,12 +626,12 @@ fn reply(
   })?;
 
   let ms = (pcm.len() / 16) as u32;
-  let cues = || output::cues(&t.tokens, &starts, ms, m.timed);
+  let cues = || subtitles::cues(&t.tokens, &starts, ms, m.timed);
   let (content_type, body) = match format {
     "json" => (JSON, format!("{{\"text\": {}}}\n", quote(&t.text))),
     "text" => (TEXT, format!("{}\n", t.text)),
-    "srt" => (TEXT, output::srt(&cues())),
-    "vtt" => ("text/vtt; charset=utf-8", output::vtt(&cues())),
+    "srt" => (TEXT, subtitles::srt(&cues())),
+    "vtt" => ("text/vtt; charset=utf-8", subtitles::vtt(&cues())),
     "diarized_json" => {
       let mut utterances = t.utterances(turns.unwrap_or_default());
       if !m.timed {
