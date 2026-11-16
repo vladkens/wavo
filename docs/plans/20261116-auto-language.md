@@ -20,7 +20,11 @@ language token in 72% on 3 s, 89% on whole clips, 98% with a prior on the user's
 - [ ] `wavo serve`: `model` absent or `auto` picks so among all downloaded models; `language`
       picks the model for it; a named model is used when downloaded, else 404. Models on the
       command line only load up front. Bazarr's `/asr` sends its language: the model for it.
-- [ ] The library: the same choice for wavo-app, per recording, with the last language kept
-      unless the detection is sure of another.
+- [ ] wavo-app (its session's answer, 2026-11-16): one language per recording, picked now by the
+      keyboard layout (wavo-app #69); the right model must be loaded by the key's release, at
+      most 100–150 ms after it. `Model::detect_language` of whisper-tiny on the first 1–3 s, run
+      while the person speaks, ranked with probabilities, already does it: the app keeps its
+      candidates (layouts, downloaded models) and falls back to the layout when unsure. Measure
+      it on short accented phrases; the text check (whatlang) only after, as a second opinion.
 - [ ] Measure: the right model on FLEURS clips of 2, 3, 5 and 10 s in ru, uk, en, he and de, and
       the time it adds.
