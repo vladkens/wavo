@@ -76,6 +76,32 @@ A server without a GPU runs every model on the CPU, with the same text: 30s of R
 
 </details>
 
+<details>
+<summary>Docker</summary>
+
+The image `ghcr.io/vladkens/wavo` (Linux, x86_64 and arm64) has Mesa's Vulkan drivers for Intel and AMD GPUs. `--device /dev/dri` passes the GPU; without it wavo runs on the CPU. Keep `/root/.cache` in a volume: it holds the models and the driver's compiled kernels, which otherwise take seconds at every start.
+
+```sh
+docker run --rm --device /dev/dri -v wavo:/root/.cache -v "$PWD:/data" ghcr.io/vladkens/wavo run /data/talk.mp3 -y
+```
+
+As [Bazarr](https://www.bazarr.media)'s Whisper provider, in Bazarr's compose file, with `http://wavo:9000` as its endpoint:
+
+```yaml
+services:
+  wavo:
+    image: ghcr.io/vladkens/wavo
+    command: serve parakeet-ultra --host 0.0.0.0 --port 9000 -y
+    devices:
+      - /dev/dri:/dev/dri # Intel or AMD GPU
+    # gpus: all         # NVIDIA, with its Container Toolkit, instead of devices (untested)
+    volumes:
+      - ./wavo:/root/.cache # models in ./wavo/huggingface
+    restart: unless-stopped
+```
+
+</details>
+
 ### Newest version
 
 This readme follows main, which may be ahead of the latest release. Binaries of main are in the [dev release](https://github.com/vladkens/wavo/releases/tag/dev), or build it with Rust:

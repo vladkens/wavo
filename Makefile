@@ -40,7 +40,7 @@ clean:
 	cargo clean
 
 # wavo
-.PHONY: test-unit test-portable models models-all samples samples-he reference fixtures compare bench-compare
+.PHONY: test-unit test-portable models models-all samples samples-he reference fixtures compare bench-compare docker-dist docker
 
 # Every model's full name, from hub::MODELS.
 ALL_MODELS := $(shell sed -n 's/.*full_name: "\([^"]*\)".*/\1/p' src/hub/mod.rs)
@@ -101,3 +101,15 @@ compare:
 # Coarse speed check against main's dev build, for CI (see the script).
 bench-compare:
 	scripts/ci-bench.sh
+
+# The Docker image's Linux binaries in dist/, cross-built by cargo-solo (needs clang).
+docker-dist:
+	cargo solo build --locked --profile dist --bin wavo \
+		--target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu
+	mkdir -p dist/linux-amd64 dist/linux-arm64
+	cp target/x86_64-unknown-linux-gnu/dist/wavo dist/linux-amd64/
+	cp target/aarch64-unknown-linux-gnu/dist/wavo dist/linux-arm64/
+
+# The image for this machine's platform, as wavo.
+docker: docker-dist
+	docker build -t wavo .
