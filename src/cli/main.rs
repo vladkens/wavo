@@ -81,9 +81,10 @@ Serve options:
                                again. Without it, the models given stay loaded
   -y, --yes                    download missing models without asking
   POST /v1/audio/transcriptions takes OpenAI's fields file, model, language and
-  response_format (json, text, srt, vtt, verbose_json); GET /v1/models lists the downloaded
-  models, GET /health the GPU and the loaded models. A downloaded model not listed loads on
-  first use, one at a time. POST /asr, POST /detect-language and GET /status answer as
+  response_format (json, text, srt, vtt, verbose_json, diarized_json); GET /v1/models lists
+  the downloaded models, GET /health the GPU and the loaded models. A downloaded model not
+  listed loads on first use, one at a time; so does nemotron-diarization for diarized_json,
+  unless listed (then it is downloaded as the others are). POST /asr, POST /detect-language and GET /status answer as
   whisper-asr-webservice does, for Bazarr's subtitles, with the first model.
 
 MODEL is a name below, its full name or a path to a .gguf file (for serve, a name); for
@@ -402,7 +403,7 @@ fn run(args: &[&str]) -> Result<()> {
     eprintln!("no speech recognized in {audio}");
   }
 
-  let utterances = match speakers {
+  let mut utterances = match speakers {
     Some(diarizer) => {
       let bar = spinner();
       // On the GPU --device names, also when the model runs on the Neural Engine; on the CPU with
@@ -414,6 +415,10 @@ fn run(args: &[&str]) -> Result<()> {
   };
 
   let (tokens, ms, timed) = (&transcript.tokens, (pcm.len() / 16) as u32, models::timed(&path));
+  if let Some(u) = utterances.as_mut().filter(|_| !timed) {
+    output::stretch(u, ms);
+  }
+
   let text = match (format, &utterances) {
     (Some("--json"), _) => output::json(&transcript, utterances.as_deref()) + "\n",
     (Some(_), Some(u)) => output::srt(&output::speaker_cues(tokens, &starts, u, ms, timed)),

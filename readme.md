@@ -125,6 +125,7 @@ wavo serve                                       # parakeet-ultra on http://127.
 wavo serve whisper-turbo gigaam-v3 --port 9000   # these models, loaded up front
 wavo serve --host 0.0.0.0 --api-key KEY          # on the network, with a key
 wavo serve --unload-after 10m                    # free the memory after 10 idle minutes
+wavo serve parakeet-ultra nemotron-diarization   # also who speaks: diarized_json
 
 curl -F file=@talk.mp3 -F model=whisper-1 http://127.0.0.1:8000/v1/audio/transcriptions
 ```

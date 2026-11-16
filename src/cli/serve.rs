@@ -4,9 +4,10 @@
 //! names wavo doesn't know (OpenAI's `whisper-1`); another downloaded model loads on first use,
 //! one at a time. Requests share each model, and their calls take turns on the GPU. `POST /asr`,
 //! `POST /detect-language` and `GET /status` answer as whisper-asr-webservice does, for Bazarr's
-//! subtitles. With `--unload-after`, a model idle that long is freed, and its next request loads
-//! it again from the cache. Every model runs on the device `--backend` and `--device` chose at
-//! start.
+//! subtitles. `response_format=diarized_json` tells who speaks with the diarization model, given
+//! on the command line or loaded from the cache on first use. With `--unload-after`, a model idle
+//! that long is freed, and its next request loads it again from the cache. Every model runs on the
+//! device `--backend` and `--device` chose at start.
 
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -43,7 +44,7 @@ const MAX_FIELD: usize = 256;
 /// How long the part of a request nobody reads is drained after the response; also the timeout
 /// for a request answered with 503.
 const LINGER: Duration = Duration::from_secs(1);
-const FORMATS: &[&str] = &["json", "text", "srt", "vtt", "verbose_json"];
+const FORMATS: &[&str] = &["json", "text", "srt", "vtt", "verbose_json", "diarized_json"];
 /// whisper-asr-webservice's `output` formats, and the `FORMATS` that render them: its JSON, the
 /// result of Whisper's `transcribe`, has the text, segments and language as `verbose_json` does.
 const ASR_FORMATS: &[(&str, &str)] =
@@ -60,11 +61,52 @@ struct Loaded {
   used: Mutex<Instant>,
 }
 
+/// The diarization model of `diarized_json`.
+struct Speakers {
+  diarizer: wavo::Diarizer,
+  /// As `Loaded::used`.
+  used: Mutex<Instant>,
+}
+
+/// A loaded model that `free` frees when idle.
+trait Idle {
+  fn name(&self) -> &'static str;
+  /// When a request last took it, or `free` last saw one using it.
+  fn used(&self) -> &Mutex<Instant>;
+
+  /// Marks the model used now.
+  fn touch(&self) {
+    *self.used().lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
+  }
+}
+
+impl Idle for Loaded {
+  fn name(&self) -> &'static str {
+    self.info.name
+  }
+
+  fn used(&self) -> &Mutex<Instant> {
+    &self.used
+  }
+}
+
+impl Idle for Speakers {
+  fn name(&self) -> &'static str {
+    crate::DIARIZER
+  }
+
+  fn used(&self) -> &Mutex<Instant> {
+    &self.used
+  }
+}
+
 struct Server {
   /// The models given on the command line, `None` while freed; the first is the default.
   models: Vec<(&'static ModelInfo, Mutex<Option<Arc<Loaded>>>)>,
   /// The other models requests asked for; locked while one loads.
   extra: Mutex<Extra<Loaded>>,
+  /// The diarization model, `None` until a request needs it and while freed.
+  speakers: Mutex<Option<Arc<Speakers>>>,
   /// Where every model runs.
   backend: Backend,
   /// The first model's device, for `/health` also while it is freed.
@@ -102,10 +144,9 @@ pub fn serve(args: &[&str]) -> Result<()> {
       _ => names.push(crate::named(arg)?),
     }
   }
-  if let Some(m) = names.iter().find(|m| m.diarization()) {
-    bail!("{} is a speaker diarization model; wavo serve serves speech-to-text models", m.name);
-  }
-
+  // The diarization model given loads with the others, for `diarized_json`.
+  let diarize = names.iter().any(|m| m.diarization());
+  names.retain(|m| !m.diarization());
   let on = crate::target(on, gpu)?;
   let key = key.or_else(|| std::env::var("WAVO_API_KEY").ok()).filter(|k| !k.is_empty());
   if names.is_empty() {
@@ -119,6 +160,10 @@ pub fn serve(args: &[&str]) -> Result<()> {
     TcpListener::bind((host, port)).with_context(|| format!("listening on {host}:{port}"))?;
   let models = names.iter().map(|m| load(m, &crate::model_path(m.name, download, on)?, on));
   let models = models.collect::<Result<Vec<_>>>()?;
+  let speakers = match diarize {
+    true => Some(speakers(&crate::model_path(crate::DIARIZER, download, Backend::Gpu)?, on)?),
+    false => None,
+  };
   let device = models[0].model.device().clone();
   if let Some(warning) = device.warning() {
     eprintln!("warning: {warning}");
@@ -129,11 +174,14 @@ pub fn serve(args: &[&str]) -> Result<()> {
     eprintln!("warning: no --api-key: anyone who reaches {addr} can use it");
   }
 
-  let names: Vec<&str> = models.iter().map(|m| m.info.name).collect();
+  let mut names: Vec<&str> = models.iter().map(|m| m.info.name).collect();
+  names.extend(speakers.as_ref().map(|s| s.name()));
   eprintln!("{} on {device}\nlistening on http://{addr}", names.join(", "));
   let models = models.into_iter().map(|m| (m.info, Mutex::new(Some(m)))).collect();
-  let extra = Mutex::new(Extra { last: None, used: Vec::new() });
-  let server = Server { models, extra, backend: on, device, key, open: AtomicUsize::new(0) };
+  let (extra, speakers) =
+    (Mutex::new(Extra { last: None, used: Vec::new() }), Mutex::new(speakers));
+  let open = AtomicUsize::new(0);
+  let server = Server { models, extra, speakers, backend: on, device, key, open };
   std::thread::scope(|s| {
     if let Some(after) = unload {
       let server = &server;
@@ -145,6 +193,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
           }
 
           free(&mut server.extra.lock().unwrap_or_else(PoisonError::into_inner).last, after);
+          free(&mut server.speakers.lock().unwrap_or_else(PoisonError::into_inner), after);
         }
       });
     }
@@ -174,24 +223,26 @@ fn load(info: &'static ModelInfo, path: &Path, on: Backend) -> Result<Arc<Loaded
   Ok(Arc::new(Loaded { info, model, timed, used: Mutex::new(Instant::now()) }))
 }
 
+/// The diarization model at `path`, on the GPU `on` names also when the speech models run on the
+/// Neural Engine, as in `wavo run --diarize`.
+fn speakers(path: &Path, on: Backend) -> Result<Arc<Speakers>> {
+  let on = if on == Backend::NeuralEngine { Backend::Gpu } else { on };
+  let diarizer =
+    wavo::Diarizer::load_with(path, on).with_context(|| format!("loading {}", path.display()))?;
+  Ok(Arc::new(Speakers { diarizer, used: Mutex::new(Instant::now()) }))
+}
+
 /// Frees the model in `slot` when no request holds it and none used it for `after`.
-fn free(slot: &mut Option<Arc<Loaded>>, after: Duration) {
+fn free<T: Idle>(slot: &mut Option<Arc<T>>, after: Duration) {
   let Some(m) = slot.as_ref() else { return };
   if Arc::strong_count(m) > 1 {
     return m.touch(); // a request uses it
   }
 
-  let idle = m.used.lock().unwrap_or_else(PoisonError::into_inner).elapsed();
+  let idle = m.used().lock().unwrap_or_else(PoisonError::into_inner).elapsed();
   if idle >= after {
-    eprintln!("freed {}: no requests for {} s", m.info.name, idle.as_secs());
+    eprintln!("freed {}: no requests for {} s", m.name(), idle.as_secs());
     *slot = None;
-  }
-}
-
-impl Loaded {
-  /// Marks the model used now.
-  fn touch(&self) {
-    *self.used.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
   }
 }
 
@@ -299,7 +350,9 @@ impl Server {
     let given = self.models.iter().filter_map(|(_, m)| m.try_lock().ok()?.clone());
     let extra = self.extra.try_lock().map(|x| x.used.iter().filter_map(Weak::upgrade).collect());
     let extra: Vec<_> = extra.unwrap_or_default();
-    let names: Vec<String> = given.chain(extra).map(|m| quote(m.info.name)).collect();
+    let speakers = self.speakers.try_lock().ok().and_then(|s| s.as_ref().map(|s| s.name()));
+    let names = given.chain(extra).map(|m| m.info.name).chain(speakers);
+    let names: Vec<String> = names.map(quote).collect();
     let warning = device.warning().map(|w| quote(&w)).unwrap_or_default();
     let (device, names) = (quote(&device.to_string()), names.join(", "));
     let fields = format!("\"device\": {device}, \"models\": [{names}], \"warnings\": [{warning}]");
@@ -323,7 +376,7 @@ impl Server {
   }
 
   /// `POST /v1/audio/transcriptions` with OpenAI's form: `file`, `model`, `language` and
-  /// `response_format`; `prompt`, `temperature` and the rest are ignored.
+  /// `response_format`; `prompt`, `temperature`, `known_speaker_names` and the rest are ignored.
   fn transcribe(&self, head: &Head, r: &mut impl BufRead, w: &mut impl Write) -> Res<Reply> {
     let body = http::body(r, w, head, MAX_BODY)?;
     let parts = http::multipart(head.header("content-type").unwrap_or_default(), &body)?;
@@ -340,9 +393,24 @@ impl Server {
 
     let mut options = wavo::Options::default();
     options.language = field("language")?.filter(|l| !l.is_empty());
-    let model = self.pick(&field("model")?.unwrap_or_default())?;
+    let name = field("model")?.unwrap_or_default();
+    // Before a model loads: Moonshine's tokens have no times to give words their speakers.
+    let info = wanted(&name).unwrap_or(self.models[0].0);
+    let diarize = format == "diarized_json";
+    if diarize && info.family == "Moonshine" {
+      let name = info.name;
+      let e = format!("diarized_json needs the time of each word, which {name} doesn't give");
+      return Err(fail(400, e + ": use Parakeet, GigaAM or Whisper"));
+    }
+
+    let model = self.pick(&name)?;
+    let speakers = if diarize { Some(self.speakers()?) } else { None };
     let pcm = decode(body, &parts, "file", false)?;
-    reply(&model, &pcm, &options, &format, false)
+    let turns = match speakers {
+      Some(s) => Some(s.diarizer.diarize(&pcm).map_err(|e| fail(500, format!("diarizing: {e}")))?),
+      None => None,
+    };
+    reply(&model, &pcm, &options, &format, turns.as_deref(), false)
   }
 
   /// `POST /asr` of whisper-asr-webservice, as Bazarr calls it: the form field `audio_file`, and
@@ -373,7 +441,7 @@ impl Server {
     let body = http::body(r, w, head, MAX_BODY)?;
     let parts = http::multipart(head.header("content-type").unwrap_or_default(), &body)?;
     let pcm = decode(body, &parts, "audio_file", query("encode") == Some("false"))?;
-    reply(model, &pcm, &options, format, true)
+    reply(model, &pcm, &options, format, None, true)
   }
 
   /// `POST /detect-language` of whisper-asr-webservice, as Bazarr calls it: the form field
@@ -444,6 +512,22 @@ impl Server {
     }
 
     Ok(slot.insert(self.fetch(info)?).clone())
+  }
+
+  /// The diarization model, loaded again from the cache when it isn't; 404 when it is not
+  /// downloaded.
+  fn speakers(&self) -> Res<Arc<Speakers>> {
+    let mut slot = self.speakers.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(s) = &*slot {
+      s.touch();
+      return Ok(s.clone());
+    }
+
+    let name = crate::DIARIZER;
+    let not_found = || fail(404, format!("{name} is not downloaded; run: wavo pull {name}"));
+    let path = Hub::new().find(name).ok_or_else(not_found)?;
+    let loaded = speakers(&path, self.backend).map_err(|e| fail(500, format!("{e:#}")))?;
+    Ok(slot.insert(loaded).clone())
   }
 
   /// Loads a downloaded model from the cache; 404 for one not downloaded.
@@ -520,10 +604,17 @@ fn decode(mut body: Vec<u8>, parts: &[Part], name: &str, raw: bool) -> Res<Vec<f
   })
 }
 
-/// Transcribes `pcm` with `m` into `format`, one of `FORMATS`. With `lenient`, a language the
-/// model lists but can't be told (Parakeet v3 detects its own) is left to it: Bazarr names every
-/// audio track's language.
-fn reply(m: &Loaded, pcm: &[f32], o: &wavo::Options, format: &str, lenient: bool) -> Res<Reply> {
+/// Transcribes `pcm` with `m` into `format`, one of `FORMATS`; `diarized_json` by the speakers of
+/// `turns`. With `lenient`, a language the model lists but can't be told (Parakeet v3 detects its
+/// own) is left to it: Bazarr names every audio track's language.
+fn reply(
+  m: &Loaded,
+  pcm: &[f32],
+  o: &wavo::Options,
+  format: &str,
+  turns: Option<&[wavo::Turn]>,
+  lenient: bool,
+) -> Res<Reply> {
   let run = |o: &wavo::Options| split::transcribe(&m.model, pcm, None, o, |_, _| ());
   let transcript = match run(o) {
     Err(wavo::Error::Language(_)) if lenient => run(&wavo::Options::default()),
@@ -541,6 +632,14 @@ fn reply(m: &Loaded, pcm: &[f32], o: &wavo::Options, format: &str, lenient: bool
     "text" => (TEXT, format!("{}\n", t.text)),
     "srt" => (TEXT, output::srt(&cues())),
     "vtt" => ("text/vtt; charset=utf-8", output::vtt(&cues())),
+    "diarized_json" => {
+      let mut utterances = t.utterances(turns.unwrap_or_default());
+      if !m.timed {
+        output::stretch(&mut utterances, ms);
+      }
+
+      (JSON, output::diarized_json(&t.text, &utterances, ms) + "\n")
+    }
     _ => {
       // The language the model wrote in, else the one asked for (Parakeet v3 doesn't say).
       let language = t.language.as_deref().or(o.language.as_deref());
