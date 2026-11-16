@@ -126,15 +126,12 @@ jobs:
           tap: vladkens/homebrew-tap
           token: ${{ secrets.HOMEBREW_REPO_TOKEN }}
 
-  # A release's image on ghcr.io as X.Y.Z, and as latest when it is the newest release, from
-  # `docker`'s binaries; never compiles. One at a time, so an older release never ends up latest.
+  # A release's image on ghcr.io as X.Y.Z, and as latest when its tag is the newest (a rerun of an
+  # older release keeps latest), from `docker`'s binaries; never compiles.
   docker-publish:
     needs: [publish, docker]
     if: needs.publish.outputs.tag != ''
     runs-on: ubuntu-latest
-    concurrency:
-      group: docker-publish
-      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
