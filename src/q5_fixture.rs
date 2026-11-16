@@ -59,7 +59,7 @@ fn moonshine_tiny_q5_0() {
   let Family::Moonshine(m) = &model.family else {
     panic!("moonshine-tiny loaded as another family")
   };
-  let weights = m.gpu.weight_bytes();
+  let weights = m.weight_bytes();
 
   let q5: Vec<_> = weights.iter().filter(|w| w.ty == 3).collect();
   let elements: usize = q5.iter().map(|w| w.rows * w.k).sum();
