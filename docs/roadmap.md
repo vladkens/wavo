@@ -72,9 +72,11 @@ Open:
   the spoken language, whatever languages the model itself knows. A small language-ID model with
   a prior on the user's languages: whisper-tiny picked the right model on 91–100% of clips,
   +0.15 s; ECAPA VoxLingua107 did worse on short clips. Rebase #31 on `detect_language` (#77).
-- **Subtitles for Bazarr, Plex and Jellyfin:** cues of at most 2 lines of 42 characters,
-  0.83–7 s, cut at pauses; Whisper's cues end with the speech, not at the next cue; a model per
-  language in `/asr` (auto language); timing on a 45-minute episode against SubGen.
+  The same in the library for wavo-app's dictation: notice a recording in another language and
+  switch the model, without a manual language switch.
+- **Subtitles for Bazarr, Plex and Jellyfin.** [Plan](plans/20261116-subtitles.md)
+- **GigaAM on the Neural Engine** in overlapping windows with one decode, as Parakeet (#78):
+  its 15 s pieces break sentences too.
 - **Other kinds of models,** each its own type beside `Model` and `Diarizer`, not a mode of a
   speech model; `ModelInfo` gains the kind later, additively (`diarization()` stays):
   - translation (#83): a separate model from the text, for every speech model; candidates
