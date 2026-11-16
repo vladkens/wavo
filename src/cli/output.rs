@@ -203,7 +203,7 @@ fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32, pauses: bool) ->
   let nexts: Vec<u32> =
     cues.iter().skip(1).map(|c| c.start.saturating_sub(GAP_MS)).chain([audio_ms]).collect();
   for (cue, next) in cues.iter_mut().zip(nexts) {
-    cue.end = (cue.end + LINGER_MS).max(cue.start + MIN_MS).min(next).max(cue.start);
+    cue.end = (cue.end + LINGER_MS).max(cue.start + MIN_MS).min(next).max(cue.end);
     let ends: Vec<u32> = cue.words.iter().skip(1).map(|w| w.0).chain([cue.end]).collect();
     cue.words.iter_mut().zip(ends).for_each(|(w, end)| w.1 = end);
   }
@@ -220,8 +220,8 @@ fn chars(words: &[Word]) -> usize {
 }
 
 /// The phrase `r` of `words` as cues into `out`: the fewest cues of at most two lines and `MAX_MS`,
-/// of the most even length and time, cut after a comma when one is near, and between words of one
-/// frame only when nothing else fits.
+/// of the most even length and time, cut after a comma when one is near, and never between words
+/// of one start, which would leave a cue no time on screen.
 fn split(words: &[Word], r: Range<usize>, out: &mut Vec<Range<usize>>) {
   let (a, n) = (r.start, r.len());
   // Per count of the phrase's first words: the cost of their best cues, and where the last starts.
@@ -231,13 +231,13 @@ fn split(words: &[Word], r: Range<usize>, out: &mut Vec<Range<usize>>) {
     for i in (0..j).rev() {
       let w = &words[a + i..a + j];
       let (chars, ms) = (chars(w) as u64, (w[w.len() - 1].1 + LINGER_MS - w[0].0) as u64);
-      if j - i > 1 && (chars > 2 * LINE as u64 || ms > MAX_MS as u64) {
+      if best[j].0 != u64::MAX && (chars > 2 * LINE as u64 || ms > MAX_MS as u64) {
         break;
       }
 
       let cut = match i {
         0 => 0,
-        _ if words[a + i].0 == words[a + i - 1].0 => 1 << 40,
+        _ if words[a + i].0 == words[a + i - 1].0 => continue,
         _ if words[a + i - 1].2.ends_with([',', ';', ':']) => 0,
         _ => 400,
       };
@@ -470,6 +470,8 @@ mod tests {
     t[10].piece = "▁w10,".into();
     let c = cues(&t, &[], 3000, true);
     assert_eq!(c.iter().map(|c| c.words.len()).collect::<Vec<_>>(), [11, 13]);
+    // Never between words of one start, whatever their length.
+    assert_eq!(cues(&words(30, 0), &[], 3000, true).len(), 1);
     // A pause.
     let t = tokens(&[("▁So", 0), ("▁we", 200), ("▁go", 1500)]);
     assert_eq!(cues(&t, &[], 3000, true).len(), 2);
