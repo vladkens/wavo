@@ -56,9 +56,10 @@ fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32, pauses: bool) ->
   for (i, t) in tokens.iter().enumerate() {
     let piece = t.piece.replace('▁', " ");
     let c = piece.chars().next().unwrap_or(' ');
-    let prev = words.last().and_then(|w| w.text.chars().last());
-    // Chinese and Japanese have no spaces: a token of their letters starts a word of its own.
-    let glued = c.is_alphanumeric() && (unspaced(c) || prev.is_some_and(unspaced));
+    let prev = words.last().and_then(|w| w.text.chars().last()).unwrap_or(' ');
+    // Chinese and Japanese have no spaces: a token of their letters starts a word of its own,
+    // glued to the one before unless a space token came between.
+    let glued = c.is_alphanumeric() && prev != ' ' && (unspaced(c) || unspaced(prev));
     match words.last_mut() {
       Some(word) if !glued && !piece.starts_with(' ') && starts.binary_search(&i).is_err() => {
         // Punctuation may come seconds after its word, at the end of a pause: not speech.
@@ -427,6 +428,8 @@ pub mod tests {
     assert_eq!(lines(&"一二三四五六七八九十，".repeat(4)).lines().count(), 2);
     assert!(lines(&"一二三四五六七八九十，".repeat(4)).contains("，\n"));
     assert_eq!(lines("東京で Tower を見た"), "東京で Tower を見た");
+    let t = tokens(&[("東京", 0), (" ", 0), ("大学", 0), ("で", 0)]);
+    assert_eq!(cues(&t, &[], 1000, false)[0].text, "東京 大学で");
   }
 
   #[test]
