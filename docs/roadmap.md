@@ -68,6 +68,21 @@ Open:
 - **GPU headroom on Parakeet.** Core ML on the same M2 GPU takes 8–15% less time end to end
   (FluidAudio GPU 134 vs wavo 145 ms on jfk, 372 vs 437 ms on dots). Profile our encoder against
   it and close the gap.
+- **Auto language** (#31): `--model auto` and `serve` pick the user's model per recording by
+  the spoken language, whatever languages the model itself knows. A small language-ID model with
+  a prior on the user's languages: whisper-tiny picked the right model on 91–100% of clips,
+  +0.15 s; ECAPA VoxLingua107 did worse on short clips. Rebase #31 on `detect_language` (#77).
+- **Subtitles for Bazarr, Plex and Jellyfin:** cues of at most 2 lines of 42 characters,
+  0.83–7 s, cut at pauses; Whisper's cues end with the speech, not at the next cue; a model per
+  language in `/asr` (auto language); timing on a 45-minute episode against SubGen.
+- **Other kinds of models,** each its own type beside `Model` and `Diarizer`, not a mode of a
+  speech model; `ModelInfo` gains the kind later, additively (`diarization()` stays):
+  - translation (#83): a separate model from the text, for every speech model; candidates
+    NLLB, MADLAD-400, small LLMs, to research;
+  - text cleanup, text to text: punctuation, numbers as digits (#78; wavo-app's Russian rules),
+    filler words;
+  - speaker names: a voice-print model and a sample per person, as OpenAI's
+    `known_speaker_names` and `known_speaker_references`; then names in SRT and WebVTT `<v>`.
 
 Later research: **accuracy against the originals.** Plan: [docs/plans/20261011-accuracy.md](plans/20261011-accuracy.md).
 
