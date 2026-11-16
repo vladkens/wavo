@@ -8,7 +8,8 @@ use std::ops::Range;
 
 use wavo::{Token, Utterance};
 
-/// The characters of a cue's line; a cue has two.
+/// The width of a cue's line in characters, a wide one (Chinese, Japanese, Korean) counting two; a
+/// cue has two lines.
 const LINE: usize = 42;
 /// The shortest and the longest cue, in milliseconds.
 const MIN_MS: u32 = 833;
@@ -19,9 +20,12 @@ const GAP_MS: u32 = 83;
 const LINGER_MS: u32 = 1000;
 /// From a word's last token to the next word's start, a pause: a new cue.
 const PAUSE_MS: u32 = 700;
-/// Whisper's segments carry their start alone: their words are spread over them at this pace,
-/// that of speech, faster when the next segment starts sooner.
+/// Whisper's segments carry their start alone: their words are spread over them at this pace a
+/// character's width, that of speech, faster when the next segment starts sooner.
 const CHAR_MS: u32 = 70;
+/// What ends a sentence, and what a cue may end with as well as one.
+const ENDS: [char; 7] = ['.', '!', '?', '…', '。', '！', '？'];
+const COMMAS: [char; 7] = [',', ';', ':', '、', '，', '；', '：'];
 
 /// A subtitle cue, and a segment of `verbose_json`.
 pub struct Cue {
@@ -41,9 +45,9 @@ pub fn cues(tokens: &[Token], starts: &[usize], audio_ms: u32, timed: bool) -> V
   if timed { word_cues(tokens, starts, audio_ms, true) } else { segment_cues(tokens, audio_ms) }
 }
 
-/// Words from pieces (`▁` or a space starts a word, and so does each token index in `starts`)
-/// grouped into phrases that end after a sentence (that lasted `MIN_MS`) or at a pause, and those
-/// into cues of at most two lines and `MAX_MS` by `split`. A cue shows until
+/// Words from pieces (`▁` or a space starts a word, and so does each token index in `starts` and
+/// each token of Chinese or Japanese letters) grouped into phrases that end after a sentence or at
+/// a pause, and those into cues of at most two lines and `MAX_MS` by `split`. A cue shows until
 /// `LINGER_MS` after its last token, at least `MIN_MS`, and at most until `GAP_MS` before the next
 /// one or the audio's end; a word until the next word starts or its cue ends. Without `pauses`
 /// the token times are spread, not heard, and tell no pause.
@@ -51,35 +55,44 @@ fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32, pauses: bool) ->
   let mut words: Vec<Word> = Vec::new();
   for (i, t) in tokens.iter().enumerate() {
     let piece = t.piece.replace('▁', " ");
+    let c = piece.chars().next().unwrap_or(' ');
+    let prev = words.last().and_then(|w| w.text.chars().last());
+    // Chinese and Japanese have no spaces: a token of their letters starts a word of its own.
+    let glued = c.is_alphanumeric() && (unspaced(c) || prev.is_some_and(unspaced));
     match words.last_mut() {
-      Some(word) if !piece.starts_with(' ') && starts.binary_search(&i).is_err() => {
+      Some(word) if !glued && !piece.starts_with(' ') && starts.binary_search(&i).is_err() => {
         // Punctuation may come seconds after its word, at the end of a pause: not speech.
         if piece.chars().any(char::is_alphanumeric) {
-          word.1 = t.start_ms;
+          word.last = t.start_ms;
         }
-        word.3.end = i + 1;
-        word.2 += &piece;
+        word.tokens.end = i + 1;
+        word.text += &piece;
       }
-      _ => words.push((t.start_ms, t.start_ms, piece, i..i + 1)),
+      _ => words.push(Word {
+        first: t.start_ms,
+        last: t.start_ms,
+        text: piece,
+        tokens: i..i + 1,
+        glued,
+      }),
     }
   }
 
-  words.iter_mut().for_each(|w| w.2 = w.2.trim().to_string());
-  words.retain(|w| !w.2.is_empty());
+  words.iter_mut().for_each(|w| w.text = w.text.trim().to_string());
+  words.retain(|w| !w.text.is_empty());
 
-  // Phrases: a new one after a sentence that lasted `MIN_MS` (a shorter one shares its cue with
-  // the next) or at a pause. A word that starts with the phrase (several in one frame) stays in
-  // it, else its cue would last no time at all.
+  // Phrases: a new one after a sentence or at a pause, when the one before has `MIN_MS` to show
+  // and `GAP_MS` after (a shorter one, or words that start in one frame, share a cue).
   let mut phrases: Vec<Range<usize>> = Vec::new();
-  for (i, (first, ..)) in words.iter().enumerate() {
+  for (i, w) in words.iter().enumerate() {
     let Some(p) = phrases.last_mut() else {
       phrases.push(i..i + 1);
       continue;
     };
 
-    let (prev, start) = (&words[i - 1], words[p.start].0);
-    let sentence = prev.2.ends_with(['.', '!', '?', '…']) && *first >= start + MIN_MS;
-    if *first != start && (sentence || pauses && *first > prev.1 + PAUSE_MS) {
+    let prev = &words[i - 1];
+    let end = prev.text.ends_with(ENDS) || pauses && w.first > prev.last + PAUSE_MS;
+    if end && w.first >= words[p.start].first + MIN_MS + GAP_MS {
       phrases.push(i..i + 1);
     } else {
       p.end = i + 1;
@@ -87,17 +100,29 @@ fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32, pauses: bool) ->
   }
 
   let mut groups: Vec<Range<usize>> = Vec::new();
-  phrases.into_iter().for_each(|p| split(&words, p, &mut groups));
+  let nexts: Vec<u32> =
+    phrases.iter().skip(1).map(|p| words[p.start].first).chain([u32::MAX]).collect();
+  for (p, next) in phrases.into_iter().zip(nexts) {
+    split(&words, p, next, &mut groups);
+  }
+
   let mut cues: Vec<Cue> = (groups.iter())
     .map(|g| {
       let words = &words[g.clone()];
-      let text: Vec<&str> = words.iter().map(|w| w.2.as_str()).collect();
+      let mut text = String::new();
+      for w in words {
+        if !text.is_empty() && !w.glued {
+          text.push(' ');
+        }
+        text += &w.text;
+      }
+
       Cue {
-        start: words[0].0,
-        end: words[words.len() - 1].1,
-        text: text.join(" "),
-        tokens: words[0].3.start..words[words.len() - 1].3.end,
-        words: words.iter().map(|w| (w.0, w.0, w.2.clone())).collect(),
+        start: words[0].first,
+        end: words[words.len() - 1].last,
+        text,
+        tokens: words[0].tokens.start..words[words.len() - 1].tokens.end,
+        words: words.iter().map(|w| (w.first, w.first, w.text.clone())).collect(),
       }
     })
     .collect();
@@ -113,12 +138,19 @@ fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32, pauses: bool) ->
   cues
 }
 
-/// A word's first and last spoken token start (not a punctuation one), text and tokens.
-type Word = (u32, u32, String, Range<usize>);
+/// A word: its first and last spoken token start (not a punctuation one), text and tokens, and
+/// whether it follows the one before without a space (Chinese, Japanese).
+struct Word {
+  first: u32,
+  last: u32,
+  text: String,
+  tokens: Range<usize>,
+  glued: bool,
+}
 
-/// The characters of `words` with a space between each two.
+/// The width of `words` in characters with the spaces between them.
 fn chars(words: &[Word]) -> usize {
-  words.iter().map(|w| w.2.chars().count() + 1).sum::<usize>().saturating_sub(1)
+  (words.iter().enumerate()).map(|(k, w)| width(&w.text) + usize::from(k > 0 && !w.glued)).sum()
 }
 
 /// Whether `words` fit two lines of `LINE` characters, broken between words.
@@ -127,28 +159,29 @@ fn fits(words: &[Word]) -> bool {
     || (1..words.len()).any(|k| chars(&words[..k]).max(chars(&words[k..])) <= LINE)
 }
 
-/// The phrase `r` of `words` as cues into `out`: the fewest cues of at most two lines and `MAX_MS`,
-/// of the most even length and time, cut after a comma when one is near, and never between words
-/// of one start, which would leave a cue no time on screen.
-fn split(words: &[Word], r: Range<usize>, out: &mut Vec<Range<usize>>) {
+/// The phrase `r` of `words`, followed by a word that starts at `next`, as cues into `out`: the
+/// fewest cues of at most two lines and `MAX_MS`, of the most even length and time, cut after a
+/// comma when one is near, and each with `MIN_MS` and `GAP_MS` before the next starts.
+fn split(words: &[Word], r: Range<usize>, next: u32, out: &mut Vec<Range<usize>>) {
   let (a, n) = (r.start, r.len());
+  let start = |j: usize| if j < n { words[a + j].first } else { next };
   // Per count of the phrase's first words: the cost of their best cues, and where the last starts.
   let mut best: Vec<(u64, usize)> = vec![(u64::MAX, 0); n + 1];
   best[0] = (0, 0);
   for j in 1..=n {
     for i in (0..j).rev() {
       let w = &words[a + i..a + j];
-      let (chars, ms) = (chars(w) as u64, (w[w.len() - 1].1 + LINGER_MS - w[0].0) as u64);
+      let (chars, ms) = (chars(w) as u64, (w[w.len() - 1].last + LINGER_MS - w[0].first) as u64);
       if best[j].0 != u64::MAX && (ms > MAX_MS as u64 || !fits(w)) {
         break;
       }
 
-      let cut = match i {
-        0 => 0,
-        _ if words[a + i].0 == words[a + i - 1].0 => continue,
-        _ if words[a + i - 1].2.ends_with([',', ';', ':']) => 0,
-        _ => 400,
-      };
+      // The phrase rule leaves the whole phrase room; a part may have none.
+      if best[i].0 == u64::MAX || start(j) < w[0].first + MIN_MS + GAP_MS {
+        continue;
+      }
+
+      let cut = if i > 0 && !words[a + i - 1].text.ends_with(COMMAS) { 400 } else { 0 };
       // A cue costs more than any evening of the others; then the squares of its characters and
       // of its time at a character's pace.
       let cost = best[i].0 + (1 << 32) + chars * chars + ms * ms / 6400 + cut;
@@ -169,8 +202,8 @@ fn split(words: &[Word], r: Range<usize>, out: &mut Vec<Range<usize>>) {
 
 /// The cues of a model that times segments, not tokens (Whisper: every token carries its
 /// segment's start; Moonshine: 0 in each piece of the audio): each segment's words spread over it
-/// at `CHAR_MS` a character, or faster to fit before the next segment, then cut as `word_cues`
-/// does. They have no words of their own.
+/// at `CHAR_MS` a character's width, or faster to fit before the next segment, then cut as
+/// `word_cues` does. They have no words of their own.
 fn segment_cues(tokens: &[Token], audio_ms: u32) -> Vec<Cue> {
   let mut segments: Vec<Range<usize>> = Vec::new();
   for (i, t) in tokens.iter().enumerate() {
@@ -184,16 +217,17 @@ fn segment_cues(tokens: &[Token], audio_ms: u32) -> Vec<Cue> {
   for (k, r) in segments.iter().enumerate() {
     let start = tokens[r.start].start_ms;
     let next = segments.get(k + 1).map_or(audio_ms, |n| tokens[n.start].start_ms);
-    let chars: usize = tokens[r.clone()].iter().map(|t| t.piece.chars().count()).sum();
+    let chars: usize = tokens[r.clone()].iter().map(|t| width(&t.piece)).sum();
     let pace = CHAR_MS.min(next.saturating_sub(start) / chars.max(1) as u32);
     let mut spread = tokens[r.clone()].to_vec();
     let mut at = 0;
     for t in &mut spread {
       t.start_ms = start + at * pace;
-      at += t.piece.chars().count() as u32;
+      at += width(&t.piece) as u32;
     }
 
-    for mut cue in word_cues(&spread, &[], next, false) {
+    let end = if k + 1 < segments.len() { next.saturating_sub(GAP_MS).max(start) } else { next };
+    for mut cue in word_cues(&spread, &[], end, false) {
       cue.tokens = cue.tokens.start + r.start..cue.tokens.end + r.start;
       cue.words.clear();
       cues.push(cue);
@@ -203,25 +237,50 @@ fn segment_cues(tokens: &[Token], audio_ms: u32) -> Vec<Cue> {
   cues
 }
 
-/// A cue's text in at most two lines of `LINE` characters where it fits: broken at the space that
-/// balances them best, after punctuation when nearly as balanced.
+/// A cue's text in at most two lines of `LINE` characters where it fits: broken at the space, or
+/// between Chinese or Japanese letters, that balances them best, after punctuation when nearly as
+/// balanced.
 fn lines(text: &str) -> String {
-  let n = text.chars().count();
+  let n = width(text);
   if n <= LINE {
     return text.into();
   }
 
+  // Where each break's lines end and start: a space goes, letters stay.
+  let chars: Vec<(usize, char)> = text.char_indices().collect();
+  let breaks = chars.windows(2).filter_map(|p| match (p[0].1, p[1]) {
+    (_, (i, ' ')) => Some((i, i + 1)),
+    (a, (i, b)) if a != ' ' && b.is_alphanumeric() && (unspaced(a) || unspaced(b)) => Some((i, i)),
+    _ => None,
+  });
   // A line past `LINE` only when no break keeps both within it.
-  let at = (text.char_indices().filter(|&(_, c)| c == ' ').map(|(i, _)| i)).min_by_key(|&i| {
-    let left = text[..i].chars().count();
-    let punct = text[..i].ends_with([',', '.', ';', ':', '!', '?', '…']);
-    let over = left.max(n - 1 - left) > LINE;
-    (over, left.abs_diff(n - 1 - left) + if punct { 0 } else { 12 })
+  let at = breaks.min_by_key(|&(i, j)| {
+    let (left, right) = (width(&text[..i]), width(&text[j..]));
+    let punct = text[..i].ends_with(ENDS) || text[..i].ends_with(COMMAS);
+    (left.max(right) > LINE, left.abs_diff(right) + if punct { 0 } else { 12 })
   });
   match at {
-    Some(i) => format!("{}\n{}", &text[..i], &text[i + 1..]),
+    Some((i, j)) => format!("{}\n{}", &text[..i], &text[j..]),
     None => text.into(),
   }
+}
+
+/// The width of `text` in characters, a wide one (Chinese, Japanese, Korean) counting two.
+fn width(text: &str) -> usize {
+  text.chars().map(|c| if wide(c) { 2 } else { 1 }).sum()
+}
+
+/// Whether `c` is as wide as two characters: Chinese, Japanese, Korean and their punctuation.
+fn wide(c: char) -> bool {
+  matches!(c, '\u{1100}'..='\u{115f}' | '\u{2e80}'..='\u{a4cf}' | '\u{ac00}'..='\u{d7a3}'
+    | '\u{f900}'..='\u{faff}' | '\u{fe30}'..='\u{fe4f}' | '\u{ff00}'..='\u{ff60}'
+    | '\u{ffe0}'..='\u{ffe6}' | '\u{20000}'..='\u{3fffd}')
+}
+
+/// Whether `c` is a letter of a script written without spaces: Chinese and Japanese.
+fn unspaced(c: char) -> bool {
+  matches!(c, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}'
+    | '\u{f900}'..='\u{faff}' | '\u{20000}'..='\u{3fffd}')
 }
 
 /// The cues of each utterance on its own, so that none spans two speakers, shown at most until
@@ -325,7 +384,7 @@ pub mod tests {
       "▁".to_string() + &"b".repeat(30),
       "▁".to_string() + &"c".repeat(20),
     );
-    assert_eq!(cues(&tokens(&[(&a, 0), (&b, 100), (&c, 200)]), &[], 3000, true).len(), 2);
+    assert_eq!(cues(&tokens(&[(&a, 0), (&b, 600), (&c, 1200)]), &[], 4000, true).len(), 2);
     // At most 7 s, and after a comma when one is near the middle.
     let c = cues(&words(20, 500), &[], 12_000, true);
     assert_eq!(c.iter().map(|c| c.words.len()).collect::<Vec<_>>(), [10, 10]);
@@ -338,6 +397,36 @@ pub mod tests {
     // A pause.
     let t = tokens(&[("▁So", 0), ("▁we", 200), ("▁go", 1500)]);
     assert_eq!(cues(&t, &[], 3000, true).len(), 2);
+    // A pause or a sentence too soon for the cue before to show `MIN_MS`.
+    let t = tokens(&[("▁Yes", 0), ("▁Okay", 720)]);
+    assert_eq!(cues(&t, &[], 3000, true).len(), 1);
+    let t = tokens(&[("▁Yes.", 0), ("▁Okay", 880)]);
+    assert_eq!(cues(&t, &[], 3000, true).len(), 1);
+    // Nor a cut within a phrase: 50 words, the last 30 in one frame.
+    let t: Vec<(String, u32)> =
+      (0..50).map(|i| (format!("▁w{i:02}"), (i * 100).min(2000))).collect();
+    let c =
+      cues(&tokens(&t.iter().map(|(p, s)| (p.as_str(), *s)).collect::<Vec<_>>()), &[], 9000, true);
+    let starts: Vec<u32> = c.iter().map(|c| c.start).collect();
+    assert!(starts.windows(2).all(|s| s[1] >= s[0] + MIN_MS + GAP_MS), "{starts:?}");
+  }
+
+  #[test]
+  fn chinese_and_japanese_break_between_letters() {
+    // 126 Chinese letters in one Whisper segment: cues of two lines of 21 wide letters.
+    let text = "我们今天讨论的问题非常重要，".repeat(9);
+    let pieces: Vec<String> = text.chars().map(String::from).collect();
+    let t = tokens(&pieces.iter().map(|p| (p.as_str(), 0)).collect::<Vec<_>>());
+    let c = cues(&t, &[], 30_000, false);
+    assert!(c.len() > 1);
+    assert_eq!(c.iter().map(|c| c.text.as_str()).collect::<String>(), text);
+    for line in srt(&c).lines().filter(|l| l.chars().any(unspaced)) {
+      assert!(width(line) <= LINE, "{line}");
+    }
+    // A break falls after the comma, never before punctuation, and Latin words keep their spaces.
+    assert_eq!(lines(&"一二三四五六七八九十，".repeat(4)).lines().count(), 2);
+    assert!(lines(&"一二三四五六七八九十，".repeat(4)).contains("，\n"));
+    assert_eq!(lines("東京で Tower を見た"), "東京で Tower を見た");
   }
 
   #[test]
@@ -380,7 +469,7 @@ pub mod tests {
     let t = tokens(&[("我们", 0), ("走吧。", 0), ("好", 2000)]);
     assert_eq!(
       srt_segments(&t, 3000),
-      "1\n00:00:00,000 --> 00:00:01,140\n我们走吧。\n\n2\n00:00:02,000 --> 00:00:03,000\n好\n\n"
+      "1\n00:00:00,000 --> 00:00:01,280\n我们走吧。\n\n2\n00:00:02,000 --> 00:00:03,000\n好\n\n"
     );
     // SentencePiece pieces (Moonshine).
     let t = tokens(&[("▁And", 0), ("▁so", 0), ("▁ask", 4000)]);
