@@ -1,6 +1,7 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! The renderings of a transcript: `--json` and `--srt`, and for `wavo serve` also WebVTT and
-//! OpenAI's `verbose_json`; with `--diarize` by speaker, and a diarization model's turns alone.
+//! OpenAI's `verbose_json` and `diarized_json`; with `--diarize` by speaker, and a diarization
+//! model's turns alone.
 
 use std::fmt::Write;
 use std::ops::Range;
@@ -270,6 +271,35 @@ pub fn verbose_json(t: &Transcript, cues: &[Cue], language: &str, audio_ms: u32)
   out + "\n]}"
 }
 
+/// Utterances of a model without word times (Whisper) end where the next starts, the last at
+/// `audio_ms`, as its cues do: the library ends them a word's length after their start.
+pub fn stretch(utterances: &mut [Utterance], audio_ms: u32) {
+  let nexts: Vec<u32> = utterances.iter().skip(1).map(|u| u.start_ms).chain([audio_ms]).collect();
+  utterances.iter_mut().zip(nexts).for_each(|(u, next)| u.end_ms = next.max(u.end_ms));
+}
+
+/// OpenAI's `diarized_json`: the text, and the utterances as segments with times in seconds and
+/// speakers as letters, `A` for the first to talk (and when there were no turns).
+pub fn diarized_json(text: &str, utterances: &[Utterance], audio_ms: u32) -> String {
+  let (duration, text) = (secs(audio_ms), quote(text));
+  let mut out = format!(
+    "{{\"task\": \"transcribe\", \"duration\": {duration}, \"text\": {text}, \"segments\": ["
+  );
+  for (i, u) in utterances.iter().enumerate() {
+    let speaker = char::from(b'A' + u.speaker.unwrap_or(0) as u8);
+    let (sep, start, end, text) =
+      (if i == 0 { "" } else { "," }, secs(u.start_ms), secs(u.end_ms), quote(&u.text));
+    write!(
+      out,
+      "{sep}\n  {{\"type\": \"transcript.text.segment\", \"id\": \"seg_{i}\", \"start\": {start}, \
+       \"end\": {end}, \"text\": {text}, \"speaker\": \"{speaker}\"}}"
+    )
+    .unwrap();
+  }
+
+  out + if utterances.is_empty() { "]}" } else { "\n]}" }
+}
+
 /// Milliseconds as exact decimal seconds: `1.5`, `0.04`, `2.0`.
 fn secs(ms: u32) -> String {
   let frac = format!("{:03}", ms % 1000);
@@ -445,6 +475,26 @@ mod tests {
     let none = t.utterances(&[]);
     assert_eq!(by_speaker(&none), "Speaker ?: Hi. Yes. And then\n");
     assert!(json(&t, Some(&none)).contains("\"speaker\": null"));
+    // OpenAI's diarized_json: speakers as letters, times in seconds.
+    assert_eq!(
+      diarized_json(&t.text, &u, 6000),
+      "{\"task\": \"transcribe\", \"duration\": 6.0, \"text\": \"Hi. Yes. And then\", \
+       \"segments\": [\
+       \n  {\"type\": \"transcript.text.segment\", \"id\": \"seg_0\", \"start\": 0.0, \"end\": 0.2, \
+       \"text\": \"Hi.\", \"speaker\": \"A\"},\
+       \n  {\"type\": \"transcript.text.segment\", \"id\": \"seg_1\", \"start\": 1.0, \"end\": 1.2, \
+       \"text\": \"Yes.\", \"speaker\": \"B\"},\
+       \n  {\"type\": \"transcript.text.segment\", \"id\": \"seg_2\", \"start\": 4.0, \"end\": 4.4, \
+       \"text\": \"And then\", \"speaker\": \"A\"}\n]}"
+    );
+    assert!(diarized_json(&t.text, &none, 6000).contains("\"speaker\": \"A\""));
+    assert!(diarized_json("", &[], 40).ends_with("\"segments\": []}"));
+
+    // Whisper's: each to the next one's start, the last to the audio's end.
+    let mut u = u;
+    stretch(&mut u, 6000);
+    let ends: Vec<u32> = u.iter().map(|u| u.end_ms).collect();
+    assert_eq!(ends, [1000, 4000, 6000]);
   }
 
   #[test]
