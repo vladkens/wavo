@@ -1,6 +1,6 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 // Linear layer c = epilogue(a·Wᵀ + bias): `a` is row-major [m][k] F32, W is [n][k] in its GGUF
-// type. A workgroup computes a ROWS×128 tile of c. K advances 32 per step (one Q8_0 block). W
+// type. A workgroup computes a ROWS×128 tile of c. K advances 32 per step (one block of 32). W
 // has a multiple of 64 rows and k % 32 == 0; c's rows are n + dual
 // wide, and outputs from n on (W's zero rows) are not written. W and `a` are rounded to f16, as
 // ggml-metal's `kernel_mul_mm` (`ggml/src/ggml-metal/kernels/mul_mm.metal`) does. Without the
@@ -8,7 +8,7 @@
 // the rounding of `a`, the ivrit he-long near-tie does. The module also holds `gemv`, for one row
 // of `a` (not rounded, as `mul_mv`), and `embed`.
 
-// Weight type, one pipeline each: 0: F32, 1: F16, 2: Q8_0.
+// Weight type, one pipeline each: 0: F32, 1: F16, 2: Q8_0, 3: Q5_0.
 override WTYPE: u32;
 // Rows of the GEMM's tile: 64, or 32 (more workgroups).
 override ROWS: u32 = 64u;
@@ -33,9 +33,9 @@ var<immediate> p: Params;
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read> bias: array<f32>;
 @group(0) @binding(2) var<storage, read_write> c: array<f32>;
-// F32 as bits, F16 as pairs, Q8_0 as 4 int8 per word.
+// F32 as bits, F16 as pairs, Q8_0 as 4 int8 per word, Q5_0 as 5-bit codes (24 bytes per 32).
 @group(0) @binding(3) var<storage, read> w: array<u32>;
-// Q8_0 block scales as f16 pairs (any buffer for other types).
+// Q8_0 and Q5_0 block scales as f16 pairs (any buffer for other types).
 @group(0) @binding(4) var<storage, read> scales: array<u32>;
 // `a` for the GEMM's 16-byte loads.
 @group(0) @binding(0) var<storage, read> a4: array<vec4<f32>>;
@@ -53,6 +53,38 @@ fn to_half(x: f32) -> f32 {
 fn scale(block: u32) -> f32 {
   let s = unpack2x16float(scales[block / 2u]);
   return select(s.x, s.y, (block & 1u) == 1u);
+}
+
+// Four Q5_0 codes starting at weight x (a multiple of 4). Codes are packed little-endian, five
+// bits each, 24 bytes per 32, and the f16 scale is applied here. gemm_fast.wgsl has the same load.
+fn q5_word(x: u32) -> u32 {
+  let block = x / 32u;
+  let group = (x % 32u) / 4u;
+  let bit = group * 20u;
+  let byte = block * 24u + (bit >> 3u);
+  let i = byte >> 2u;
+  let s = (byte & 3u) * 8u;
+  var word = w[i];
+  if (s != 0u) {
+    word = (word >> s) | (w[i + 1u] << (32u - s));
+  }
+  return word >> (bit & 7u);
+}
+
+fn q5_4(x: u32) -> vec4<f32> {
+  let packed = q5_word(x);
+  let q = vec4(f32(packed & 31u), f32((packed >> 5u) & 31u), f32((packed >> 10u) & 31u), f32((packed >> 15u) & 31u));
+  return (q - 16.0) * scale(x / 32u);
+}
+
+fn q5_1(x: u32) -> f32 {
+  let v = q5_4(x & ~3u);
+  switch x & 3u {
+    case 0u: { return v.x; }
+    case 1u: { return v.y; }
+    case 2u: { return v.z; }
+    default: { return v.w; }
+  }
 }
 
 // The [ROWS][32] tile of a as [row][k quad], rows padded to 9 quads against bank conflicts; the
@@ -103,7 +135,7 @@ fn store(m: u32, n0: u32, acc: vec4<f32>) {
 }
 
 // The words of W[n][k..k + 4]; for Q8_0 one, the word of its block's scale and the block's
-// parity. Zeros from row p.n on.
+// parity. Q5_0 returns the four dequantized weights as bits. Zeros from row p.n on.
 fn w_words(n: u32, k: u32) -> vec4<u32> {
   if (n >= p.n) {
     return vec4(0u);
@@ -112,6 +144,7 @@ fn w_words(n: u32, k: u32) -> vec4<u32> {
   switch WTYPE {
     case 0u: { return vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u]); }
     case 1u: { return vec4(w[x / 2u], w[x / 2u + 1u], 0u, 0u); }
+    case 3u: { return bitcast<vec4<u32>>(q5_4(x)); }
     default: { return vec4(w[x / 4u], scales[x / 64u], (x / 32u) & 1u, 0u); }
   }
 }
@@ -122,6 +155,7 @@ fn w_floats(v: vec4<u32>) -> vec4<f32> {
   switch WTYPE {
     case 0u: { x = bitcast<vec4<f32>>(v); }
     case 1u: { x = vec4(unpack2x16float(v.x), unpack2x16float(v.y)); }
+    case 3u: { x = bitcast<vec4<f32>>(v); }
     default: {
       let s = unpack2x16float(v.y);
       x = vec4<f32>(unpack4xI8(v.x)) * select(s.x, s.y, v.z == 1u);
@@ -242,7 +276,7 @@ fn gemm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
 }
 
 // a[8j..8j + 8]·W[row][8j..8j + 8]. Q8_0 scales the int8 sum once per 8 weights, as ggml's
-// `mul_mv` does; W is not rounded.
+// `mul_mv` does; Q5_0 dequantizes each code. W is not rounded.
 fn dot8(row: u32, j: u32, a0: vec4<f32>, a1: vec4<f32>) -> f32 {
   let x = row * p.k + 8u * j;
   switch WTYPE {
@@ -256,6 +290,7 @@ fn dot8(row: u32, j: u32, a0: vec4<f32>, a1: vec4<f32>) -> f32 {
       let w0 = vec4(unpack2x16float(w[h]), unpack2x16float(w[h + 1u]));
       return dot(w0, a0) + dot(vec4(unpack2x16float(w[h + 2u]), unpack2x16float(w[h + 3u])), a1);
     }
+    case 3u: { return dot(q5_4(x), a0) + dot(q5_4(x + 4u), a1); }
     default: {
       let q = x / 4u;
       let d = dot(vec4<f32>(unpack4xI8(w[q])), a0) + dot(vec4<f32>(unpack4xI8(w[q + 1u])), a1);
@@ -321,6 +356,7 @@ fn embed(@builtin(global_invocation_id) id: vec3<u32>) {
   switch WTYPE {
     case 0u: { v = bitcast<f32>(w[x]); }
     case 1u: { v = unpack2x16float(w[x / 2u])[x % 2u]; }
+    case 3u: { v = q5_1(x); }
     default: { v = f32(unpack4xI8(w[x / 4u])[x % 4u]) * scale(x / 32u); }
   }
   c[i] = v + a[p.offset + i] + bias[i];

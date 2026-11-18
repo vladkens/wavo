@@ -45,6 +45,7 @@ fn gemm64(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index)
       switch WTYPE {
         case 0u: { v = bitcast<vec4<f32>>(vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u])); }
         case 1u: { v = vec4(unpack2x16float(w[x / 2u]), unpack2x16float(w[x / 2u + 1u])); }
+        case 3u: { v = q5_4(x); }
         default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
       }
       let o = e / 32u * S + e % 32u;

@@ -11,8 +11,8 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 
 use half::f16;
 
-use crate::error::Result;
-use crate::gguf::{Tensor, Type};
+use crate::error::{Result, bail};
+use crate::gguf::{Tensor, Type, q5_codes};
 use crate::{Api, Device, DeviceKind, Kernels};
 
 /// Dot product with 16 independent accumulators (four FMA vectors in flight), summed pairwise so
@@ -191,8 +191,8 @@ fn tile<const R: usize, const F: usize>(w: &[f32], z: &[f32], k: usize) -> [[f32
   std::array::from_fn(|f| std::array::from_fn(|r| dot(&w[r * k..][..k], &z[f * k..][..k])))
 }
 
-/// Weights `[rows][k]` for `matvecs`, kept as Q8_0 or, from an F32 or F16 tensor, as f32 (exact,
-/// as the reference reads them).
+/// Weights `[rows][k]` for `matvecs`. Q8_0 and Q5_0 keep signed codes and one f32 scale per 32
+/// weights (`q · d`, exact in f32). F32 and F16 stay as f32, as the reference reads them.
 pub enum Matrix {
   Q8(Q8),
   F32 { k: usize, w: Vec<f32> },
@@ -201,9 +201,20 @@ pub enum Matrix {
 impl Matrix {
   pub fn new(t: &Tensor) -> Result<Self> {
     let k = t.dims[0];
+    if matches!(t.ty, Type::Q8_0 | Type::Q5_0) && !k.is_multiple_of(32) {
+      bail!("quantized rows of {k} weights are not a multiple of 32");
+    }
     Ok(match t.ty {
       Type::F32 | Type::F16 => Self::F32 { k, w: t.to_f32()? },
       Type::Q8_0 => Self::Q8(Q8::new(&[t])?),
+      Type::Q5_0 => {
+        let mut b = Vec::new();
+        t.read(1 << 20, |_, piece| b.extend_from_slice(piece))?;
+        let blocks = b.as_chunks::<22>().0;
+        let d = blocks.iter().map(|b| f16::from_le_bytes([b[0], b[1]]).to_f32()).collect();
+        let q = blocks.iter().flat_map(|b| q5_codes(b).map(|c| (c as i8) - 16)).collect();
+        Self::Q8(Q8 { k, q, d })
+      }
     })
   }
 
@@ -234,8 +245,9 @@ impl Matrix {
   }
 }
 
-/// Q8_0 weights `[rows][k]` (k a multiple of 32) as int8 values and one f32 scale per 32. A
-/// weight is `q · d`, exact in f32, so every product below equals `dot` on the dequantized row.
+/// Q8_0 and Q5_0 weights `[rows][k]` (k a multiple of 32) as int8 codes and one f32 scale per 32.
+/// A Q8_0 code is the file's i8; a Q5_0 code is `code - 16` (−16..=15). A weight is `q · d`,
+/// exact in f32, so every product below equals `dot` on the dequantized row.
 pub struct Q8 {
   k: usize,
   q: Vec<i8>,
@@ -475,6 +487,19 @@ mod tests {
   use crate::gguf::{Gguf, Type};
 
   #[test]
+  fn quantized_matrices_require_block_aligned_rows() {
+    for (ty, block_size) in [(Type::Q8_0, 34), (Type::Q5_0, 22)] {
+      let bytes = vec![0; block_size];
+      let g = Gguf::with_tensors(&[("w", &[40], ty, &bytes)]);
+      assert!(super::Matrix::new(&g.tensor("w", &[40]).unwrap()).is_err(), "{ty:?}");
+
+      let bytes = vec![0; block_size];
+      let g = Gguf::with_tensors(&[("w", &[32], ty, &bytes)]);
+      assert!(super::Matrix::new(&g.tensor("w", &[32]).unwrap()).is_ok(), "{ty:?}");
+    }
+  }
+
+  #[test]
   fn matmul_matches_dot() {
     let (k, rows, frames) = (333, 8, 5);
     let v: Vec<f32> =
@@ -523,5 +548,21 @@ mod tests {
       let [got] = super::matvecs([(&w, &x)]);
       assert_eq!(got.into_iter().map(f32::to_bits).collect::<Vec<_>>(), want, "{ty:?}");
     }
+  }
+
+  #[test]
+  fn q5_0_matches_dot() {
+    // Each block is codes 0..31 at scale 0.5, which quantizes back to itself. 70 rows: a full
+    // 64-row block and a short one whose last 4-row group has 2 rows.
+    let (k, rows) = (64, 70);
+    let v: Vec<f32> = (0..rows * k).map(|i| (i % 32) as f32 * 0.5 - 8.0).collect();
+    let q5 = crate::gguf::quantize_q5_0(&v);
+    let x: Vec<f32> = (0..k).map(|i| (i * 31 % 17) as f32 / 8.0 - 1.0).collect();
+    let want: Vec<u32> = v.chunks_exact(k).map(|r| super::dot(r, &x).to_bits()).collect();
+    let g = Gguf::with_tensors(&[("w", &[k, rows], Type::Q5_0, &q5)]);
+    let w = super::Matrix::new(&g.tensor("w", &[k, rows]).unwrap()).unwrap();
+    assert_eq!(w.row(69), v[69 * k..]);
+    let [got] = super::matvecs([(&w, &x)]);
+    assert_eq!(got.into_iter().map(f32::to_bits).collect::<Vec<_>>(), want);
   }
 }
