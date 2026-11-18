@@ -79,10 +79,11 @@ A server without a GPU runs every model on the CPU, with the same text: 30s of R
 <details>
 <summary>Docker</summary>
 
-The image `ghcr.io/vladkens/wavo`, for x86_64 and arm64, has Mesa's Vulkan drivers for Intel and AMD GPUs. `--device /dev/dri` passes the GPU; without one wavo runs on the CPU. Keep `/root/.cache` in a volume: it holds the models and the driver's compiled kernels, which otherwise take seconds at every start.
+The image `ghcr.io/vladkens/wavo`, for x86_64 and arm64, has Mesa's Vulkan drivers for Intel and AMD GPUs. wavo runs as the user `wavo` (uid 1000), not root: `--device /dev/dri` with `--group-add` of the host's group of `/dev/dri/renderD128` passes the GPU; without one wavo runs on the CPU. Keep `/home/wavo/.cache` in a volume: it holds the models and the driver's compiled kernels, which otherwise take seconds at every start.
 
 ```sh
-docker run --rm --device /dev/dri -v wavo:/root/.cache -v "$PWD:/data" ghcr.io/vladkens/wavo run /data/talk.mp3 -y
+docker run --rm --device /dev/dri --group-add "$(stat -c %g /dev/dri/renderD128)" \
+  -v wavo:/home/wavo/.cache -v "$PWD:/data" ghcr.io/vladkens/wavo run /data/talk.mp3 -y
 ```
 
 As [Bazarr](https://www.bazarr.media)'s Whisper provider, in Bazarr's compose file, with `http://wavo:9000` as its endpoint:
@@ -94,10 +95,14 @@ services:
     command: serve parakeet-ultra --host 0.0.0.0 --port 9000 -y
     devices:
       - /dev/dri:/dev/dri # Intel or AMD GPU
+    group_add:
+      - "109" # the host's group of the GPU: stat -c %g /dev/dri/renderD128
     # gpus: all         # NVIDIA, with its Container Toolkit, instead of devices (untested)
     volumes:
-      - ./wavo:/root/.cache # models in ./wavo/huggingface
+      - wavo:/home/wavo/.cache # the models
     restart: unless-stopped
+volumes:
+  wavo:
 ```
 
 </details>
