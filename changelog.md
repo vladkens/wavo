@@ -1,3 +1,30 @@
+## v0.6.0 – 2026-11-18
+
+Who speaks when, every model on the CPU, subtitles for Bazarr and a Docker image.
+
+### Features
+
+- Added speaker diarization with NVIDIA's Nemotron 3 (`nemotron-diarization`, 0.11GB): `wavo run --diarize` tells up to 8 speakers apart in audio of any length and puts a speaker on every line of the text, JSON and SRT; `wavo::Diarizer` does the same in the library, on the GPU or the CPU (#100)
+- Added `response_format=diarized_json` to `wavo serve`, with a speaker on every segment (#105)
+- Added a CPU backend for every model family (Parakeet, GigaAM, Whisper and Moonshine) with the same text as on the GPU: `--backend cpu`, chosen automatically on machines without a GPU or with only a software one such as llvmpipe. On two Intel N100 cores, 30s of Russian take 5.3s with `gigaam-v3` in 0.33GB of memory, against 6.1s and 0.55GB with onnx-asr's int8 (#104)
+- Added a Docker image, `ghcr.io/vladkens/wavo`, for Linux on x86_64 and arm64 with Intel and AMD GPU drivers; it runs as a non-root user, and wavo warns when it can't open the GPU (#116)
+- Added language detection: `Model::detect_language` for multilingual Whisper, `Transcript::language`, the language in `wavo run --json`, and Bazarr's `POST /detect-language` in `wavo serve`, so Bazarr no longer fails on audio tracks without a language tag (#77)
+- Added `wavo devices` and `--device` to pick a GPU, such as a laptop's discrete GPU over its integrated one (#103)
+- Added `--unload-after` to `wavo serve` to free the memory of models no request has used for a while (#99)
+- Added `gigaam-multilingual` (Russian, English, Kazakh, Kyrgyz, Uzbek) and `parakeet-uk`, a Ukrainian fine-tune of Parakeet v3 (#97, #98)
+
+### Improvements
+
+- Improved subtitles (`--srt`, `wavo serve`'s srt and vtt, and Bazarr's `/asr`) to follow Netflix's style guide: at most two lines of 42 characters, 5/6s to 7s on screen, new cues at sentences and pauses, lines in Chinese and Japanese broken between characters, and Whisper's last line before music no longer stays on screen for minutes (#108)
+
+### Fixes
+
+- Fixed `transcribe_long` gluing the last word of one piece to the first word of the next with GigaAM's character models (`gigaam-v3-ctc`, `gigaam-v3-rnnt`), also on the Neural Engine past 15s (#102)
+
+**Full Changelog**: https://github.com/vladkens/wavo/compare/v0.5.0...v0.6.0
+
+---
+
 ## v0.5.0 – 2026-11-09
 
 ### Features

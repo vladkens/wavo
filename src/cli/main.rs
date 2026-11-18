@@ -85,8 +85,9 @@ Serve options:
   response_format (json, text, srt, vtt, verbose_json, diarized_json); GET /v1/models lists
   the downloaded models, GET /health the GPU and the loaded models. A downloaded model not
   listed loads on first use, one at a time; so does nemotron-diarization for diarized_json,
-  unless listed (then it is downloaded as the others are). POST /asr, POST /detect-language and GET /status answer as
-  whisper-asr-webservice does, for Bazarr's subtitles, with the first model.
+  unless listed (then it is downloaded as the others are). POST /asr, POST /detect-language
+  and GET /status answer as whisper-asr-webservice does, for Bazarr's subtitles, with the
+  first model.
 
 MODEL is a name below, its full name or a path to a .gguf file (for serve, a name); for
 nemotron-diarization, wavo run prints who speaks when (as text or --json), up to 8 speakers
