@@ -87,7 +87,7 @@ cargo install --git https://github.com/vladkens/wavo
 ## 🚀 Usage
 
 ```sh
-wavo talk.m4a                         # transcribe with parakeet-ultra, the same as wavo run talk.m4a
+wavo talk.m4a                         # transcribe with the model for its language, as wavo run talk.m4a
 wavo run gigaam-v3 talk.mp3           # or with another model
 wavo run whisper-turbo talk.mp3 -y    # download a missing model without asking
 wavo pull parakeet-ultra              # download a model

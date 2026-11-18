@@ -24,7 +24,7 @@ use wavo::hub::{self, Hub, ModelInfo};
 
 use crate::http::{self, Head, Part, Res, fail};
 use crate::output::{self, quote};
-use crate::{Download, audio, lid, models, split, subtitles};
+use crate::{Download, audio, auto, lid, models, split, subtitles};
 
 const USAGE: &str = "usage: wavo serve [MODEL...] [--host ADDR] [--port PORT] [--api-key KEY] [-y]";
 /// Connections served at once; as many more get 503, and past that they are dropped.
@@ -114,6 +114,13 @@ struct Server {
   key: Option<String>,
   /// Open connections.
   open: AtomicUsize,
+}
+
+/// A model failing while it tells a request's language.
+impl From<wavo::Error> for http::Fail {
+  fn from(e: wavo::Error) -> Self {
+    fail(500, format!("detecting the language: {e}"))
+  }
 }
 
 /// A successful response, and a note for the log.
@@ -403,14 +410,23 @@ impl Server {
       return Err(fail(400, e + ": use Parakeet, GigaAM or Whisper"));
     }
 
-    let model = self.pick(&name)?;
     let speakers = if diarize { Some(self.speakers()?) } else { None };
     let pcm = decode(body, &parts, "file", false)?;
+    // Without a wavo model named, the downloaded one for the language; with none, the first.
+    let model = match wanted(&name) {
+      Some(_) => self.pick(&name)?,
+      None => {
+        let (language, on) = (options.language.as_deref(), self.backend);
+        let chosen =
+          auto::choose(&pcm, language, on, diarize, |m| self.pick(m.name), |x| &x.model)?;
+        chosen.map_or_else(|| self.given(0), |m| self.pick(m.name))?
+      }
+    };
     let turns = match speakers {
       Some(s) => Some(s.diarizer.diarize(&pcm).map_err(|e| fail(500, format!("diarizing: {e}")))?),
       None => None,
     };
-    reply(&model, &pcm, &options, &format, turns.as_deref(), false)
+    reply(&model, &pcm, &options, &format, turns.as_deref(), wanted(&name).is_none())
   }
 
   /// `POST /asr` of whisper-asr-webservice, as Bazarr calls it: the form field `audio_file`, and
