@@ -1,3 +1,27 @@
+## v0.6.0 – 2026-11-18
+
+### Features
+
+- Added speaker diarization: who speaks when, up to 8 speakers, in text, JSON and subtitles (#100, #105)
+- Added a CPU backend: every model runs without a GPU, with the same text (#104)
+- Added a Docker image for Linux, with Intel and AMD GPU support (#116)
+- Added language detection, in the library and for Bazarr (#77)
+- Added the `gigaam-multilingual` and `parakeet-uk` models (#97, #98)
+- Added `wavo devices` and `--device` to pick a GPU (#103)
+- Added `--unload-after` to free idle models in `wavo serve` (#99)
+
+### Improvements
+
+- Improved subtitles to follow Netflix's style guide: two short lines, cut at sentences and pauses (#108)
+
+### Fixes
+
+- Fixed words glued together on long audio with GigaAM's character models (#102)
+
+**Full Changelog**: https://github.com/vladkens/wavo/compare/v0.5.0...v0.6.0
+
+---
+
 ## v0.5.0 – 2026-11-09
 
 ### Features

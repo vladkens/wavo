@@ -21,11 +21,13 @@
 - 🎧 Any common format: wav, mp3, m4a, flac, ogg (Vorbis), resampled for you
 - ⚡ Runs on the GPU: Metal on a Mac, Vulkan on Linux and Windows
 - 🧠 Runs on a Mac's Neural Engine too, for Parakeet and GigaAM
+- 💻 No GPU? Every model runs on the CPU, with the same text
 - 🦀 Pure Rust library: no CMake, C++ toolchain, Python or ONNX Runtime to install
 - 📦 `pull` / `list` / `rm` models, shared with the Hugging Face cache that `hf` uses
 - 📝 Plain text, JSON with a start time for every token, or SRT subtitles
 - 🗣️ Who speaks when: `--diarize` puts a speaker on every line, up to 8 speakers
 - 🔌 `wavo serve`: a local server for apps built on OpenAI's transcription API
+- 🎬 Subtitles for your films and series as [Bazarr](https://www.bazarr.media)'s Whisper provider
 
 ## 📥 Installation
 
@@ -40,6 +42,22 @@ Or download the binary for macOS (Apple Silicon), Linux or Windows from the [lat
 ```sh
 cargo install wavo
 ```
+
+<details>
+<summary>Docker</summary>
+
+The image `ghcr.io/vladkens/wavo` runs on x86_64 and arm64 Linux, with Mesa's Vulkan drivers for Intel and AMD GPUs.
+
+```sh
+docker run --rm --device /dev/dri --group-add "$(stat -c %g /dev/dri/renderD128)" \
+  -v wavo:/home/wavo/.cache -v "$PWD:/data" ghcr.io/vladkens/wavo run /data/talk.mp3 -y
+```
+
+- `--device /dev/dri` and `--group-add` give it the GPU; without them it runs on the CPU.
+- It runs as the user `wavo` (uid 1000), not root, so it needs the GPU's group.
+- The volume keeps the models and the GPU's compiled kernels between runs.
+
+</details>
 
 <details>
 <summary>Linux</summary>
@@ -72,39 +90,6 @@ GPUs other than Apple's use simpler kernels for now, except for matrix multiplic
 
 Without a Vulkan driver, in a VM for example, wavo falls back to DirectX 12 with the simpler kernels. `WGPU_BACKEND=dx12` forces it.
 
-A server without a GPU runs every model on the CPU, with the same text: 30s of Russian take 5.4s with GigaAM (0.34GB of memory), 7.7s with Parakeet V3 (0.84GB) and 18s with `whisper-small` (0.56GB) on two N100 cores.
-
-</details>
-
-<details>
-<summary>Docker</summary>
-
-The image `ghcr.io/vladkens/wavo`, for x86_64 and arm64, has Mesa's Vulkan drivers for Intel and AMD GPUs. wavo runs as the user `wavo` (uid 1000), not root: `--device /dev/dri` with `--group-add` of the host's group of `/dev/dri/renderD128` passes the GPU (without that group, wavo warns with its number and runs on the CPU); without a GPU wavo runs on the CPU. Keep `/home/wavo/.cache` in a volume: it holds the models and the driver's compiled kernels, which otherwise take seconds at every start.
-
-```sh
-docker run --rm --device /dev/dri --group-add "$(stat -c %g /dev/dri/renderD128)" \
-  -v wavo:/home/wavo/.cache -v "$PWD:/data" ghcr.io/vladkens/wavo run /data/talk.mp3 -y
-```
-
-As [Bazarr](https://www.bazarr.media)'s Whisper provider, in Bazarr's compose file, with `http://wavo:9000` as its endpoint:
-
-```yaml
-services:
-  wavo:
-    image: ghcr.io/vladkens/wavo
-    command: serve parakeet-ultra --host 0.0.0.0 --port 9000 -y
-    devices:
-      - /dev/dri:/dev/dri # Intel or AMD GPU
-    group_add:
-      - "993" # yours: stat -c %g /dev/dri/renderD128
-    # gpus: all         # NVIDIA, with its Container Toolkit, instead of devices (untested)
-    volumes:
-      - wavo:/home/wavo/.cache # the models
-    restart: unless-stopped
-volumes:
-  wavo:
-```
-
 </details>
 
 ### Newest version
@@ -120,32 +105,28 @@ cargo install --git https://github.com/vladkens/wavo
 ```sh
 wavo talk.m4a                         # transcribe with parakeet-ultra, the same as wavo run talk.m4a
 wavo run gigaam-v3 talk.mp3           # or with another model
-wavo run whisper-turbo talk.mp3 -y    # download a missing model without asking
-wavo pull parakeet-ultra              # download a model
-wavo pull gigaam-v3 whisper-turbo     # or several at once
-wavo run talk.wav --json              # text, its language and every token with its start time
 wavo run talk.wav --srt > talk.srt    # subtitles
+wavo run talk.wav --json              # text, its language and every token with its start time
 wavo run talk.wav --diarize           # Speaker 1: ... lines, also with --json and --srt
-wavo run nemotron-diarization talk.wav  # only who speaks when
-wavo run whisper-turbo talk.mp3 --language he  # Whisper: set the language, not detect it
+wavo pull gigaam-v3 whisper-turbo     # download models
 wavo list                             # downloaded models
-wavo rm parakeet-ultra                # delete one
+wavo rm gigaam-v3                     # delete one
 wavo bench gigaam-v3 talk.wav         # load time and speed on your machine
+wavo devices                          # the GPUs wavo sees, numbered for --device
 wavo debug                            # your system, GPUs and models, to paste into an issue
-wavo run talk.wav --backend gpu       # the GPU even where the Neural Engine is ready
-wavo run gigaam-v3 talk.wav --backend cpu  # on the CPU, as without a GPU
-wavo devices                          # the GPUs, numbered for --device
-wavo run talk.wav --device radeon     # another GPU, by part of its name or its number
 ```
 
-- Long recordings are split at pauses by themselves. `--segment SECS` sets the piece length.
-- `wavo run` asks before downloading a model. `-y` skips the question.
-- Whisper detects the language. `--language CODE` sets it.
-- Subtitles follow Netflix's style guide: two lines of up to 42 characters, 5/6s to 7s a cue, cut at sentences, pauses and commas.
-- `--diarize` tells up to 8 speakers apart with NVIDIA's Nemotron 3 Diarization (0.11GB), downloaded like any model. Speakers are numbered in the order they first talk. In subtitles no cue spans two speakers.
-- Models live in the Hugging Face cache, shared with `hf download`.
+- `wavo run` asks before downloading a model; `-y` skips the question.
+- Long recordings are split at pauses by themselves; `--segment SECS` sets the piece length.
+- Whisper detects the language; `--language CODE` sets it.
+- Subtitles follow Netflix's style: two lines of up to 42 characters, 5/6s to 7s a cue.
+- `--diarize` tells up to 8 speakers apart with NVIDIA's Nemotron 3 Diarization (0.11GB).
+- `--device NAME` picks another GPU by part of its name or its number in `wavo devices`.
+- `--backend cpu` runs on the CPU; `--backend gpu` skips a Mac's Neural Engine.
 - On a Mac, `wavo pull` prepares Parakeet and GigaAM for the Neural Engine, once, in 15–30s.
-- `--backend gpu` stays on the GPU even where the Neural Engine is ready.
+- Models live in the Hugging Face cache, shared with `hf download`.
+
+Without a GPU, 30s of Russian take 5.4s with `gigaam-v3` (0.34GB of memory), 7.7s with `parakeet-v3` (0.84GB) and 18s with `whisper-small` (0.56GB) on two N100 cores.
 
 <details>
 <summary>Server</summary>
@@ -162,9 +143,39 @@ wavo serve parakeet-ultra nemotron-diarization   # also who speaks: diarized_jso
 curl -F file=@talk.mp3 -F model=whisper-1 http://127.0.0.1:8000/v1/audio/transcriptions
 ```
 
-It also works as [Bazarr](https://www.bazarr.media)'s Whisper provider, for subtitles, and names the language of an untagged audio track. `wavo --help` lists the endpoints and options.
+- `model` picks any downloaded model by name, loaded on first use, without a restart.
+- A name wavo doesn't know, such as `whisper-1`, goes to the first model given.
+- `wavo --help` lists the endpoints and options.
 
 </details>
+
+## 🎬 Subtitles with Bazarr
+
+wavo works as [Bazarr](https://www.bazarr.media)'s Whisper provider: it writes subtitles for the films and episodes that have none, on an Intel or AMD GPU, or on the CPU.
+
+1. Add wavo to Bazarr's compose file:
+
+   ```yaml
+   services:
+     wavo:
+       image: ghcr.io/vladkens/wavo
+       command: serve parakeet-ultra --host 0.0.0.0 --port 9000 -y
+       devices:
+         - /dev/dri:/dev/dri # Intel or AMD GPU; without it, the CPU
+       group_add:
+         - "993" # yours: stat -c %g /dev/dri/renderD128
+       # gpus: all         # NVIDIA, with its Container Toolkit, instead of devices (untested)
+       volumes:
+         - wavo:/home/wavo/.cache # the models
+       restart: unless-stopped
+   volumes:
+     wavo:
+   ```
+
+2. In Bazarr's providers, turn on Whisper with `http://wavo:9000` as its endpoint.
+3. Lower Bazarr's minimum scores below Whisper's fixed 61% for episodes and 33% for movies.
+
+`parakeet-ultra` knows [25 European languages](docs/models.md); for others, serve `whisper-turbo`. Untagged audio tracks get their language from wavo too. The rest is on [Bazarr's Whisper page](https://wiki.bazarr.media/Additional-Configuration/Whisper-Provider/).
 
 ## 🧠 Models
 
