@@ -148,6 +148,15 @@ impl Moonshine {
     self.backend.device()
   }
 
+  /// The linear uploads recorded while this model loaded on the GPU, then forgotten.
+  #[cfg(all(test, feature = "hub"))]
+  pub(crate) fn weight_bytes(&self) -> Vec<crate::gpu::WeightBytes> {
+    match &self.backend {
+      Backend::Gpu(b) => b.0.weight_bytes(),
+      Backend::Cpu(_) | Backend::Ane(_) => Vec::new(),
+    }
+  }
+
   pub fn transcribe(&self, pcm: &[f32]) -> Result<Transcript> {
     let t = frames(pcm.len())[2];
     if t == 0 {
