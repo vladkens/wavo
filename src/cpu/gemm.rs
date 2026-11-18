@@ -66,6 +66,7 @@ impl Linear {
       }
       _ => Weights::F32(ws.iter().map(|w| w.to_f32()).collect::<Result<Vec<_>>>()?.concat()),
     };
+
     if !bias.is_empty() && bias.len() != n {
       bail!("linear layer {k}→{n}: bias has {} values", bias.len());
     }
@@ -108,6 +109,7 @@ impl Linear {
         }
         Weights::F16(w) => {
           w[row * k..][..k].convert_to_f32_slice(wide);
+
           for (w, out) in wide.iter().zip(out.as_chunks_mut::<NR>().0) {
             out[j] = *w;
           }
@@ -135,6 +137,7 @@ pub fn gemm(a: &[f32], l: &Linear, c: &mut [f32], m: usize, epilogue: Epilogue) 
       a[..m * k].chunks(rows * k).zip(q.chunks_mut(rows * k)).zip(d.chunks_mut(rows * k / 32));
     // SAFETY: the CPU has AVX-VNNI.
     par_each(parts, || (), |_, ((a, q), d)| unsafe { x86::quantize(a, q, d) });
+
     let (aq, ad) = (&*q, &*d);
     let (kq, kd) = (k * NR, k / 32 * NR);
     return jobs(
@@ -160,6 +163,7 @@ pub fn gemm(a: &[f32], l: &Linear, c: &mut [f32], m: usize, epilogue: Epilogue) 
       },
     );
   }
+
   let a: Vec<f32> = a[..m * k].iter().map(|&x| to_half(x)).collect();
   let kb = k * NR;
   jobs(
@@ -394,6 +398,7 @@ mod x86 {
         let m = _mm_max_ps(_mm256_castps256_ps128(m), _mm256_extractf128_ps::<1>(m));
         let m = _mm_max_ps(m, _mm_movehl_ps(m, m));
         let max = _mm_cvtss_f32(_mm_max_ss(m, _mm_shuffle_ps::<1>(m, m)));
+
         *d = max / 32767.0;
         let id = _mm256_set1_ps(if max > 0.0 { 32767.0 / max } else { 0.0 });
         let i = v.map(|v| _mm256_cvtps_epi32(_mm256_mul_ps(v, id)));
@@ -591,6 +596,7 @@ mod tests {
     let a: Vec<f32> = (0..m * k).map(|i| (i * 31 % 17) as f32 / 8.0 - 1.0).collect();
     let bias: Vec<f32> = (0..n).map(|i| i as f32 / 4.0).collect();
     let want = naive(&a, &v, k);
+
     for (ty, bytes) in [(Type::F32, f32s), (Type::F16, f16s), (Type::Q8_0, q8)] {
       let g = Gguf::with_tensors(&[("w", &[k, n], ty, &bytes)]);
       let l = super::Linear::new(&[g.tensor("w", &[k, n]).unwrap()], bias.clone()).unwrap();

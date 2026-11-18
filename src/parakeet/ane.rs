@@ -29,6 +29,7 @@ pub fn build(g: &Gguf, p: &mut Program) -> Result<Vec<Var>> {
   let m3 = p.input("m3", &[T, 1]);
   let keys = p.input("keys", &[1, 1, T]);
   let mut gr = Graph { p, g };
+
   // conv 0 (1 → ch channels), then twice depthwise and pointwise, each stride-2 stage masked.
   let conv = |gr: &mut Graph, x: &Var, i: usize, pointwise: bool| {
     let name = format!("enc.pre_encode.conv.{i}");
@@ -38,6 +39,7 @@ pub fn build(g: &Gguf, p: &mut Program) -> Result<Vec<Var>> {
       (_, true) => gr.conv_layer(x, &name, &[1, 1, ch, ch], &[ch, ch, 1, 1], (1, 0, 1)),
     }
   };
+
   let x = conv(&mut gr, &mel, 0, false)?;
   let x = gr.unary("relu", &x);
   let x = gr.binary("mul", &x, &m1);
@@ -49,6 +51,7 @@ pub fn build(g: &Gguf, p: &mut Program) -> Result<Vec<Var>> {
   let x = conv(&mut gr, &x, 5, false)?;
   let x = conv(&mut gr, &x, 6, true)?;
   let x = gr.unary("relu", &x); // [1][ch][T][MELS / 8]
+
   let f = x.shape[3];
   let x = gr.transpose(&x, &[0, 2, 1, 3]);
   let x = gr.reshape(&x, &[T, ch * f]);

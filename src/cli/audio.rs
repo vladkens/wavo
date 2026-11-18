@@ -72,6 +72,7 @@ fn decode(
   if let Some(ext) = ext {
     hint.with_extension(ext);
   }
+
   let source = MediaSourceStream::new(source, Default::default());
   let options = (FormatOptions::default(), MetadataOptions::default());
   let mut format = symphonia::default::get_probe().probe(&hint, source, options.0, options.1)?;
@@ -85,11 +86,13 @@ fn decode(
     if packet.track_id != id {
       continue;
     }
+
     let audio = match decoder.decode(&packet) {
       Ok(audio) => audio,
       Err(Error::DecodeError(_)) => continue, // a corrupt packet: skip it, as players do
       Err(e) => return Err(e.into()),
     };
+
     let channels = audio.spec().channels().count();
     audio.copy_to_vec_interleaved(&mut frame);
     match channels {
@@ -102,6 +105,7 @@ fn decode(
       bail!("the audio is longer than {:.1} hours: send it in parts", max as f64 / 3600.0);
     }
   }
+
   Ok((pcm, rate))
 }
 
@@ -172,15 +176,18 @@ mod tests {
     w.finalize().unwrap();
     let pcm = decode_bytes(wav.into_inner(), None, 1).unwrap();
     assert_eq!(pcm, [0.0, 1000.0 / 32768.0, -1000.0 / 32768.0]);
+
     // WebM's magic, then nothing a decoder knows
     let e = decode_bytes(b"\x1a\x45\xdf\xa3 then junk".repeat(100), Some("webm"), 1).unwrap_err();
     assert!(e.is::<Unsupported>(), "{e:#}");
+
     let mut wav = Cursor::new(Vec::new());
     let mut w = hound::WavWriter::new(&mut wav, spec(2, 8000, hound::SampleFormat::Int)).unwrap();
     (0..2 * 8001).for_each(|_| w.write_sample(0i16).unwrap());
     w.finalize().unwrap();
     let e = decode_bytes(wav.into_inner(), None, 1).unwrap_err().to_string();
     assert_eq!(e, "the audio is longer than 0.0 hours: send it in parts", "1 s and a sample");
+
     let mut wav = Cursor::new(Vec::new());
     let mut w =
       hound::WavWriter::new(&mut wav, spec(1, 2_000_000, hound::SampleFormat::Int)).unwrap();
@@ -215,6 +222,7 @@ mod tests {
       let expected = 0.75 * tone(i as f32 / 16000.0);
       assert!((s - expected).abs() < 0.03, "sample {i}: {s} vs {expected}");
     }
+
     let peak = pcm[1000..15000].iter().fold(0f32, |m, s| m.max(s.abs()));
     assert!((peak - 0.75).abs() < 0.005, "peak {peak}");
   }

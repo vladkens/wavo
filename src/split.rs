@@ -45,6 +45,7 @@ pub fn split(pcm: &[f32], max_ms: u32) -> Vec<Range<usize>> {
   let fits = pcm.len() <= max;
   let frames = pcm.chunks(FRAME).take(if fits { 0 } else { usize::MAX });
   let energy: Vec<f32> = frames.map(|f| f.iter().map(|x| x * x).sum()).collect();
+
   let (mut out, mut start) = (Vec::new(), 0);
   while pcm.len() - start > max {
     let first = (start + max / 2) / FRAME;
@@ -60,6 +61,7 @@ pub fn split(pcm: &[f32], max_ms: u32) -> Vec<Range<usize>> {
     out.push(start..cut);
     start = cut;
   }
+
   out.push(start..pcm.len());
   out
 }
@@ -119,6 +121,7 @@ mod tests {
       assert_eq!(pair[0].end % FRAME, 0, "cut on a frame start");
       assert!(pair[0].len() >= max / 2 - FRAME, "{:?}", pair[0]);
     }
+
     assert!(ranges.iter().all(|r| r.len() <= max), "{ranges:?}");
     assert!(ranges.last().unwrap().len() >= MIN_TAIL, "{ranges:?}");
   }

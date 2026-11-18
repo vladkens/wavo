@@ -128,13 +128,16 @@ impl Hub {
         "unexpected commit {commit:?} or etag {etag:?} from the Hub"
       )));
     }
+
     let lock = self.lock(repo, "wavo")?;
     let dir = self.folder(repo);
     let pointer = dir.join("snapshots").join(&remote.commit).join(file);
+
     if !pointer.exists() {
       let blob = dir.join("blobs").join(&remote.etag);
       fs::create_dir_all(blob.parent().unwrap())?;
       fs::create_dir_all(pointer.parent().unwrap())?;
+
       let _blob = self.lock(repo, &remote.etag)?; // huggingface_hub's own per-blob lock
       if !blob.exists() {
         let part = blob.with_file_name(format!("{}.incomplete", remote.etag));
@@ -144,10 +147,13 @@ impl Hub {
           let size = remote.size;
           return Err(Error::Hub(format!("{file}: downloaded {got} bytes, expected {size}")));
         }
+
         fs::rename(&part, &blob)?;
       }
+
       link(&blob, &pointer, &remote.etag)?;
     }
+
     let refs = dir.join("refs/main");
     if fs::read_to_string(&refs).ok().as_deref() != Some(remote.commit.as_str()) {
       fs::create_dir_all(refs.parent().unwrap())?;
@@ -155,6 +161,7 @@ impl Hub {
       fs::write(&tmp, &remote.commit)?;
       fs::rename(&tmp, &refs)?;
     }
+
     Ok((pointer, lock))
   }
 
@@ -167,6 +174,7 @@ impl Hub {
     if !dir.exists() {
       return Ok(None);
     }
+
     let _repo = self.lock(repo, "wavo")?;
     let pointers: Vec<PathBuf> =
       self.snapshots(repo).map(|s| s.join(file)).filter(|p| p.symlink_metadata().is_ok()).collect();
@@ -195,6 +203,7 @@ impl Hub {
         emptied.push(snapshot.file_name().unwrap().to_string_lossy().into_owned());
       }
     }
+
     // Blobs are content-addressed: another file name may still point at the same one. A blob two
     // snapshots share is listed twice, and gone on its second turn.
     let (used, mut shared) = (linked(&dir.join("snapshots")), Vec::new());
@@ -203,26 +212,32 @@ impl Hub {
       if used.iter().any(|u| Some(u.as_os_str()) == blob.file_name()) {
         continue;
       }
+
       if meta.is_symlink() {
         shared.extend(self.shared(blob));
       } else {
         freed += meta.len();
       }
+
       fs::remove_file(blob)?;
     }
+
     for r in fs::read_dir(dir.join("refs")).into_iter().flatten().flatten() {
       if fs::read_to_string(r.path()).is_ok_and(|c| emptied.iter().any(|e| e == c.trim())) {
         fs::remove_file(r.path())?;
       }
     }
+
     if self.snapshots(repo).next().is_none() {
       let rest = fs::read_dir(dir.join("blobs")).into_iter().flatten().flatten();
       shared.extend(rest.filter_map(|b| self.shared(&b.path())));
       fs::remove_dir_all(&dir)?;
     }
+
     for store in &shared {
       freed += self.sweep(store)?;
     }
+
     for key in &prepared {
       freed += crate::ane::remove(key)?;
     }
@@ -267,6 +282,7 @@ impl Hub {
           return Ok(true);
         }
       }
+
       for repo in fs::read_dir(&self.root)? {
         match fs::read_dir(repo?.path().join("blobs")) {
           Err(e) if absent(&e) => {}
@@ -279,11 +295,13 @@ impl Hub {
           }
         }
       }
+
       Ok(false)
     };
     if !matches!(used(), Ok(false)) {
       return Ok(0);
     }
+
     let size = fs::symlink_metadata(store)?.len();
     fs::remove_file(store)?;
     fs::remove_file(&refs)?;
@@ -363,6 +381,7 @@ fn download(
     out.set_len(0)?;
     done = 0;
   }
+
   out.seek(SeekFrom::Start(done))?;
   copy(resp.into_body().into_reader(), &mut out, done, size, url, progress)
 }
@@ -389,6 +408,7 @@ fn copy(
     if progress(Progress { done, total: size, retrying: None, preparing: None }).is_break() {
       return Err(Error::Cancelled);
     }
+
     let n = match body.read(&mut buf) {
       Ok(0) if done < size => {
         return Err(broke(format!("download ended at {done} of {size} bytes")));
@@ -398,6 +418,7 @@ fn copy(
       Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
       Err(e) => return Err(broke(format!("download interrupted: {e}"))),
     };
+
     out.write_all(&buf[..n])?;
     done += n as u64;
   }
@@ -586,6 +607,7 @@ mod tests {
       fs::create_dir_all(snapshots.join(s)).unwrap();
       fs::write(snapshots.join(s).join("m.gguf"), s).unwrap();
     }
+
     std::os::unix::fs::symlink("../../blobs/gone", snapshots.join("x/n.gguf")).unwrap();
     assert_eq!(hub.find_file("org/m", "n.gguf"), None);
     fs::create_dir_all(hub.folder("org/m").join("refs")).unwrap();
@@ -657,6 +679,7 @@ mod tests {
     fs::create_dir_all(store.parent().unwrap()).unwrap();
     fs::write(hub.root.join("blobs/.huggingface-shared-blobs"), "1\n").unwrap();
     fs::write(&store, text).unwrap();
+
     let blobs = hub.folder(repo).join("blobs");
     fs::create_dir_all(&blobs).unwrap();
     std::os::unix::fs::symlink(format!("../../blobs/ab/{hash}"), blobs.join(&r.etag)).unwrap();
@@ -666,6 +689,7 @@ mod tests {
       let folder = hub.folder(repo).file_name().unwrap().to_str().unwrap().to_owned();
       writeln!(refs, "{folder}/blobs/{}", r.etag).unwrap();
     }
+
     let path = hub.install(repo, file, &r, write("")).unwrap().0;
     assert_eq!(fs::read_to_string(path).unwrap(), text);
     store
@@ -722,12 +746,14 @@ mod tests {
         fs::set_permissions(&blobs, fs::Permissions::from_mode(0o755)).unwrap();
         break; // root reads it anyway
       }
+
       let freed = hub.remove_file("org/m", "m.gguf").unwrap();
       fs::set_permissions(&blobs, fs::Permissions::from_mode(0o755)).unwrap();
       assert_eq!((freed, store.exists()), (Some(0), true), "listed: {listed}");
       fs::remove_dir_all(hub.folder("org/n")).unwrap();
       fs::remove_file(store.with_extension("refs")).unwrap();
     }
+
     fs::remove_dir_all(&hub.root).unwrap();
   }
 
@@ -739,6 +765,7 @@ mod tests {
     share(&hub, "org/n", "x.gguf", '1', "hello", true);
     let gone = share(&hub, "org/m", "y.gguf", '2', "four", true);
     hub.install("org/m", "z.gguf", &remote('a', '3', 3), write("abc")).unwrap();
+
     assert_eq!(hub.remove_file("org/m", "x.gguf").unwrap(), Some(0));
     assert_eq!(hub.remove_file("org/m", "y.gguf").unwrap(), Some(4));
     assert!(kept.exists() && !gone.exists());
@@ -766,10 +793,12 @@ mod tests {
         if line.trim().is_empty() {
           break;
         }
+
         if let Some(v) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
           from = v.trim().trim_end_matches('-').parse().unwrap();
         }
       }
+
       let (status, part) =
         if range { ("206 Partial Content", &body[from..]) } else { ("200 OK", body) };
       let mut out = stream;

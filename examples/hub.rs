@@ -20,6 +20,7 @@ fn main() -> Result<()> {
     }
     _ => return Err("usage: hub MODEL AUDIO.wav [--stop-at MB]".into()),
   };
+
   for m in wavo::hub::MODELS {
     println!("{:<18} {:>5} MB  {}", m.name, m.size / 1_000_000, m.languages);
   }
@@ -41,17 +42,20 @@ fn main() -> Result<()> {
       if let Some(e) = p.retrying {
         eprintln!("\nretrying after: {e}");
       }
+
       let pct = p.done * 100 / p.total;
       if last != Some(pct) {
         last = Some(pct);
         let _ = tx.send(pct);
       }
+
       if p.done < stop { ControlFlow::Continue(()) } else { ControlFlow::Break(()) }
     })
   });
   for pct in rx {
     eprint!("\rdownloading: {pct:3}%");
   }
+
   eprintln!();
   let path = match pull.join().expect("the download thread panicked") {
     Err(wavo::Error::Cancelled) => {
@@ -60,6 +64,7 @@ fn main() -> Result<()> {
     }
     path => path?,
   };
+
   println!("{}", path.display());
 
   let mut reader = hound::WavReader::open(wav)?;
@@ -67,6 +72,7 @@ fn main() -> Result<()> {
   if (spec.channels, spec.sample_rate, spec.bits_per_sample) != (1, 16_000, 16) {
     return Err(format!("{wav}: not 16 kHz mono 16-bit").into());
   }
+
   let pcm = reader.samples::<i16>().map(|s| Ok(s? as f32 / 32768.0)).collect::<Result<Vec<_>>>()?;
 
   // Audio of any length, split at pauses, with the pieces' progress.

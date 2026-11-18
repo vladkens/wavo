@@ -144,6 +144,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
       _ => names.push(crate::named(arg)?),
     }
   }
+
   // The diarization model given loads with the others, for `diarized_json`.
   let diarize = names.iter().any(|m| m.diarization());
   names.retain(|m| !m.diarization());
@@ -164,6 +165,7 @@ pub fn serve(args: &[&str]) -> Result<()> {
     true => Some(speakers(&crate::model_path(crate::DIARIZER, download, Backend::Gpu)?, on)?),
     false => None,
   };
+
   let device = models[0].model.device().clone();
   if let Some(warning) = device.warning() {
     eprintln!("warning: {warning}");
@@ -177,11 +179,13 @@ pub fn serve(args: &[&str]) -> Result<()> {
   let mut names: Vec<&str> = models.iter().map(|m| m.info.name).collect();
   names.extend(speakers.as_ref().map(|s| s.name()));
   eprintln!("{} on {device}\nlistening on http://{addr}", names.join(", "));
+
   let models = models.into_iter().map(|m| (m.info, Mutex::new(Some(m)))).collect();
   let (extra, speakers) =
     (Mutex::new(Extra { last: None, used: Vec::new() }), Mutex::new(speakers));
   let open = AtomicUsize::new(0);
   let server = Server { models, extra, speakers, backend: on, device, key, open };
+
   std::thread::scope(|s| {
     if let Some(after) = unload {
       let server = &server;
@@ -315,10 +319,12 @@ impl Server {
       }
       Err(e) => ("-".into(), "-".into(), Err(e)),
     };
+
     let (status, note) = match &reply {
       Ok(reply) => (200, reply.note.clone()),
       Err(e) => (e.status, e.message.clone()),
     };
+
     let until = Instant::now() + if busy { LINGER } else { MAX_SEND };
     let _ = send(Timed { stream: &stream, until }, reply); // fails when the client is gone
     let sep = if note.is_empty() { "" } else { ": " };
@@ -410,6 +416,7 @@ impl Server {
       Some(s) => Some(s.diarizer.diarize(&pcm).map_err(|e| fail(500, format!("diarizing: {e}")))?),
       None => None,
     };
+
     reply(&model, &pcm, &options, &format, turns.as_deref(), false)
   }
 
@@ -456,10 +463,12 @@ impl Server {
     let body = http::body(r, w, head, MAX_BODY)?;
     let parts = http::multipart(head.header("content-type").unwrap_or_default(), &body)?;
     let pcm = decode(body, &parts, "audio_file", raw)?;
+
     let failed = |e: wavo::Error| fail(500, format!("detecting the language: {e}"));
     let detect = |m: &Loaded| m.model.detect_language(&pcm);
     let by = &self.given(0)?;
     let ranked = detect(by).map_err(failed)?;
+
     let (code, confidence) = match ranked.first() {
       Some(top) => (top.code.clone(), top.probability as f64),
       None => {
@@ -559,6 +568,7 @@ impl<T> Extra<T> {
         loaded
       }
     };
+
     self.last = Some(loaded.clone());
     Ok(loaded)
   }
@@ -620,6 +630,7 @@ fn reply(
     Err(wavo::Error::Language(_)) if lenient => run(&wavo::Options::default()),
     transcript => transcript,
   };
+
   let (t, starts) = transcript.map_err(|e| match e {
     wavo::Error::Language(_) => fail(400, e.to_string()),
     e => fail(500, format!("transcribing: {e}")),
@@ -646,6 +657,7 @@ fn reply(
       (JSON, output::verbose_json(&t, &cues(), language.unwrap_or_default(), ms) + "\n")
     }
   };
+
   let note = format!("{}, {:.1} s of audio", m.info.name, ms as f64 / 1000.0);
   Ok(Reply { content_type, body, note })
 }
@@ -683,6 +695,7 @@ fn send(mut w: impl Write, reply: Res<Reply>) -> io::Result<()> {
     Ok(reply) => return http::respond(&mut w, 200, reply.content_type, reply.body.as_bytes()),
     Err(e) => e,
   };
+
   let kind = if e.status >= 500 { "server_error" } else { "invalid_request_error" };
   let message = quote(&e.message);
   let body = format!("{{\"error\": {{\"message\": {message}, \"type\": \"{kind}\"}}}}\n");
@@ -698,6 +711,7 @@ mod tests {
     for name in ["", "whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "Whisper-Tiny"] {
       assert_eq!(wanted(name), None, "{name}");
     }
+
     assert_eq!(wanted("gigaam-v3").unwrap().name, "gigaam-v3");
     assert_eq!(wanted("gigaam-v3-e2e-rnnt").unwrap().name, "gigaam-v3", "a full name");
     assert_eq!(wanted("whisper-tiny").unwrap().name, "whisper-tiny");
@@ -739,6 +753,7 @@ mod tests {
       };
       extra.get(|&x| x == name, load).unwrap()
     };
+
     let a = get(&mut extra, "a");
     let b = get(&mut extra, "b");
     assert!(Arc::ptr_eq(&a, &get(&mut extra, "a")), "a still in use");
@@ -775,6 +790,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(10));
       }
     });
+
     let (stream, t) = (listener.accept().unwrap().0, Instant::now());
     let mut w = Timed { stream: &stream, until: t + Duration::from_millis(300) };
     let e = w.write_all(&vec![0; 64 << 20]).unwrap_err();
@@ -793,6 +809,7 @@ mod tests {
     for header in [None, Some(""), Some("Bearer"), Some("Bearer k3"), Some("Bearer k3yy")] {
       assert!(!authorized(Some("k3y"), header), "{header:?}");
     }
+
     assert!(!authorized(Some("k3y"), Some("Basic k3y")));
     assert!(!authorized(Some("k3y"), Some("k3y")));
   }

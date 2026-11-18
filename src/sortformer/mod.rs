@@ -82,6 +82,7 @@ impl Sortformer {
     if d > 1024 || !d.is_multiple_of(heads) || !cfg.head_dim().is_multiple_of(4) {
       bail!("unsupported transformer shape: d_model {d}, {heads} heads");
     }
+
     if speakers == 0 || PARAMS.cache / speakers <= PARAMS.silence {
       bail!("unsupported speaker cache for {speakers} speakers");
     }
@@ -122,6 +123,7 @@ impl Sortformer {
         Backend::Cpu(encoder) => encoder.embed(&mel),
         Backend::Ane(_) => unreachable!("the diarizer has no Neural Engine program"),
       };
+
       let x: Vec<f32> = state.context().chain(&embs).copied().collect();
       let out = match &self.backend {
         Backend::Gpu(b) => b.1.predict(&b.0, &x)?,

@@ -138,6 +138,7 @@ impl Graph<'_> {
       Type::Q8_0 => self.p.int8(n_out, n_in, &w),
       _ => self.p.tensor(&[n_out, n_in], &w),
     };
+
     let b =
       if bias { Some(self.constant(&format!("{name}.bias"), &[n_out], &[n_out])?) } else { None };
     let mut shape = x.shape.clone();
@@ -220,6 +221,7 @@ fn attention(
   let (t, d, h, hd) = (x.shape[0], c.d, c.heads, c.head_dim());
   let a = |n: &str| format!("{b}attn.{n}");
   let y = gr.layer_norm(x, &format!("{b}norm_attn"))?;
+
   let scores = match rope {
     Some([cos, sin]) => {
       // Rotary on the normalized input of q and k: y·cos + rotate_half(y)·sin per head.
@@ -236,6 +238,7 @@ fn attention(
       let (yc, rs) = (gr.binary("mul", &y3, cos), gr.binary("mul", &rot, sin));
       let yr = gr.binary("add", &yc, &rs);
       let yr = gr.reshape(&yr, &[t, d]);
+
       let q = gr.linear(&yr, &a("linear_q"), &[d, d], c.bias)?;
       let k = gr.linear(&yr, &a("linear_k"), &[d, d], c.bias)?;
       let (q, k) = (heads(gr, c, &q), heads(gr, c, &k));
@@ -248,15 +251,18 @@ fn attention(
       let q = gr.reshape(&q, &[t, h, hd]);
       let k = gr.linear(&y, &a("linear_k"), &[d, d], c.bias)?;
       let k = heads(gr, c, &k);
+
       let u = gr.constant(&a("pos_bias_u"), &[hd, h], &[h, hd])?;
       let qu = gr.binary("add", &q, &u);
       let qu = gr.transpose(&qu, &[1, 0, 2]);
       let ac = gr.matmul(&qu, &k, true);
+
       let v = gr.constant(&a("pos_bias_v"), &[hd, h], &[h, hd])?;
       let qv = gr.binary("add", &q, &v);
       let qv = gr.transpose(&qv, &[1, 0, 2]);
       let p = positions(gr, &a("linear_pos.weight"), t, d, h)?;
       let bd = gr.matmul(&qv, &p, false); // [h][t][2t − 1]
+
       // NeMo's rel_shift: a zero column in front, viewed as [h][2t][t] without its first row,
       // viewed back; then the first t columns.
       let n = 2 * t - 1;
@@ -274,6 +280,7 @@ fn attention(
       gr.binary("add", &ac, &bd)
     }
   };
+
   let v = gr.linear(&y, &a("linear_v"), &[d, d], c.bias)?;
   let v = heads(gr, c, &v);
   let s = gr.scale(&scores, 1.0 / (hd as f32).sqrt());
@@ -308,6 +315,7 @@ fn conv(gr: &mut Graph, c: &Config, b: &str, x: &Var, m: &Var) -> Result<Var> {
   let y = gr.binary("mul", &y, m);
   let y = gr.transpose(&y, &[1, 0]);
   let y = gr.reshape(&y, &[1, d, t]);
+
   let w = gr.f32s(&format!("{b}conv.depthwise.weight"), &[k, 1, d])?; // [d][k]
   let (w, bias) = match c.conv_norm {
     // BatchNorm folded into the depthwise conv.
@@ -319,6 +327,7 @@ fn conv(gr: &mut Graph, c: &Config, b: &str, x: &Var, m: &Var) -> Result<Var> {
       (w, if c.bias { gr.f32s(&format!("{b}conv.depthwise.bias"), &[d])? } else { vec![0.0; d] })
     }
   };
+
   let (w, bias) = (gr.p.tensor(&[d, 1, k], &w), gr.p.tensor(&[d], &bias));
   let y = gr.conv(&y, &w, Some(&bias), 1, k / 2, d);
   let y = gr.reshape(&y, &[d, t]);
@@ -327,6 +336,7 @@ fn conv(gr: &mut Graph, c: &Config, b: &str, x: &Var, m: &Var) -> Result<Var> {
     ConvNorm::LayerNorm => gr.layer_norm(&y, &format!("{b}conv.ln"))?,
     ConvNorm::Affine => y,
   };
+
   let y = gr.unary("silu", &y);
   let y = gr.linear(&y, &format!("{b}conv.pointwise2"), &[1, d, d], c.bias)?;
   Ok(gr.binary("add", x, &y))

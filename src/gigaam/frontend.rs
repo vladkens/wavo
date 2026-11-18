@@ -58,15 +58,18 @@ impl Frontend {
       for ((x, s), w) in frame.iter_mut().zip(pcm).zip(&self.window) {
         *x = s * w;
       }
+
       let (re, im) = self.fft.forward(&frame, &mut buf);
       for ((p, re), im) in power.iter_mut().zip(re).zip(im) {
         *p = re * re + im * im;
       }
+
       for (filter, span) in self.filters.as_chunks::<BINS>().0.iter().zip(&self.spans) {
         let mel = crate::cpu::dot(&filter[span.clone()], &power[span.clone()]);
         out.push(mel.clamp(1e-9, 1e9).ln());
       }
     }
+
     out
   }
 }

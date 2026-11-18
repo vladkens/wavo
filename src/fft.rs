@@ -57,6 +57,7 @@ impl<T: Float> Fft<T> {
     while starts.len() < blocks {
       starts = starts.iter().map(|s| 2 * s).chain(starts.iter().map(|s| 2 * s + 1)).collect();
     }
+
     let perm = (0..n).map(|i| starts[i % blocks] + i / blocks * blocks).collect();
     let trig = |i: usize| {
       let phase = std::f64::consts::TAU * i as f64 / n as f64;
@@ -78,6 +79,7 @@ impl<T: Float> Fft<T> {
       unsafe { self.forward_fma(x, buf) };
       return buf[..2 * self.perm.len()].split_at(self.perm.len());
     }
+
     self.run(x, buf);
     buf[..2 * self.perm.len()].split_at(self.perm.len())
   }
@@ -100,6 +102,7 @@ impl<T: Float> Fft<T> {
     for (v, &i) in src[..n].iter_mut().zip(&self.perm) {
       *v = x[i];
     }
+
     let (re, im) = dst.split_at_mut(n);
     leaves(&src[..n], re, im, &self.leaf_trig.0, &self.leaf_trig.1, self.leaf);
     let twiddles = self.twiddles.0.chunks_exact(n / 2).zip(self.twiddles.1.chunks_exact(n / 2));
@@ -160,6 +163,7 @@ mod tests {
         want_re += v.into() * phase.cos();
         want_im -= v.into() * phase.sin();
       }
+
       let (re, im) = (re[k].into(), im[k].into());
       assert!((re - want_re).abs() < tol && (im - want_im).abs() < tol, "n {n}, bin {k}");
     }

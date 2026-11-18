@@ -70,6 +70,7 @@ impl Encoder {
         arena.insert(self.arena(gpu, frames.next_multiple_of(64))?)
       }
     };
+
     gpu.write(&a.mel, mel);
     let Arena { bufs, mel, out, read, groups, .. } = a;
     let out =
@@ -77,6 +78,7 @@ impl Encoder {
     if width == self.outputs {
       return Ok(out);
     }
+
     Ok(out.chunks_exact(width).flat_map(|row| &row[..self.outputs]).copied().collect())
   }
 

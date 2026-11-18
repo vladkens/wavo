@@ -43,8 +43,10 @@ fn meta(path: &Path, key: &str) -> Option<String> {
     if name == key.as_bytes() && ty == 8 {
       return String::from_utf8(string(&mut f)?).ok();
     }
+
     skip(&mut f, ty)?;
   }
+
   None
 }
 
@@ -97,17 +99,20 @@ mod tests {
     let mut gguf = b"GGUF\x03\0\0\0".to_vec();
     gguf.extend(0u64.to_le_bytes()); // tensors
     gguf.extend(2u64.to_le_bytes()); // keys
+
     // A description that mentions the key comes first and must not match.
     gguf.extend(19u64.to_le_bytes());
     gguf.extend(b"general.description");
     gguf.extend(8u32.to_le_bytes());
     gguf.extend(27u64.to_le_bytes());
     gguf.extend(b"has a general.architecture!");
+
     gguf.extend(20u64.to_le_bytes());
     gguf.extend(b"general.architecture");
     gguf.extend(8u32.to_le_bytes());
     gguf.extend(7u64.to_le_bytes());
     gguf.extend(b"whisper");
+
     let path = std::env::temp_dir().join(format!("wavo-arch-{}.gguf", std::process::id()));
     std::fs::write(&path, &gguf).unwrap();
     assert_eq!(architecture(&path).as_deref(), Some("whisper"));

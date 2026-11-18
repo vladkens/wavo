@@ -51,8 +51,10 @@ impl Frontend {
       padded[i] = padded[2 * pad - i];
       padded[pad + len + i] = padded[pad + len - 2 - i];
     }
+
     let frames = len / HOP;
     let mut mel = vec![0f32; frames * self.mels];
+
     // Frames on four threads; a frame of zeros (padding, digital silence) is the same constant.
     let silent = 1e-10f64.log10() as f32;
     let per = frames.div_ceil(4) * self.mels;
@@ -67,9 +69,11 @@ impl Frontend {
               row.fill(silent);
               continue;
             }
+
             for ((b, &v), &w) in buf.iter_mut().zip(x).zip(&self.window) {
               *b = v * w;
             }
+
             let (re, im) = self.fft.forward(&buf, &mut fft);
             self.log_mel(re, im, row);
           }
@@ -80,6 +84,7 @@ impl Frontend {
     for v in &mut mel {
       *v = (((*v as f64).max(max - 8.0) + 4.0) / 4.0) as f32;
     }
+
     mel
   }
 
@@ -92,6 +97,7 @@ impl Frontend {
       // The reference is built with FP contraction: `re * re + im * im` is a fused multiply-add.
       *p = re.mul_add(re, im * im) as f64;
     }
+
     for ((out, f), groups) in
       row.iter_mut().zip(self.filters.as_chunks::<BINS>().0).zip(&self.groups)
     {
@@ -100,6 +106,7 @@ impl Frontend {
       for g in groups.clone() {
         sum += ((w(4 * g) + w(4 * g + 1)) + w(4 * g + 2)) + w(4 * g + 3);
       }
+
       sum += w(BINS - 1);
       *out = sum.max(1e-10).log10() as f32;
     }

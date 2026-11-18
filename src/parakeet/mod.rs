@@ -97,6 +97,7 @@ impl Parakeet {
       Some("kestrel") => true,
       Some(other) => bail!("stt.parakeet.encoder.length_masking is {other:?}"),
     };
+
     let vocab = g.array::<&str>("tokenizer.ggml.tokens")?;
     let types = g.array::<i32>("tokenizer.ggml.token_type")?;
     let unk = g.get::<u32>("tokenizer.ggml.unknown_token_id")? as usize;
@@ -137,6 +138,7 @@ impl Parakeet {
       Backend::Ane(model) => ane::run(model, &mel, valid)?,
       Backend::Cpu(encoder) => encoder.run(&mel, valid),
     };
+
     let (ids, frames): (Vec<usize>, Vec<u32>) = (self.decoder.decode(&enc, width).into_iter())
       .filter(|&(id, _)| !self.special[id as usize])
       .map(|(id, frame)| (id as usize, frame))

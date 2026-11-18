@@ -85,6 +85,7 @@ pub fn layer_norm(
     let jobs = x.chunks(rows * cols).zip(y.chunks_mut(rows * cols));
     return par_each(jobs, || (), |_, (x, y)| norm(x, y));
   };
+
   let half = hd / 2;
   let jobs = x.chunks(rows * cols).zip(y.chunks_mut(rows * cols)).zip(yr.chunks_mut(rows * cols));
   let jobs = jobs.zip(table.chunks(rows * hd));
@@ -93,6 +94,7 @@ pub fn layer_norm(
     || (),
     |_, (((x, y), yr), table)| {
       norm(x, y);
+
       for ((y, yr), t) in y.chunks_exact(cols).zip(yr.chunks_exact_mut(cols)).zip(table.chunks(hd))
       {
         let (cos, sin) = t.split_at(half);
@@ -156,6 +158,7 @@ pub fn conv_glu(
       }
     },
   );
+
   let h = &*h;
   par_each(
     y.chunks_mut(rows * ch).enumerate(),
@@ -201,6 +204,7 @@ pub fn attention(
   // A head's output rows are as wide as its value panels.
   let hp = hd.next_multiple_of(NR);
   let scale = 1.0 / (hd as f32).sqrt();
+
   let mut outs = vec![Vec::new(); heads];
   par_each(
     outs.iter_mut().enumerate(),
@@ -238,6 +242,7 @@ pub fn relative_attention(
   // A step's queries i..i + m read the position rows t + 16 − i − m..2t + 15 − i.
   let pw = (t + QUERIES + 2 * NR).next_multiple_of(NR);
   let scale = 1.0 / (hd as f32).sqrt();
+
   let mut outs = vec![Vec::new(); heads];
   par_each(
     outs.iter_mut().enumerate(),
@@ -246,12 +251,14 @@ pub fn relative_attention(
       let keys = panels(&qkv[ch + h * hd..], 3 * ch, t, hd, hd, false);
       let values = panels(&qkv[2 * ch + h * hd..], 3 * ch, hd, tp, t, true);
       let positions = panels(&pos[h * hd..], ch, pos_rows(t), hd, hd, false);
+
       let q = |b: &[f32]| -> Vec<f32> {
         let b = &b[h * hd..][..hd];
         let rows = qkv.chunks_exact(3 * ch).map(|r| &r[h * hd..][..hd]);
         rows.flat_map(|q| q.iter().zip(b).map(|(q, b)| q + b)).collect()
       };
       let (qu, qv) = (q(uv.0), q(uv.1));
+
       *out = vec![0.0; t * hd];
       for i in (0..t).step_by(QUERIES) {
         let m = QUERIES.min(t - i);

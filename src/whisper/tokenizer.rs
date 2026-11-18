@@ -22,6 +22,7 @@ impl Tokenizer {
       let c = if printable { b } else { (next, next += 1).0 };
       byte[c] = Some(b as u8);
     }
+
     let (mut bytes, mut ends) = (Vec::new(), Vec::new());
     for piece in g.array::<&str>("tokenizer.ggml.tokens")? {
       for c in piece.chars() {
@@ -31,11 +32,14 @@ impl Tokenizer {
           None => bytes.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
         }
       }
+
       ends.push(bytes.len());
     }
+
     if ends.is_empty() {
       bail!("empty vocabulary");
     }
+
     Ok(Self { bytes, ends })
   }
 
@@ -68,12 +72,15 @@ pub fn pieces<'a>(bytes: impl Fn(usize) -> &'a [u8], ids: &[usize]) -> Vec<Strin
       Err(e) if e.error_len().is_none() => e.valid_up_to(),
       Err(_) => pending.len(),
     };
+
     out.push(String::from_utf8_lossy(&pending[..done]).into_owned());
     pending.drain(..done);
   }
+
   if let Some(last) = out.last_mut() {
     *last += &String::from_utf8_lossy(&pending);
   }
+
   out
 }
 
@@ -95,6 +102,7 @@ mod tests {
       t.bytes.extend_from_slice(r);
       t.ends.push(t.bytes.len());
     }
+
     let bytes = |id| t.bytes(id);
     assert_eq!(pieces(bytes, &[0, 1, 2]), ["", "日", " a"]);
     assert_eq!(pieces(bytes, &[2, 0]), [" a", "\u{fffd}"]);

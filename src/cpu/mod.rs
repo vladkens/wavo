@@ -277,6 +277,7 @@ impl Q8 {
       for (g, out) in out.chunks_mut(4).enumerate() {
         let row = |j: usize| 4 * g + j.min(out.len() - 1);
         let mut acc = [[vdupq_n_f32(0.0); 4]; 4];
+
         for i in (0..k).step_by(16) {
           let xs = [0, 1, 2, 3].map(|c| vld1q_f32(x.as_ptr().add(i + 4 * c)));
           for (j, acc) in acc.iter_mut().enumerate() {
@@ -420,6 +421,7 @@ mod x86 {
     let (q, d, x) = (&q8.q[r0 * k..][..out.len() * k], &q8.d[r0 * k / 32..], &x[..k]);
     for (g, out) in out.chunks_mut(4).enumerate() {
       let mut acc = [[_mm256_setzero_ps(); 2]; 4];
+
       for i in (0..k).step_by(16) {
         // SAFETY: 16 floats of `x` below k.
         let xs =

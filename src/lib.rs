@@ -606,6 +606,7 @@ impl Model {
         None => Target::Gpu(None),
       },
     };
+
     let family = match arch {
       "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g, target)?)),
       "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g, target)?)),
@@ -615,6 +616,7 @@ impl Model {
         "general.architecture is {arch:?}, only gigaam, parakeet, whisper and moonshine are supported"
       ),
     };
+
     Ok(Self { family, languages })
   }
 
@@ -1116,6 +1118,7 @@ impl Diarizer {
         bail!("the diarization model runs on the GPU or the CPU, not the Neural Engine")
       }
     };
+
     Ok(Self(Box::new(sortformer::Sortformer::load(&g, target)?)))
   }
 

@@ -67,6 +67,7 @@ impl Encoder {
     let ch = self.ch;
     let (t2, f2) = (half(half(mel.len() / MELS)), half(half(MELS)));
     let (t, f, d) = (encoder_frames(mel.len() / MELS), half(f2), self.conformer.cfg.d);
+
     // A chunk of conv2's output rows from 2·t0 − 1 on, then conv3's.
     let mut a = vec![0.0; (2 * CHUNK + 1) * f2 * ch];
     let mut b = vec![0.0; a.len()];

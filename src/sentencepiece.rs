@@ -23,8 +23,10 @@ impl Tokenizer {
         Some(b) => bytes.push(b),
         None => bytes.extend_from_slice(piece.as_bytes()),
       }
+
       ends.push(bytes.len());
     }
+
     Self { bytes, ends }
   }
 

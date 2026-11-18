@@ -44,6 +44,7 @@ pub fn linear(g: &Gguf, name: &str, dims: &[usize], bias: bool) -> Result<Linear
     true => g.tensor(&format!("{name}.bias"), &dims[dims.len() - 1..])?.to_f32()?,
     false => Vec::new(),
   };
+
   Linear::new(&[g.tensor(&format!("{name}.weight"), dims)?], b)
 }
 
@@ -178,6 +179,7 @@ impl Decoder {
       0 => g.tensor("dec.pos_emb.weight", &[d, context])?.to_f32()?,
       _ => Vec::new(),
     };
+
     Ok(Self {
       layers,
       norm: norm(g, "dec.final_norm", d, bias)?,

@@ -55,6 +55,7 @@ fn stacked(
   for &n in names.iter().filter(|_| bias) {
     b.extend(if n == "k" { vec![0.0; d] } else { tensor(n, "bias", &[d])?.to_f32()? });
   }
+
   gpu.linear(&w, &b)
 }
 
@@ -127,6 +128,7 @@ impl Encoder {
       if let Some(table) = rope {
         p.rope(table, &b.qkv, t, 0, [heads, hd, self.cfg.rot], self.cfg.neox);
       }
+
       p.attention(&b.qkv, None, None, &b.s, &b.y, t, heads, hd);
       p.gemm(&b.y, &k.out, &b.x, t, Epilogue::Residual(1.0));
       p.layer_norm(&b.x, &k.norm_ffn, &b.y, t, d, None);
@@ -211,6 +213,7 @@ impl Decoder {
       0 => g.tensor("dec.pos_emb.weight", &[d, context])?.to_f32()?,
       _ => vec![0.0; d],
     };
+
     Ok(Self {
       layers,
       norm: norm(gpu, g, "dec.final_norm", d, bias)?,
@@ -262,6 +265,7 @@ impl Decoder {
     let (d, heads, hd, f) = (self.cfg.d, self.cfg.heads, self.cfg.head_dim(), self.cfg.d_ff);
     let at = if self.cfg.rot == 0 { pos * d } else { 0 };
     p.embed(&self.embed, &self.positions, &b.x, token, at);
+
     for (l, (own, cross)) in self.layers.iter().zip(b.own.iter().zip(&b.cross)) {
       p.layer_norm_row(&b.x, &l.norm_self, &b.y, d);
       p.gemv(&b.y, &l.qkv, &b.qkv, Epilogue::Bias, 0);
@@ -272,18 +276,22 @@ impl Decoder {
       p.pack(&b.qkv, [d, 0], own, 1, d, [self.context, pos]);
       p.attend(&b.qkv, own, &b.part, &b.att, pos + 1, self.context, heads, hd);
       p.gemv(&b.att, &l.self_out, &b.x, Epilogue::Residual(1.0), 0);
+
       p.layer_norm_row(&b.x, &l.norm_cross, &b.y, d);
       p.gemv(&b.y, &l.cross_q, &b.qkv, Epilogue::Bias, 0);
       p.attend(&b.qkv, cross, &b.part, &b.att, frames, frames, heads, hd);
       p.gemv(&b.att, &l.cross_out, &b.x, Epilogue::Residual(1.0), 0);
+
       p.layer_norm_row(&b.x, &l.norm_ffn, &b.y, d);
       let act = if self.cfg.gated { Epilogue::Bias } else { Epilogue::Gelu };
       p.gemv(&b.y, &l.fc1, &b.h, act, 0);
       if self.cfg.gated {
         p.swiglu(&b.h, f);
       }
+
       p.gemv(&b.h, &l.fc2, &b.x, Epilogue::Residual(1.0), 0);
     }
+
     p.layer_norm_row(&b.x, &self.norm, &b.y, d);
     p.gemv(&b.y, &self.embed, &b.logits, Epilogue::Bias, 0);
   }

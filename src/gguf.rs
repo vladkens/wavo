@@ -137,10 +137,12 @@ impl Gguf {
     if r.take(4)? != b"GGUF" {
       bail!("not a GGUF file");
     }
+
     let version = r.u32()?;
     if version != 3 {
       bail!("unsupported GGUF version {version}");
     }
+
     let n_tensors = r.u64()? as usize;
     let n_meta = r.u64()? as usize;
 
@@ -171,12 +173,14 @@ impl Gguf {
       Ok((_, Value::Int(a))) => a as usize,
       _ => 32,
     };
+
     g.data = end.next_multiple_of(align);
     for (name, t) in &g.tensors {
       if g.data + t.offset + t.ty.size(t.dims.iter().product()) > len {
         bail!("tensor {name} is out of file bounds");
       }
     }
+
     Ok(g)
   }
 
@@ -202,6 +206,7 @@ impl Gguf {
     if !self.meta.contains_key(key) {
       return Ok(None);
     }
+
     self.get(key).map(Some)
   }
 
@@ -215,6 +220,7 @@ impl Gguf {
     if !allowed.contains(&got) {
       bail!("{key} is {got:?}, only {allowed:?} supported");
     }
+
     Ok(())
   }
 
@@ -235,6 +241,7 @@ impl Gguf {
     if !self.meta.contains_key(key) {
       return Ok(Vec::new());
     }
+
     self.array(key)
   }
 
@@ -244,6 +251,7 @@ impl Gguf {
     if t.dims != dims {
       bail!("tensor {name}: shape {:?}, expected {dims:?}", t.dims);
     }
+
     let (start, size) = (self.data + t.offset, t.ty.size(dims.iter().product()));
     Ok(Tensor { dims: &t.dims, ty: t.ty, gguf: self, start, size })
   }
@@ -260,6 +268,7 @@ impl Tensor<'_> {
       bytes.chunks(chunk).enumerate().for_each(|(i, c)| f(i * chunk, c));
       return Ok(());
     }
+
     let mut file = File::open(&self.gguf.path)?;
     file.seek(SeekFrom::Start(self.start as u64))?;
     let mut buf = vec![0; chunk.min(self.size)];
@@ -268,6 +277,7 @@ impl Tensor<'_> {
       file.read_exact(piece)?;
       f(offset, piece);
     }
+
     Ok(())
   }
 
@@ -297,6 +307,7 @@ impl Gguf {
       infos.insert(name.to_string(), Info { dims: dims.to_vec(), ty, offset: head.len() });
       head.extend_from_slice(data);
     }
+
     Self { path: PathBuf::new(), head, meta: HashMap::new(), tensors: infos, data: 0 }
   }
 }
@@ -358,6 +369,7 @@ impl<'a> Reader<'a> {
         None => bail!("unknown GGUF value type {ty}"),
       },
     }
+
     Ok(())
   }
 
@@ -398,26 +410,32 @@ mod tests {
     f.extend(3u32.to_le_bytes());
     f.extend(2u64.to_le_bytes());
     f.extend(6u64.to_le_bytes());
+
     string(&mut f, "a.n");
     f.extend(4u32.to_le_bytes());
     f.extend(7u32.to_le_bytes());
+
     string(&mut f, "a.tokens");
     f.extend(9u32.to_le_bytes());
     f.extend(8u32.to_le_bytes());
     f.extend(2u64.to_le_bytes());
     string(&mut f, "▁x");
     string(&mut f, "y");
+
     string(&mut f, "a.flag");
     f.extend(7u32.to_le_bytes());
     f.push(1);
+
     string(&mut f, "a.left");
     f.extend(5u32.to_le_bytes());
     f.extend((-1i32).to_le_bytes());
+
     string(&mut f, "a.durations");
     f.extend(9u32.to_le_bytes());
     f.extend(5u32.to_le_bytes());
     f.extend(3u64.to_le_bytes());
     [0i32, 2, -4].iter().for_each(|v| f.extend(v.to_le_bytes()));
+
     string(&mut f, "a.alpha");
     f.extend(6u32.to_le_bytes());
     f.extend(0.97f32.to_le_bytes());
@@ -428,6 +446,7 @@ mod tests {
     f.extend(1u64.to_le_bytes());
     f.extend(0u32.to_le_bytes());
     f.extend(0u64.to_le_bytes());
+
     string(&mut f, "q");
     f.extend(1u32.to_le_bytes());
     f.extend(32u64.to_le_bytes());
@@ -456,12 +475,14 @@ mod tests {
     assert!(g.get::<u32>("missing").is_err());
     assert!(g.get::<&str>("a.n").is_err());
     assert_eq!(g.array::<&str>("a.tokens").unwrap(), ["▁x", "y"]);
+
     assert!(g.get::<bool>("a.flag").unwrap());
     assert_eq!(g.optional::<bool>("a.flag").unwrap(), Some(true));
     assert_eq!(g.optional::<bool>("missing").unwrap(), None);
     assert!(g.optional::<&str>("a.flag").is_err());
     assert_eq!(g.get::<i32>("a.left").unwrap(), -1);
     assert!(g.get::<u32>("a.left").is_err());
+
     assert_eq!(g.array::<i32>("a.durations").unwrap(), [0, 2, -4]);
     assert!(g.array::<u32>("a.durations").is_err());
     assert_eq!(g.optional_array::<i32>("a.durations").unwrap(), [0, 2, -4]);

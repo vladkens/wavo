@@ -105,6 +105,7 @@ fn usage() -> String {
     let full = if m.name == m.full_name { String::new() } else { format!(" ({})", m.full_name) };
     usage += &format!("\n  {:<18} {}  {}{full}", m.name, models::gb(m.size), models::about(m));
   }
+
   usage
 }
 
@@ -155,6 +156,7 @@ fn cli(args: &[&str]) -> Result<()> {
     }
     _ => bail!("unknown command: wavo {}; see wavo --help", args.join(" ")),
   }
+
   Ok(())
 }
 
@@ -206,12 +208,14 @@ fn ask(question: &str) -> bool {
   if !(stdin().is_terminal() && std::io::stderr().is_terminal()) {
     return false;
   }
+
   eprint!("{question} [Y/n] ");
   let mut answer = String::new();
   if !matches!(stdin().read_line(&mut answer), Ok(1..)) {
     eprintln!();
     return false;
   }
+
   matches!(answer.trim().to_lowercase().as_str(), "" | "y" | "yes")
 }
 
@@ -309,6 +313,7 @@ fn run(args: &[&str]) -> Result<()> {
   let mut diarize = false;
   let mut options = wavo::Options::default();
   let (mut on, mut gpu) = (Backend::Auto, None);
+
   let mut args = args.iter();
   while let Some(&arg) = args.next() {
     match arg {
@@ -332,6 +337,7 @@ fn run(args: &[&str]) -> Result<()> {
       _ => rest.push(arg),
     }
   }
+
   let (model, audio) = match *rest {
     [arg] if hub::lookup(arg).is_ok() && !Path::new(arg).exists() => {
       bail!("no audio file given: wavo run {arg} AUDIO")
@@ -352,6 +358,7 @@ fn run(args: &[&str]) -> Result<()> {
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!("no such file: {audio}"),
     meta => meta.with_context(|| format!("reading {audio}"))?,
   };
+
   ensure!(!meta.is_dir(), "{audio}: a folder, not an audio file");
   // The family, from the name or a .gguf file's header, so that wrong options fail before a
   // download is offered.
@@ -359,10 +366,12 @@ fn run(args: &[&str]) -> Result<()> {
     Ok(m) => Some(m.family.to_lowercase()),
     Err(_) => models::architecture(Path::new(model)),
   };
+
   let diarizer = match hub::lookup(model) {
     Ok(m) => m.diarization(),
     Err(_) => models::diarization(Path::new(model)),
   };
+
   if diarizer {
     ensure!(on != Backend::NeuralEngine, "{model} runs on the GPU or the CPU, not --backend ane");
     ensure!(
@@ -383,6 +392,7 @@ fn run(args: &[&str]) -> Result<()> {
     true => Some(model_path(DIARIZER, download, Backend::Gpu)?),
     false => None,
   };
+
   let bar = spinner(); // cleared on errors too
   bar.set_message("decoding the audio");
   let pcm = audio::read(audio)?;
@@ -436,6 +446,7 @@ fn run(args: &[&str]) -> Result<()> {
     (None, None) if transcript.text.is_empty() => String::new(),
     (None, None) => format!("{}\n", transcript.text),
   };
+
   Ok(std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())?)
 }
 
@@ -479,6 +490,7 @@ fn pull(args: &[&str]) -> Result<()> {
       Err(e) => eprintln!("error: pulling {}: {e:#}", m.name),
     }
   }
+
   let failed = results.iter().filter(|r| r.is_err()).count();
   ensure!(failed == 0, "{failed} of {} pulls failed", models.len());
   Ok(())
@@ -514,6 +526,7 @@ fn pull_one(hub: &Hub, m: &hub::ModelInfo, bars: &MultiProgress) -> Result<PathB
         PrepareStep::Compile => "compiling",
         _ => "loading, 10–30 s the first time",
       };
+
       let msg = format!("{}: preparing for the Neural Engine ({step})", m.name);
       if plain {
         eprintln!("{msg}");
@@ -530,11 +543,13 @@ fn pull_one(hub: &Hub, m: &hub::ModelInfo, bars: &MultiProgress) -> Result<PathB
       bars.suspend(|| eprintln!("retrying {file} ({retries}/{}) after: {e}", hub::RETRIES));
       return ControlFlow::Continue(());
     }
+
     let (bar, _) = bar.get_or_insert_with(|| {
       if plain {
         let resume = (p.done > 0).then(|| format!(", resuming at {:.0} MB", mb(p.done)));
         eprintln!("downloading {file} ({:.2} GB{})", mb(p.total) / 1e3, resume.unwrap_or_default());
       }
+
       let bar = ProgressBar::new(p.total).with_style(style.clone()).with_message(file.clone());
       let bar = bars.add(bar.with_finish(ProgressFinish::AndClear));
       bar.set_position(p.done);
@@ -553,6 +568,7 @@ fn pull_one(hub: &Hub, m: &hub::ModelInfo, bars: &MultiProgress) -> Result<PathB
       eprintln!("{file}: {pct:3}% {:.0} / {:.0} MB, {speed:.1} MB/s", mb(done), mb(size));
     }
   }
+
   Ok(path)
 }
 
@@ -574,6 +590,7 @@ fn list() -> Result<()> {
       Some(false) => "no   ",
       None => "-    ",
     };
+
     let size = models::gb(std::fs::metadata(path)?.len());
     out!("{:<18} {size}  {ane}{}", m.name, path.display())?;
   }
@@ -584,6 +601,7 @@ fn list() -> Result<()> {
       m.name
     );
   }
+
   Ok(())
 }
 
@@ -615,6 +633,7 @@ fn bench(model: &str, audio: &str, opts: &[&str]) -> Result<()> {
 
   let on = target(on, gpu)?;
   let (pcm, path) = (audio::read(audio)?, model_path(model, Download::Never, on)?);
+
   let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
   let t = Instant::now();
   // The call: `diarize` for a diarization model.
@@ -675,6 +694,7 @@ mod tests {
       error("gigaam-v3 talk.wav"),
       "gigaam-v3 is a model, not a command; to transcribe with it: wavo run gigaam-v3 talk.wav"
     );
+
     assert_eq!(error("frobnicate"), "unknown command: wavo frobnicate; see wavo --help");
     assert_eq!(error("pull"), "usage: wavo pull MODEL...");
     assert_eq!(error("bench gigaam-v3"), BENCH);
@@ -686,6 +706,7 @@ mod tests {
     assert!(error("talk.wav --jsn").starts_with("unknown or repeated option --jsn\nusage: "));
     assert!(error("talk.wav -n 5").starts_with("unknown or repeated option -n\n"));
     assert_eq!(error("talk.wav --json --srt"), "--json and --srt: choose one");
+
     // Options that don't fit the model, before any download (Cargo.toml stands in for audio).
     let only = "--diarize, --segment and --language are for speech-to-text models; nemotron-diarization \
                 only tells who speaks when";
@@ -696,11 +717,13 @@ mod tests {
     assert!(
       error("run moonshine-tiny Cargo.toml --diarize").starts_with("--diarize needs the time")
     );
+
     assert_eq!(error("serve --port 99999"), "--port takes a port");
     let unload = "--unload-after takes a duration such as 30s, 10m or 1h";
     assert_eq!(error("serve --unload-after -1"), unload);
     assert!(error("serve --jsn").starts_with("unknown option --jsn\nusage: wavo serve "));
     assert_eq!(error("serve dir/m.gguf"), "expected a model name, not a path: dir/m.gguf");
+
     let ane = "--device picks a GPU, and --backend ane runs on the Neural Engine: drop one of them";
     assert_eq!(error("bench gigaam-v3 talk.wav --device 1 --backend ane"), ane);
     assert_eq!(error("serve --backend ane --device nvidia"), ane);
@@ -715,6 +738,7 @@ mod tests {
     for arg in ["a.wav", "b.MP3", "dir/c.m4a", "d.flac", "e.ogg", "f.opus"] {
       assert!(audio_like(arg), "{arg}");
     }
+
     for arg in ["whisper-tiny.en", "parakeet-tdt-0.6b-v3", "model.gguf", "wav", "talk"] {
       assert!(!audio_like(arg), "{arg}");
     }

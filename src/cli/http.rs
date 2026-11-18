@@ -100,6 +100,7 @@ pub fn body(r: &mut impl BufRead, w: &mut impl Write, head: &Head, limit: usize)
     Some(len) => Some(len.trim().parse::<usize>().map_err(|_| fail(400, "bad Content-Length"))?),
     None => return Err(fail(411, "send the body with a Content-Length or chunked")),
   };
+
   if len.is_some_and(|len| len > limit) {
     return Err(too_large(limit));
   }
@@ -132,6 +133,7 @@ fn chunks(r: &mut impl BufRead, limit: usize) -> Res<Vec<u8>> {
       Ok(httparse::Status::Complete((_, size))) => size,
       _ => return Err(fail(400, "bad chunk size")),
     };
+
     if size == 0 {
       break;
     }
@@ -246,6 +248,7 @@ pub fn respond(w: &mut impl Write, status: u16, content_type: &str, body: &[u8])
     500.. => "Internal Server Error",
     _ => "Bad Request",
   };
+
   let auth = if status == 401 { "WWW-Authenticate: Bearer\r\n" } else { "" };
   let len = body.len();
   let head = format!(
@@ -347,6 +350,7 @@ mod tests {
     assert_eq!(value(0), "RIFF\r\n--X\r\n", "a delimiter needs the whole boundary");
     assert_eq!((parts[1].name.as_str(), parts[1].filename.as_deref()), ("model", None));
     assert_eq!(value(1), "whisper-1");
+
     let empty = multipart("Multipart/Form-Data; boundary=XyZ", b"--XyZ--\r\n").unwrap();
     assert_eq!(empty, []);
     assert_eq!(multipart("application/json", b"{}").unwrap_err().status, 415);
@@ -355,6 +359,7 @@ mod tests {
       let content_type = format!("multipart/form-data; boundary={boundary}");
       assert_eq!(multipart(&content_type, b"--\r\n").unwrap_err().status, 400, "{boundary}");
     }
+
     let longest = format!("multipart/form-data; boundary={}", "b".repeat(70));
     assert_eq!(multipart(&longest, format!("--{}--", "b".repeat(70)).as_bytes()).unwrap(), []);
     let unclosed = b"--XyZ\r\nContent-Disposition: form-data; name=a\r\n\r\nvalue";

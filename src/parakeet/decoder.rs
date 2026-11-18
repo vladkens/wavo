@@ -49,14 +49,17 @@ impl Decoder {
     if u("joint.num_extra_outputs")? != durations.len() || durations.iter().any(|&d| d < 0) {
       bail!("TDT durations {durations:?} don't match the joint's extra outputs");
     }
+
     let global = match g.optional::<&str>("stt.parakeet.tdt.symbol_budget")? {
       None | Some("per_frame") => false,
       Some("global") => true,
       Some(other) => bail!("stt.parakeet.tdt.symbol_budget is {other:?}"),
     };
+
     if max_symbols == 0 {
       bail!("stt.parakeet.tdt.max_symbols is 0");
     }
+
     let t = |name: &str, dims: &[usize]| g.tensor(name, dims).and_then(|t| t.to_f32());
     let q = |name: &str, dims: &[usize]| g.tensor(name, dims).and_then(|t| Matrix::new(&t));
     let lstm = (0..u("predictor.n_layers")?)
@@ -98,6 +101,7 @@ impl Decoder {
         state = std::mem::take(&mut next);
         (next, pred) = self.predict(Some(token), &state);
       }
+
       self.joint(&enc[t * width..][..j], &pred)
     })
   }
@@ -109,6 +113,7 @@ impl Decoder {
     let mut x = token.map_or(vec![0.0; n], |t| self.embed.row(t));
     let mut next = vec![0.0; state.len()];
     let sigmoid = |v: f32| 1.0 / (1.0 + (-v).exp());
+
     for ((l, s), out) in
       self.lstm.iter().zip(state.chunks_exact(2 * n)).zip(next.chunks_exact_mut(2 * n))
     {
@@ -121,6 +126,7 @@ impl Decoder {
         nc[k] = sigmoid(f) * c[k] + sigmoid(i) * g.tanh();
         nh[k] = sigmoid(o) * nc[k].tanh();
       }
+
       x = nh.to_vec();
     }
     let [pred] = matvecs([(&self.pred_w, &x)]);
@@ -145,6 +151,7 @@ fn argmax(v: &[f32]) -> usize {
       best = i;
     }
   }
+
   best
 }
 
@@ -187,6 +194,7 @@ fn greedy(
       symbols = 0;
     }
   }
+
   out
 }
 
