@@ -41,6 +41,7 @@ fn read_sample(sample: &str) -> Vec<f32> {
   if !path.exists() {
     path = root.join(format!("transcribe.cpp/samples/{sample}.wav"));
   }
+
   read_wav(&path)
 }
 
@@ -68,11 +69,13 @@ fn read_fixture(name: &str, sample: &str) -> (String, Option<Vec<(String, u32)>>
     assert!(lines.next().is_none(), "{path:?}: tokens after an empty text");
     return (String::new(), Some(Vec::new()), false);
   }
+
   let Some(head) = lines.next() else { return (text.to_string(), None, false) };
   let (count, segments) = match head.strip_prefix("segments: ") {
     Some(count) => (count, true),
     None => (head.strip_prefix("tokens: ").expect("tokens line"), false),
   };
+
   let count: usize = count.parse().unwrap();
   let tokens: Vec<(String, u32)> = lines
     .map(|line| {
@@ -91,10 +94,12 @@ fn read_fixture(name: &str, sample: &str) -> (String, Option<Vec<(String, u32)>>
 fn check_languages(name: &str, model: &wavo::Model) {
   let (langs, codes) = (wavo::hub::lookup(name).unwrap().langs, model.languages());
   assert!(langs.iter().all(|c| codes.iter().any(|x| x == c)), "{name}: languages {codes:?}");
+
   let mut options = wavo::Options::default();
   options.language = model.languages().first().cloned();
   let takes = model.transcribe_with(&[], &options).is_ok();
   assert_eq!(model.takes_language(), takes, "{name}: takes_language");
+
   // `detect_language`: a ranking for multilingual Whisper, the sole language of a model of one,
   // nothing for Parakeet v3; the transcript names the same language.
   let ranked = model.detect_language(&[]).unwrap();
@@ -149,12 +154,14 @@ fn check_on(name: &str, backend: wavo::Backend, samples: &[&str]) {
       Some((clip, code)) => (clip, Some(code.to_string())),
       None => (*sample, None),
     };
+
     let pcm = read_sample(clip);
     let (text, tokens, segments) = read_fixture(name, sample);
     let mut options = wavo::Options::default();
     options.language = language;
     let got = model.transcribe_with(&pcm, &options).unwrap();
     assert_eq!(got.text, text, "{name} {sample}: text");
+
     let Some(tokens) = tokens else {
       // Text only (Moonshine): the pieces make the text, but for one leading space.
       let joined: String = got.tokens.iter().map(|t| t.piece.replace('▁', " ")).collect();
@@ -172,9 +179,11 @@ fn check_on(name: &str, backend: wavo::Backend, samples: &[&str]) {
           _ => joined.push((piece, start)),
         }
       }
+
       let trim = |s: String| s.trim_matches([' ', '\t', '\n', '\r']).to_string();
       got = joined.into_iter().map(|(text, start)| (trim(text), start)).collect();
     }
+
     let close =
       |(a, b): (&(String, u32), &(String, u32))| a.0 == b.0 && a.1.abs_diff(b.1) <= START_SLACK_MS;
     let same = got.len() == tokens.len() && got.iter().zip(&tokens).all(close);
@@ -221,6 +230,7 @@ fn read_turns(name: &str, sample: &str) -> Vec<(u32, u32, u32)> {
   assert!(lines.next().is_some(), "{path:?}: no {header}");
   let mut lines = lines.take_while(|l| !l.starts_with("## ")).filter(|l| !l.is_empty());
   let count = lines.next().and_then(|l| l.strip_prefix("speaker segments: ")).expect("count");
+
   let want: Vec<(u32, u32, u32)> = lines
     .map(|line| {
       let (times, speaker) =
@@ -266,6 +276,7 @@ fn long(name: &str, sample: &str, chars: bool) {
   let n = ranges.len();
   assert!(n >= 3, "{name} {sample}: {n} pieces");
   assert_eq!(pieces.len(), n, "{name} {sample}: pieces");
+
   let (mut text, mut tokens) = (Vec::new(), Vec::new());
   for (i, ((index, count, start_ms, piece), r)) in pieces.into_iter().zip(ranges).enumerate() {
     let start = (r.start / 16) as u32;
@@ -324,6 +335,7 @@ fn check_ane(name: &str, frame_ms: u32, samples: &[&str]) {
   let ane = Model::load_with(&path, Backend::NeuralEngine).unwrap();
   assert_eq!(ane.device().kind, DeviceKind::NeuralEngine);
   let window = ane.max_audio_ms().unwrap();
+
   let mut gpu = None;
   let tokens = |t: &wavo::Transcript| -> Tokens {
     t.tokens.iter().map(|t| (t.piece.replace('▁', " "), t.start_ms)).collect()
@@ -337,6 +349,7 @@ fn check_ane(name: &str, frame_ms: u32, samples: &[&str]) {
   let word_tokens = |v: &Tokens| -> Tokens {
     v.iter().filter(|t| !bare(&t.0).is_empty()).map(|t| (t.0.to_lowercase(), t.1)).collect()
   };
+
   for sample in samples {
     let at = format!("{name} {sample}");
     let pcm = read_sample(sample);

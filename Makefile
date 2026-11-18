@@ -1,9 +1,11 @@
 .PHONY: prepare check test test-all test-kernels build update clean
 
+LINT := uv run --script https://raw.githubusercontent.com/vladkens/lint/main/rust.py
 CARGO_FLAGS := --release --locked
 
 prepare:
 	cargo +nightly fmt
+	$(LINT) fix
 	cargo clippy $(CARGO_FLAGS) --fix --all-targets --allow-dirty --allow-no-vcs -- -D warnings
 	cargo check $(CARGO_FLAGS)
 
@@ -12,6 +14,7 @@ check:
 	cargo clippy $(CARGO_FLAGS) --all-targets -- -D warnings
 	cargo clippy $(CARGO_FLAGS) --no-default-features --all-targets -- -D warnings
 	cargo clippy $(CARGO_FLAGS) --no-default-features --features hub --all-targets -- -D warnings
+	$(LINT)
 	cargo check $(CARGO_FLAGS)
 	RUSTDOCFLAGS="-D warnings" cargo doc $(CARGO_FLAGS) --no-deps --no-default-features
 	RUSTDOCFLAGS="-D warnings" cargo doc $(CARGO_FLAGS) --no-deps --no-default-features --features hub

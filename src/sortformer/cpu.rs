@@ -70,6 +70,7 @@ impl Encoder {
     let mut y = vec![0.0; x.len()];
     layer_norm(x, (&self.embed_norm.0, &self.embed_norm.1), &mut y, None);
     let y = self.blocks.run(y, t, Some(&self.rope));
+
     let mut h = vec![0.0; t * width];
     gemm(&y, &self.proj, &mut h, t, Epilogue::Bias);
     // Each frame's 8·width outputs are 8 frames of width.

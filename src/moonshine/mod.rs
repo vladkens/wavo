@@ -72,12 +72,14 @@ impl Moonshine {
     g.check("stt.moonshine.decoder.tie_word_embeddings", &[true])?;
     g.check("stt.moonshine.attention_bias", &[false])?;
     g.check("stt.moonshine.conv_stem.groupnorm_num_groups", &[1u32])?;
+
     let stem = |key: &str| g.array::<u32>(&format!("stt.moonshine.conv_stem.{key}"));
     if stem("kernel_sizes")? != STEM.map(|s| s.0 as u32)
       || stem("strides")? != STEM.map(|s| s.1 as u32)
     {
       bail!("conv stem kernels or strides other than {STEM:?}");
     }
+
     let factor = g.get::<f32>("stt.moonshine.partial_rotary_factor")?;
     let config = |part: &str| {
       let key = |name: &str| u(&format!("{part}.{name}"));
@@ -89,6 +91,7 @@ impl Moonshine {
       if hd * heads != d || key("n_kv_heads")? != heads || hd > 128 || hd % 2 != 0 || rot > hd {
         bail!("unsupported {part} shape: d_model {d}, {heads} heads, {rot} rotary dims");
       }
+
       Ok(transformer::Config {
         d,
         heads,
@@ -104,10 +107,12 @@ impl Moonshine {
     if dec.d != enc.d || dec.rot != enc.rot {
       bail!("encoder and decoder of different widths or rotary dims");
     }
+
     let channels = stem("channels")?;
     if channels != [enc.d, 2 * enc.d, enc.d].map(|c| c as u32) {
       bail!("conv stem channels {channels:?}, expected [d, 2·d, d] for d_model {}", enc.d);
     }
+
     let (vocab, context) = (u("decoder.vocab_size")?, u("decoder.max_position_embeddings")?);
     g.check("tokenizer.ggml.model", &["bpe"])?;
     let tok = Tokenizer::new(&g.array("tokenizer.ggml.tokens")?);
@@ -115,9 +120,11 @@ impl Moonshine {
     if tok.len() != vocab {
       bail!("vocabulary of {} tokens, decoder.vocab_size {vocab}", tok.len());
     }
+
     if bos >= vocab || eos >= vocab {
       bail!("special token ids {bos} and {eos} out of the vocabulary of {vocab}");
     }
+
     let (theta, rot) = (g.get::<f32>("stt.moonshine.rope_theta")?, enc.rot);
     let freqs = (0..rot / 2).map(|i| theta.powf(-1.0 / rot as f32 * (2 * i) as f32)).collect();
 
@@ -153,6 +160,7 @@ impl Moonshine {
     if t == 0 {
       return Ok(Transcript::default());
     }
+
     let ids = match &self.backend {
       Backend::Gpu(b) => self.on_gpu(&b.0, &b.1, pcm)?,
       Backend::Cpu(on) => {
@@ -164,6 +172,7 @@ impl Moonshine {
       }
       Backend::Ane(_) => unreachable!("Moonshine has no Neural Engine program"),
     };
+
     let pieces = self.tok.pieces(&ids);
     let text = sentencepiece::text(&pieces);
     let token = |(&id, piece): (&usize, String)| Token { id: id as u32, piece, start_ms: 0 };
@@ -199,9 +208,11 @@ impl Moonshine {
     if n > a.enc.samples {
       self.grow(gpu, on, &mut a, n);
     }
+
     gpu.write(&a.enc.pcm, pcm);
     let Arena { enc, dec, rope, next, read, window, steps } = &mut *a;
     let (enc, dec, rope, next) = (&*enc, &*dec, &*rope, &*next);
+
     // Records `step` and the argmax of its logits; returns the next token.
     let run = |groups: &mut Groups, step: &dyn Fn(&mut Pass)| -> Result<usize> {
       let out = gpu.run(groups, next, read, 1, |p| {
@@ -210,6 +221,7 @@ impl Moonshine {
       })?;
       Ok(out[0].to_bits() as usize)
     };
+
     // The encoder, the cross K/V and the step on `<s>` in one pass. Each step reads its token
     // from `next`, where the step before left it.
     self.greedy(|_, pos| match pos {

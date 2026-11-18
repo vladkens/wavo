@@ -22,12 +22,14 @@ pub fn build(g: &Gguf, p: &mut Program) -> Result<Vec<Var>> {
   let m = p.input("m", &[T, 1]);
   let keys = p.input("keys", &[1, 1, T]);
   let mut gr = Graph { p, g };
+
   // Conv1d weights `[kernel, in, out]` in ggml order, `[out][in][kernel]` in memory.
   let conv = |gr: &mut Graph, x: &Var, i: usize, ch: usize| -> Result<Var> {
     let name = format!("enc.pre_encode.conv.{i}");
     let y = gr.conv_layer(x, &name, &[5, ch, d], &[d, ch, 5], (2, 2, 1))?;
     Ok(gr.unary("relu", &y))
   };
+
   let x = conv(&mut gr, &mel, 0, mels)?;
   let x = gr.binary("mul", &x, &m1);
   let x = conv(&mut gr, &x, 2, d)?; // [1][d][T]

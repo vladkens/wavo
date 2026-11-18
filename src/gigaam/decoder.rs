@@ -63,6 +63,7 @@ impl Decoder {
     let zero = State { h: vec![0.0; n], c: vec![0.0; n] };
     let mut next = self.lstm(&vec![0.0; n], &zero);
     let mut pred = self.predict(&next.h);
+
     let mut out = Vec::new();
     let frames = enc.len() / j;
     let mut t = 0;
@@ -72,6 +73,7 @@ impl Decoder {
         t += span.len();
         continue;
       };
+
       t += skip;
       let mut token = span[skip];
       for _ in 0..MAX_SYMBOLS {
@@ -83,8 +85,10 @@ impl Decoder {
           break;
         }
       }
+
       t += 1;
     }
+
     out
   }
 
@@ -99,6 +103,7 @@ impl Decoder {
       next.c[j] = sigmoid(f) * s.c[j] + sigmoid(i) * g.tanh();
       next.h[j] = sigmoid(o) * next.c[j].tanh();
     }
+
     next
   }
 
@@ -122,6 +127,7 @@ impl Decoder {
             best = (v, logit);
           }
         }
+
         best.0
       })
       .collect()
@@ -142,10 +148,13 @@ pub fn ctc(logits: &[f32], classes: usize, blank: usize) -> Vec<(u32, u32)> {
         best = (v, x);
       }
     }
+
     if prev != Some(best.0) && best.0 != blank {
       out.push((best.0 as u32, t as u32));
     }
+
     prev = Some(best.0);
   }
+
   out
 }

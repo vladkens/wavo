@@ -41,6 +41,7 @@ fn run(model: &str, list: &str, backend: wavo::Backend) -> Result<()> {
   let t = Instant::now();
   let model = wavo::Model::load_with(model, backend)?;
   println!("{{\"type\":\"batch_header\",\"load_ms\":{:.1}}}", ms(t));
+
   let mut failed = 0;
   for file in std::fs::read_to_string(list)?.lines().map(str::trim).filter(|l| !l.is_empty()) {
     let mut wav = hound::WavReader::open(file).map_err(|e| format!("{file}: {e}"))?;
@@ -50,6 +51,7 @@ fn run(model: &str, list: &str, backend: wavo::Backend) -> Result<()> {
     {
       return Err(format!("{file}: not 16 kHz mono PCM16").into());
     }
+
     let pcm = wav.samples::<i16>().map(|s| Ok(s? as f32 / 32768.0)).collect::<Result<Vec<_>>>()?;
     let t = Instant::now();
     let result = model.transcribe(&pcm);
@@ -61,14 +63,17 @@ fn run(model: &str, list: &str, backend: wavo::Backend) -> Result<()> {
         (String::new(), format!(",\"error\":{}", quote(&e.to_string())))
       }
     };
+
     let (file, text, audio_ms) = (quote(file), quote(&text), pcm.len() / 16);
     println!(
       "{{\"file\":{file},\"text\":{text},\"audio_ms\":{audio_ms},\"ms\":{elapsed:.1}{error}}}"
     );
   }
+
   if failed > 0 {
     return Err(format!("{failed} files failed (\"error\" in their rows)").into());
   }
+
   Ok(())
 }
 
@@ -82,6 +87,7 @@ fn quote(s: &str) -> String {
       c => out.push(c),
     }
   }
+
   out + "\""
 }
 
@@ -134,6 +140,7 @@ fn read_run(path: &str) -> Result<Run> {
       run.load_ms = number(line, "load_ms");
       continue;
     }
+
     let file = string(line, "file").ok_or_else(|| format!("{path}: no file in {line}"))?;
     let ms = number(line, "ms").unwrap_or_else(|| {
       ["mel_ms", "encode_ms", "decode_ms"].iter().filter_map(|k| number(line, k)).sum()
@@ -152,6 +159,7 @@ fn read_run(path: &str) -> Result<Run> {
       run.time = Some((real, peak / 1048576.0));
     }
   }
+
   Ok(run)
 }
 
@@ -171,6 +179,7 @@ fn edits(a: &[String], b: &[String]) -> usize {
       (diag, row[j + 1]) = (row[j + 1], next);
     }
   }
+
   row[b.len()]
 }
 
@@ -213,6 +222,7 @@ fn compare(a: &str, b: &str) -> Result<()> {
     if rows[0].0 != rows[1].0 {
       differ.push((file, audio_s, n, wb.len()));
     }
+
     let bucket = BUCKETS.iter().position(|&(end, _)| audio_s < end).unwrap();
     for tally in [&mut buckets[bucket], &mut all] {
       tally.files += 1;
@@ -224,23 +234,28 @@ fn compare(a: &str, b: &str) -> Result<()> {
         tally.rtf[k].push(row.1 / 1e3 / audio_s);
       }
     }
+
     for (k, row) in rows.iter().enumerate() {
       empty[k] += usize::from(row.0.trim().is_empty());
       errors[k] += usize::from(row.2);
     }
   }
+
   for tally in buckets.iter_mut().chain([&mut all]) {
     tally.rtf.iter_mut().for_each(|v| v.sort_by(f64::total_cmp));
   }
+
   if all.files == 0 {
     return Err("no file in both runs".into());
   }
+
   let missing = runs.iter().map(|r| r.files.len() - all.files).collect::<Vec<_>>();
   println!(
     "{} files in both ({:.2} h of audio), {missing:?} only in one",
     all.files,
     all.audio_s / 3600.0
   );
+
   println!("\n| | {} | {} |\n|---|---|---|", runs[0].name, runs[1].name);
   let row =
     |label: &str, f: &dyn Fn(usize) -> String| println!("| {label} | {} | {} |", f(0), f(1));
@@ -254,6 +269,7 @@ fn compare(a: &str, b: &str) -> Result<()> {
   row("peak footprint, MiB", &|k| opt(runs[k].time.map(|t| t.1), 0));
   row("empty texts", &|k| empty[k].to_string());
   row("errors", &|k| errors[k].to_string());
+
   let (na, nb) = (&runs[0].name, &runs[1].name);
   println!(
     "\n| Duration | Files | Audio, h | Same text | WER | Compute {na} / {nb}, s | RTF median {na} / {nb} |"
@@ -263,6 +279,7 @@ fn compare(a: &str, b: &str) -> Result<()> {
     if t.files == 0 {
       continue;
     }
+
     println!(
       "| {label} | {} | {:.2} | {:.2}% | {:.3}% | {:.1} / {:.1} | {:.4} / {:.4} |",
       t.files,
@@ -275,9 +292,11 @@ fn compare(a: &str, b: &str) -> Result<()> {
       quantile(&t.rtf[1], 0.5),
     );
   }
+
   println!("\n{} files differ (file, audio s, word edits / words):", differ.len());
   for (file, audio_s, n, words) in differ {
     println!("{file}\t{audio_s:.1}\t{n}/{words}");
   }
+
   Ok(())
 }

@@ -83,6 +83,7 @@ fn transcribes_like_run() {
   let data = wav.windows(4).position(|w| w == b"data").unwrap() + 8;
   let pcm = std::env::temp_dir().join(format!("wavo-serve-{}.pcm", std::process::id()));
   std::fs::write(&pcm, &wav[data..]).unwrap();
+
   let query = "task=transcribe&language=en&output=srt&encode=false&video_file=%2Fa.mkv";
   let audio_file = format!("audio_file=@{}", pcm.display());
   let srt = send(&format!("/asr?{query}"), &[&audio_file]);
@@ -90,9 +91,11 @@ fn transcribes_like_run() {
   std::fs::remove_file(&pcm).unwrap();
   let english = "{\"detected_language\": \"english\", \"language_code\": \"en\", \"confidence\": ";
   assert!(detected.starts_with(english), "/detect-language: {detected}");
+
   let run =
     output(Command::new(WAVO).args(["run", "whisper-tiny", "--srt", "--language", "en"]).arg(&jfk));
   assert_eq!(srt, run, "/asr");
+
   let mut curl = Command::new("curl");
   let status =
     output(curl.args(["-sS", "-H", "Authorization: Bearer k", &format!("{url}/status")]));

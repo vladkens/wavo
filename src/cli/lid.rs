@@ -69,8 +69,10 @@ mod tests {
     assert_eq!(said("Привет, как дела? Что ты делаешь сегодня вечером?"), Some("ru"));
     assert_eq!(said("Ich habe heute keine Zeit, aber morgen gerne."), Some("de"));
     assert_eq!(said(""), None);
+
     // Outside the list: the closest within it.
     assert_eq!(language("Привет, как дела?", &codes(&["uk", "en"])).map(|l| l.0), Some("uk"));
+
     assert_eq!(name("en"), "english");
     assert_eq!(name("uk"), "ukrainian");
     assert_eq!(name("zh"), "chinese");

@@ -66,8 +66,10 @@ impl Frontend {
       for t in 0..n {
         mel[t * MELS + m] = ((mel[t * MELS + m] as f64 - mean) * inv) as f32;
       }
+
       mel[n * MELS + m] = 0.0;
     }
+
     mel
   }
 
@@ -91,6 +93,7 @@ impl Frontend {
       for ((x, s), w) in frame.iter_mut().zip(&padded[t * HOP..]).zip(&self.window) {
         *x = s * w;
       }
+
       let (re, im) = self.fft.forward(&frame, &mut buf);
       for ((p, re), im) in power.iter_mut().zip(re).zip(im) {
         *p = (re * re + im * im) as f32;
@@ -121,6 +124,7 @@ fn slaney_filterbank() -> Vec<f32> {
   let mel_to_hz = |mel: f64| {
     if mel < min_log_mel { mel * FSP } else { MIN_LOG_HZ * (log_step * (mel - min_log_mel)).exp() }
   };
+
   let mel_max = hz_to_mel(F_MAX as f64);
   let hz: Vec<f64> =
     (0..MELS + 2).map(|m| mel_to_hz(mel_max * m as f64 / (MELS + 1) as f64)).collect();
@@ -134,6 +138,7 @@ fn slaney_filterbank() -> Vec<f32> {
       *w = (lower.min(upper).max(0.0) * enorm) as f32;
     }
   }
+
   out
 }
 

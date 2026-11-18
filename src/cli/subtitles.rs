@@ -66,6 +66,7 @@ fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32, pauses: bool) ->
         if piece.chars().any(char::is_alphanumeric) {
           word.last = t.start_ms;
         }
+
         word.tokens.end = i + 1;
         word.text += &piece;
       }
@@ -125,6 +126,7 @@ fn word_cues(tokens: &[Token], starts: &[usize], audio_ms: u32, pauses: bool) ->
         if !text.is_empty() && !w.glued {
           text.push(' ');
         }
+
         text += &w.text;
       }
 
@@ -210,6 +212,7 @@ fn split(words: &[Word], r: Range<usize>, next: u32, out: &mut Vec<Range<usize>>
     cues.push(a + best[j].1..a + j);
     j = best[j].1;
   }
+
   out.extend(cues.into_iter().rev());
 }
 
@@ -332,6 +335,7 @@ pub fn srt(cues: &[Cue]) -> String {
     let (start, end) = (time(c.start, ','), time(c.end, ','));
     write!(out, "{}\n{start} --> {end}\n{}\n\n", i + 1, lines(&c.text)).unwrap();
   }
+
   out
 }
 
@@ -343,6 +347,7 @@ pub fn vtt(cues: &[Cue]) -> String {
     let text = lines(&c.text).replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     write!(out, "{} --> {}\n{text}\n\n", time(c.start, '.'), time(c.end, '.')).unwrap();
   }
+
   out
 }
 
@@ -383,9 +388,11 @@ pub mod tests {
       srt_of(&t, &[], 6000),
       "1\n00:00:00,000 --> 00:00:01,080\nHello.\n\n2\n00:00:04,000 --> 00:00:05,100\nHow are\n\n"
     );
+
     // Punctuation at the end of a pause isn't speech: the cue ends a second after its word.
     let t = tokens(&[("▁them", 0), (".", 7000), ("▁If", 7300)]);
     assert_eq!(cues(&t, &[], 9000, true).iter().map(|c| c.end).collect::<Vec<_>>(), [1000, 8300]);
+
     let words = |n: u32, ms: u32| -> Vec<Token> {
       let pieces: Vec<(String, u32)> = (0..n).map(|i| (format!("▁w{i:02}"), i * ms)).collect();
       tokens(&pieces.iter().map(|(p, s)| (p.as_str(), *s)).collect::<Vec<_>>())
@@ -396,6 +403,7 @@ pub mod tests {
     let texts: Vec<usize> = c.iter().map(|c| c.text.len()).collect();
     assert_eq!((texts, c[0].end, c[1].end), (vec![59, 59], 1417, 3000));
     assert_eq!(srt(&c[..1]).lines().nth(2), Some("w00 w01 w02 w03 w04 w05 w06"));
+
     // 82 characters that no break puts in two lines of 42: two cues.
     let (a, b, c) = (
       "▁".to_string() + &"a".repeat(30),
@@ -403,6 +411,7 @@ pub mod tests {
       "▁".to_string() + &"c".repeat(20),
     );
     assert_eq!(cues(&tokens(&[(&a, 0), (&b, 600), (&c, 1200)]), &[], 4000, true).len(), 2);
+
     // At most 7 s, and after a comma when one is near the middle.
     let c = cues(&words(20, 500), &[], 12_000, true);
     assert_eq!(c.iter().map(|c| c.words.len()).collect::<Vec<_>>(), [10, 10]);
@@ -410,16 +419,20 @@ pub mod tests {
     t[10].piece = "▁w10,".into();
     let c = cues(&t, &[], 3000, true);
     assert_eq!(c.iter().map(|c| c.words.len()).collect::<Vec<_>>(), [11, 13]);
+
     // Never between words of one start, whatever their length.
     assert_eq!(cues(&words(30, 0), &[], 3000, true).len(), 1);
+
     // A pause.
     let t = tokens(&[("▁So", 0), ("▁we", 200), ("▁go", 1500)]);
     assert_eq!(cues(&t, &[], 3000, true).len(), 2);
+
     // A pause or a sentence too soon for the cue before to show `MIN_MS`.
     let t = tokens(&[("▁Yes", 0), ("▁Okay", 720)]);
     assert_eq!(cues(&t, &[], 3000, true).len(), 1);
     let t = tokens(&[("▁Yes.", 0), ("▁Okay", 880)]);
     assert_eq!(cues(&t, &[], 3000, true).len(), 1);
+
     // Nor a cut within a phrase: 50 words, the last 30 in one frame.
     let t: Vec<(String, u32)> =
       (0..50).map(|i| (format!("▁w{i:02}"), (i * 100).min(2000))).collect();
@@ -441,6 +454,7 @@ pub mod tests {
     for line in srt(&c).lines().filter(|l| l.chars().any(unspaced)) {
       assert!(width(line) <= LINE, "{line}");
     }
+
     // A break falls after the comma, never before punctuation, and Latin words keep their spaces.
     assert_eq!(lines(&"一二三四五六七八九十，".repeat(4)).lines().count(), 2);
     assert!(lines(&"一二三四五六七八九十，".repeat(4)).contains("，\n"));
@@ -485,12 +499,14 @@ pub mod tests {
       srt_segments(&t, 6000),
       "1\n00:00:00,000 --> 00:00:01,910\nAsk not. Ask what.\n\n2\n00:00:05,000 --> 00:00:06,000\nNext\n\n"
     );
+
     // Without spaces, and a one-token segment.
     let t = tokens(&[("我们", 0), ("走吧。", 0), ("好", 2000)]);
     assert_eq!(
       srt_segments(&t, 3000),
       "1\n00:00:00,000 --> 00:00:01,280\n我们走吧。\n\n2\n00:00:02,000 --> 00:00:03,000\n好\n\n"
     );
+
     // A segment that starts before the one before, or too soon after it, joins it.
     let t = tokens(&[
       (" Hi.", 0),
@@ -503,16 +519,19 @@ pub mod tests {
       srt_segments(&t, 14_000),
       "1\n00:00:00,000 --> 00:00:01,000\nHi.\n\n2\n00:00:06,000 --> 00:00:07,420\nLate. So\n\n3\n00:00:12,000 --> 00:00:13,560\nThanks. Go\n\n"
     );
+
     // Joins chain: D joins C, and then B, which C started before.
     let t = tokens(&[(" A.", 0), (" B.", 5000), (" C.", 9000), (" D", 4500)]);
     let starts: Vec<u32> = cues(&t, &[], 12_000, false).iter().map(|c| c.start).collect();
     assert_eq!(starts, [0, 4500]);
+
     // A sentence too near the next segment to show joins the one before.
     let pieces = [" Well,", " that's", " the", " thing", " to", " do.", " I...", " Go"];
     let mut t = tokens(&pieces.map(|p| (p, 0)));
     t[7].start_ms = 2300;
     let texts: Vec<String> = cues(&t, &[], 4000, false).into_iter().map(|c| c.text).collect();
     assert_eq!(texts, ["Well, that's the thing to do. I...", "Go"]);
+
     // SentencePiece pieces (Moonshine).
     let t = tokens(&[("▁And", 0), ("▁so", 0), ("▁ask", 4000)]);
     assert_eq!(
@@ -549,6 +568,7 @@ pub mod tests {
         if head.starts_with("speaker segments: ") {
           continue;
         }
+
         let text = head.strip_prefix("text: ").unwrap().replace("(empty)", "");
         // A block of text alone has no pieces to check.
         let Some(head) = lines.next() else { continue };

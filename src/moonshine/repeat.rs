@@ -54,6 +54,7 @@ mod tests {
     ids.push(5);
     assert!(stop(&mut ids));
     assert_eq!(ids, [5]);
+
     // An 8-token block needs 8 copies, after a prefix that stays.
     let block: Vec<usize> = (10..18).collect();
     let mut ids = [vec![1, 2], block.repeat(7)].concat();
@@ -61,6 +62,7 @@ mod tests {
     ids.extend(&block);
     assert!(stop(&mut ids));
     assert_eq!(ids, [vec![1, 2], block.clone()].concat());
+
     // A 48-token block stops at 4 copies (192 tokens).
     let block: Vec<usize> = (100..148).collect();
     let mut ids = block.repeat(3);
@@ -68,6 +70,7 @@ mod tests {
     ids.extend(&block);
     assert!(stop(&mut ids));
     assert_eq!(ids, block);
+
     // At the budget 3 copies of a block of 11 (33 tokens) go, 3 of a block of 10 (30) stay.
     let block: Vec<usize> = (20..31).collect();
     let mut ids = [vec![1], block.repeat(3)].concat();

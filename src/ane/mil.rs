@@ -255,12 +255,14 @@ impl Program {
         _ = t.msg(5, |a| _ = a.ints(1, v.shape.iter().map(|&d| d as i64)).int(2, 65552))
       });
     };
+
     let mut model = Msg::default();
     model.int(1, SPEC_VERSION);
     model.msg(2, |d| {
       self.inputs.iter().for_each(|v| _ = d.msg(1, |f| feature(f, v)));
       outputs.iter().for_each(|v| _ = d.msg(10, |f| feature(f, v)));
     });
+
     let mut block = self.ops;
     outputs.iter().for_each(|v| _ = block.str(2, &v.name));
     model.msg(502, |p| {
@@ -271,6 +273,7 @@ impl Program {
         f.entry(3, OPSET, |b| b.0 = std::mem::take(&mut block.0));
       });
     });
+
     let data = dir.join("Data/com.apple.CoreML");
     fs::write(data.join("model.mlmodel"), &model.0)?;
     fs::write(dir.join("Manifest.json"), MANIFEST)

@@ -45,11 +45,13 @@ pub fn decode(
     for &id in &ids.suppress {
       logits[id] = f32::NEG_INFINITY;
     }
+
     if generated.is_empty() {
       for &id in &ids.begin_suppress {
         logits[id] = f32::NEG_INFINITY;
       }
     }
+
     timestamp_rules(ids, logits, generated);
     let (id, lp) = argmax(logits, logprobs);
     (sum, n) = (sum + lp as f64, n + 1);
@@ -60,13 +62,16 @@ pub fn decode(
     if next == ids.eot {
       break;
     }
+
     generated.push(next);
     if pos + 1 > CONTEXT {
       break;
     }
+
     logits = step(next, pos)?;
     next = pick(&mut logits, &generated);
   }
+
   Ok((generated, if logprobs { (sum / n as f64) as f32 } else { 0.0 }))
 }
 
@@ -83,15 +88,18 @@ fn timestamp_rules(ids: &Ids, logits: &mut [f32], generated: &[usize]) {
     let range = if penultimate { begin..logits.len() } else { 0..ids.eot };
     logits[range].fill(f32::NEG_INFINITY);
   }
+
   if let Some(&ts) = generated.iter().rev().find(|&&id| ids.timestamp(id)) {
     let low = if last && !penultimate { ts } else { ts + 1 };
     logits[begin..low].fill(f32::NEG_INFINITY);
   }
+
   if generated.is_empty() {
     logits[..begin].fill(f32::NEG_INFINITY);
     let last = (begin + MAX_INITIAL + 1).min(logits.len());
     logits[last..].fill(f32::NEG_INFINITY);
   }
+
   let max = logits[begin..].iter().fold(f32::NEG_INFINITY, |m, &v| m.max(v));
   let mut mass = f32::NEG_INFINITY;
   if max.is_finite() {
@@ -101,6 +109,7 @@ fn timestamp_rules(ids: &Ids, logits: &mut [f32], generated: &[usize]) {
       mass = max + sum.ln() as f32;
     }
   }
+
   let text = logits[..begin].iter().fold(f32::NEG_INFINITY, |m, &v| m.max(v));
   if mass > text {
     logits[..begin].fill(f32::NEG_INFINITY);
@@ -116,9 +125,11 @@ fn argmax(logits: &[f32], logprob: bool) -> (usize, f32) {
       best = i;
     }
   }
+
   if !logprob {
     return (best, 0.0);
   }
+
   let max = logits.iter().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, |m, &v| m.max(v));
   let sum: f64 = logits.iter().filter(|v| v.is_finite()).map(|&v| ((v - max) as f64).exp()).sum();
   (best, logits[best] - (max + sum.ln() as f32))
@@ -154,25 +165,30 @@ pub fn retrieve(ids: &Ids, generated: &[usize], frames: usize) -> (Vec<Segment>,
     let segments = if n > 0 { vec![Segment { start: 0, text: text(0..n) }] } else { Vec::new() };
     return (segments, frames);
   }
+
   let single = n >= 2 && !ts(n - 2) && ts(n - 1);
   if single {
     slices.push(n);
   } else {
     *slices.last_mut().unwrap() += 1;
   }
+
   let (mut segments, mut last) = (Vec::new(), 0);
   for (k, &end) in slices.iter().enumerate() {
     let closing = if k + 1 < slices.len() || single { end - 1 } else { end - 2 };
     if end > last && ts(last) && closing >= last && closing < n && ts(closing) {
       segments.push(Segment { start: generated[last] - ids.begin, text: text(last..end) });
     }
+
     last = end;
   }
+
   let advance = match last.checked_sub(2) {
     _ if single => frames,
     Some(i) if i < n && ts(i) => (generated[i] - ids.begin) * 2,
     _ => frames,
   };
+
   (segments, advance)
 }
 

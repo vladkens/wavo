@@ -1,7 +1,9 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
-// The hub links resolve to the module with the `hub` feature and to docs.rs without it; with the
-// feature they name what rustdoc would find anyway, hence the allow.
-#![allow(rustdoc::redundant_explicit_links)]
+// The hub links resolve to the module with the `hub` feature and to docs.rs without it.
+#![cfg_attr(
+  feature = "hub",
+  expect(rustdoc::redundant_explicit_links, reason = "with `hub`, rustdoc finds them anyway")
+)]
 #![cfg_attr(
   feature = "hub",
   doc = "[hub-mod]: crate::hub\n[hub-models]: crate::hub::MODELS\n[hub-hub]: crate::hub::Hub\n[hub-pull]: crate::hub::Hub::pull"
@@ -180,8 +182,8 @@
 //! [`Hub::pull`][hub-pull] blocks until the file is complete, and the library starts no
 //! threads of its own: run it on a thread, with [`std::thread::spawn`] as here, or with tokio's
 //! `spawn_blocking`. Its callback sees the bytes done and the total, and returns
-//! [`ControlFlow::Break`](std::ops::ControlFlow::Break) to cancel; the partial file stays in the
-//! cache, and the next pull resumes it.
+//! [`ControlFlow::Break`] to cancel; the partial file stays in the cache, and the next pull
+//! resumes it.
 //!
 //! ```no_run
 //! # #[cfg(feature = "hub")]
@@ -604,6 +606,7 @@ impl Model {
         None => Target::Gpu(None),
       },
     };
+
     let family = match arch {
       "gigaam" => Family::Gigaam(Box::new(gigaam::Gigaam::load(&g, target)?)),
       "parakeet" => Family::Parakeet(Box::new(parakeet::Parakeet::load(&g, target)?)),
@@ -613,6 +616,7 @@ impl Model {
         "general.architecture is {arch:?}, only gigaam, parakeet, whisper and moonshine are supported"
       ),
     };
+
     Ok(Self { family, languages })
   }
 
@@ -1114,6 +1118,7 @@ impl Diarizer {
         bail!("the diarization model runs on the GPU or the CPU, not the Neural Engine")
       }
     };
+
     Ok(Self(Box::new(sortformer::Sortformer::load(&g, target)?)))
   }
 

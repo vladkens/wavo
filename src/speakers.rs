@@ -220,12 +220,14 @@ mod tests {
     let turns = [turn(0, 0, 700), turn(1, 700, 4000)];
     let got: Vec<_> = said(&t, &turns).into_iter().map(|u| (u.0, u.1)).collect();
     assert_eq!(got, [(Some(0), "A b c.".into()), (Some(1), "Next".into())]);
+
     // A character vocabulary: a space token starts each word, timed by its first letter.
     let t = transcript(&[("д", 0), ("а", 40), (" ", 80), ("н", 2000), ("е", 2040), ("т", 2080)]);
     let turns = [turn(0, 0, 500), turn(1, 1800, 2500)];
     let got: Vec<_> = said(&t, &turns).into_iter().map(|u| (u.0, u.1)).collect();
     assert_eq!(got, [(Some(0), "да".into()), (Some(1), "нет".into())]);
     assert_eq!(said(&t, &[turn(0, 0, 3000)])[0].1, "да нет");
+
     // Whisper's segments of text without spaces: a pause starts a word.
     let t = transcript(&[("我们", 0), ("走吧。", 0), ("好", 2000)]);
     let turns = [turn(0, 0, 1500), turn(1, 1900, 3000)];

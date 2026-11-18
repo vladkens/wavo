@@ -82,6 +82,7 @@ pub fn quote(s: &str) -> String {
       c => out.push(c),
     }
   }
+
   out + "\""
 }
 
@@ -118,6 +119,7 @@ pub fn verbose_json(t: &Transcript, cues: &[Cue], language: &str, audio_ms: u32)
       (if i == 0 { "" } else { "," }, secs(*start), secs(*end), quote(word));
     write!(out, "{sep}\n  {{\"word\": {word}, \"start\": {start}, \"end\": {end}}}").unwrap();
   }
+
   out + "\n]}"
 }
 
@@ -211,6 +213,7 @@ mod tests {
     (t.text, t.tokens) = ("Hi. Yes. And then".into(), tokens(&pieces));
     let u = t.utterances(&[turn(0, 0, 800), turn(1, 900, 1500), turn(0, 3900, 5000)]);
     assert_eq!(by_speaker(&u), "Speaker 1: Hi.\nSpeaker 2: Yes.\nSpeaker 1: And then\n");
+
     // No cue spans two speakers; each shows until the next speaker's starts.
     assert_eq!(
       srt(&speaker_cues(&t.tokens, &[], &u, 6000, true)),
@@ -227,10 +230,12 @@ mod tests {
       ),
       "{rendered}"
     );
+
     // No turns at all: no speaker.
     let none = t.utterances(&[]);
     assert_eq!(by_speaker(&none), "Speaker ?: Hi. Yes. And then\n");
     assert!(json(&t, Some(&none)).contains("\"speaker\": null"));
+
     // OpenAI's diarized_json: speakers as letters, times in seconds.
     assert_eq!(
       diarized_json(&t.text, &u, 6000),

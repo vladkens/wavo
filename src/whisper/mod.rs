@@ -101,6 +101,7 @@ impl Whisper {
     }
     g.check("stt.whisper.decoder.tie_word_embeddings", &[true])?;
     g.check("stt.whisper.decoder.scale_embedding", &[false])?;
+
     let d = u("encoder.d_model")?;
     let config = |part: &str| {
       let key = |name: &str| u(&format!("{part}.{name}"));
@@ -117,6 +118,7 @@ impl Whisper {
     };
     let (enc, dec) = (config("encoder")?, config("decoder")?);
     let (vocab, context) = (u("decoder.vocab_size")?, u("decoder.max_target_positions")?);
+
     // The flash kernel takes a head of up to 64.
     for heads in [enc.heads, dec.heads] {
       let hd = d / heads.max(1);
@@ -124,6 +126,7 @@ impl Whisper {
         bail!("unsupported shape: d_model {d}, {heads} heads");
       }
     }
+
     let tok = Tokenizer::new(g)?;
     if tok.len() != vocab {
       bail!("vocabulary of {} tokens, decoder.vocab_size {vocab}", tok.len());
@@ -146,6 +149,7 @@ impl Whisper {
         .collect::<Option<Vec<_>>>(),
       false => Some(Vec::new()),
     };
+
     let Some(languages) = languages else { bail!("a language of general.languages has no token") };
     let all = [&ids.suppress[..], &ids.begin_suppress, &languages, &[ids.eot, no_timestamps]];
     if all.iter().flat_map(|v| v.iter()).any(|&i| i >= vocab) {
@@ -219,6 +223,7 @@ impl Whisper {
     let mut a = self.lock();
     let mut seek = 0;
     let (mut text, mut tokens) = (Vec::new(), Vec::new());
+
     while seek < total {
       let frames = (total - seek).min(window);
       let mut chunk = mel[seek * mels..(seek + frames) * mels].to_vec();
@@ -232,6 +237,7 @@ impl Whisper {
         }
         false => vec![self.sot],
       };
+
       let logits = if prompt.len() > 1 { self.steps(&mut a, &prompt[1..], 1)? } else { sot };
       let (generated, logprob) =
         search::decode(&self.ids, logits, prompt.len(), no_speech > NO_SPEECH, |token, pos| {
@@ -241,12 +247,14 @@ impl Whisper {
         seek += frames;
         continue;
       }
+
       let (segments, advance) = search::retrieve(&self.ids, &generated, frames);
       for s in segments {
         let pieces = tokenizer::pieces(|id| self.tok.bytes(id), &s.text);
         if tokenizer::trim(&pieces.concat()).is_empty() {
           continue;
         }
+
         let start_ms = (seek * 10 + s.start * 20) as u32;
         let token = |(&id, piece): (&usize, String)| Token { id: id as u32, piece, start_ms };
         tokens.extend(s.text.iter().zip(pieces).map(token));
@@ -257,6 +265,7 @@ impl Whisper {
       );
       seek += if advance == 0 { frames } else { advance };
     }
+
     let text = tokenizer::trim(&String::from_utf8_lossy(&text)).to_string();
     Ok((Transcript { text, tokens, language: None }, language))
   }
@@ -286,6 +295,7 @@ impl Whisper {
         return Ok(on.decoder.step(c, self.sot, 0, None));
       }
     };
+
     let Arena { enc, dec, ids, read, window, .. } = a;
     gpu.write(&enc.mel, mel);
     gpu.write(&enc.t.x, &on.encoder.positions);
@@ -314,6 +324,7 @@ impl Whisper {
         return Ok(logits);
       }
     };
+
     let Arena { dec, ids, read, steps, next, .. } = a;
     let record = |steps: &mut Groups, pos: usize, n: usize| {
       gpu.record(steps, &dec.logits, read, on.decoder.vocab, |p| {
@@ -326,6 +337,7 @@ impl Whisper {
       Some((at, r)) if at == pos && tokens.len() == 1 => r,
       _ => record(steps, pos, tokens.len()),
     };
+
     let bits: Vec<f32> = tokens.iter().map(|&t| f32::from_bits(t as u32)).collect();
     gpu.write(ids, &bits);
     let after = pos + tokens.len();

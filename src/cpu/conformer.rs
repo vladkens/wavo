@@ -75,6 +75,7 @@ impl Conformer {
       Attention::Rotary => (2 * t, t),
       Attention::Relative => (3 * t, pos_rows(t)),
     };
+
     let mut b = Buffers {
       y: vec![0.0; t * c.d],
       h: vec![0.0; t * c.d_ff.max(c.d)],
@@ -120,6 +121,7 @@ impl Block {
       ConvNorm::LayerNorm => norm("conv.ln")?,
       ConvNorm::Affine => batch_norm(g, &p("conv.bn"), d)?,
     };
+
     let dw_b = if c.bias { f32s("conv.depthwise.bias", &[d])? } else { vec![0.0; d] };
     // `[d][kernel]` in the file, `[kernel][d]` here so a tap runs over the channels.
     let w = f32s("conv.depthwise.weight", &[c.kernel, 1, d])?;
@@ -138,6 +140,7 @@ impl Block {
         }
       }
     };
+
     Ok(Self {
       norm_ff1: norm("norm_ff1")?,
       ff1: [linear(&["ff1.linear1"], &[d, f])?, linear(&["ff1.linear2"], &[f, d])?],
@@ -170,6 +173,7 @@ impl Block {
         let (qk, yr) = (&mut qk[..t * 2 * d], &mut yr[..t * d]);
         layer_norm(x, n(&self.norm_attn), y, Some((pos, yr, c.head_dim())));
         gemm(yr, w, qk, t, Epilogue::Bias);
+
         let v = &mut h[..t * d];
         gemm(y, wv, v, t, Epilogue::Bias);
         attention(qk, 2 * d, v, d, y, t, c.heads);

@@ -276,6 +276,7 @@ pub fn lookup(name: &str) -> Result<&'static ModelInfo> {
   if let Some(m) = MODELS.iter().find(|m| m.name == name || m.full_name == name) {
     return Ok(m);
   }
+
   let closest = (MODELS.iter().flat_map(|m| [m.name, m.full_name]))
     .map(|n| (distance(name, n), n))
     .min()
@@ -323,6 +324,7 @@ fn distance(a: &str, b: &str) -> usize {
       row[j + 1] = next;
     }
   }
+
   row[b.len()]
 }
 
@@ -599,6 +601,7 @@ mod tests {
     let m = lookup("gigaam-v3").unwrap();
     assert_eq!(m.repo(), "handy-computer/gigaam-v3-e2e-rnnt-gguf");
     assert_eq!(m.file(), "gigaam-v3-e2e-rnnt-Q8_0.gguf");
+
     assert_eq!(name("whisper-large-v3-turbo"), "whisper-turbo");
     let m = lookup("whisper-turbo").unwrap();
     assert_eq!(m.repo(), "handy-computer/whisper-large-v3-turbo-gguf");
@@ -607,6 +610,7 @@ mod tests {
     let m = lookup("breeze-asr-25").unwrap();
     assert_eq!(m.repo(), "handy-computer/Breeze-ASR-25-gguf");
     assert_eq!(m.file(), "Breeze-ASR-25-Q8_0.gguf");
+
     assert_eq!(name("ivrit-whisper-large-v3-turbo"), "whisper-turbo-he");
     let m = lookup("whisper-turbo-he").unwrap();
     assert_eq!(m.repo(), "vladkens/ivrit-whisper-large-v3-turbo-gguf");
@@ -614,6 +618,7 @@ mod tests {
     let m = lookup("parakeet-he").unwrap();
     assert_eq!(m.repo(), "vladkens/parakeet-tdt-0.6b-v3-he-gguf");
     assert_eq!(m.file(), "parakeet-tdt-0.6b-v3-he-Q8_0.gguf");
+
     assert_eq!(name("gigaam-multilingual-large-ctc"), "gigaam-multilingual");
     assert_eq!(name("parakeet-tdt-0.6b-v3-uk"), "parakeet-uk");
     let m = lookup("nemotron-diarization").unwrap();
@@ -642,6 +647,7 @@ mod tests {
         let ok = (2..=3).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_lowercase());
         assert!(ok, "{}: {c:?}", m.name);
       }
+
       let mut unique = codes.to_vec();
       unique.sort();
       unique.dedup();
@@ -746,6 +752,7 @@ mod tests {
         (_, true) => "cased, punctuated",
         _ => "lowercase, no punctuation",
       };
+
       format!("{:.2} GB | {} | {output} |", m.size as f64 / 1e9, m.languages)
     };
 

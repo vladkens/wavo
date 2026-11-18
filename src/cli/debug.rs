@@ -100,6 +100,7 @@ fn adapters(w: &mut impl Write, devices: &[Device]) -> Result<()> {
   desc.backends &= wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12;
   let backends = desc.backends;
   let mut raw = pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(backends));
+
   for (i, d) in devices.iter().enumerate() {
     writeln!(w, "[{i}] {d}{}", if i == 0 { "  <- wavo uses this" } else { "" })?;
     let mut rows =
@@ -196,6 +197,7 @@ fn kernels(kernels: Kernels, cpu: bool, f: &Facts) -> String {
     ),
     _ => ("portable", Some("no 8x8 or 16x16 matrices into f32".into())),
   };
+
   why.map_or(tier.into(), |why: String| format!("{tier}: {why}"))
 }
 
@@ -358,6 +360,7 @@ fn system() -> System {
       Err(e) => format!("error={e}"),
     },
   };
+
   let memory = read("/proc/meminfo");
   let memory = field(&memory, "MemTotal").and_then(|x| x.trim_end_matches(" kB").parse().ok());
   let memory = memory.map_or("-".into(), |kb: u64| bytes(kb.saturating_mul(1024)));

@@ -141,6 +141,7 @@ fn name(path: &Path) -> Result<String> {
   let meta = f.metadata()?;
   let len = meta.len();
   let time = meta.modified()?.duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+
   let mut h = FNV;
   fnv(&mut h, &len.to_le_bytes());
   fnv(&mut h, &time.to_le_bytes());
@@ -268,10 +269,12 @@ pub fn prepare(
 
   let mut step = |s| if progress(s).is_break() { Err(Error::Cancelled) } else { Ok(()) };
   let dir = target.parent().unwrap();
+
   // One prepare at a time, also across threads (`wavo pull` pulls in parallel): a first one peaks
   // at about the model's size in memory.
   let _lock = lock(dir)?;
   prune(dir, &target);
+
   if !target.is_dir() {
     step(PrepareStep::Build)?;
     let tmp = target.with_extension("tmp");
@@ -281,6 +284,7 @@ pub fn prepare(
       let mut p = Program::new(&package.join("Data/com.apple.CoreML/weights/weight.bin"))?;
       let outputs = build(g, &mut p)?;
       p.finish(&outputs.iter().collect::<Vec<_>>(), &package)?;
+
       step(PrepareStep::Compile)?;
       let out = coreml::compile(&package)?;
       let moved = fs::remove_dir_all(&package).map_err(Error::from);
@@ -409,6 +413,7 @@ fn prune(dir: &Path, target: &Path) {
     fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
   let name = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
   let model = |p: &Path| name(p).split('.').next().unwrap_or_default().to_string();
+
   for compiled in paths.iter().filter(|p| p.extension().is_some_and(|e| e == "mlmodelc")) {
     let stem = name(&compiled.with_extension(""));
     let replaced = compiled != target && model(compiled) == model(target);
@@ -485,6 +490,7 @@ mod tests {
     fs::copy(&a, &b).unwrap();
     let day = Duration::from_secs(24 * 3600);
     File::options().write(true).open(&b).unwrap().set_modified(UNIX_EPOCH + day).unwrap();
+
     let na = name(&a).unwrap();
     assert!(na.starts_with("m-0_6b.") && na.len() == 23, "{na}");
     assert_ne!(na, name(&b).unwrap(), "a copy of another time, another id");

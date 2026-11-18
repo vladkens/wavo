@@ -140,6 +140,7 @@ fn adapter_at(index: Option<usize>) -> Result<wgpu::Adapter> {
     None | Some(0) => return adapter(),
     Some(i) => i,
   };
+
   let mut all = adapters(i)?;
   if i >= all.len() {
     let n = all.len();
@@ -176,12 +177,14 @@ impl Device {
       wgpu::Backend::Dx12 => Api::Dx12,
       backend => unreachable!("adapter() doesn't request {backend:?}"),
     };
+
     let kind = match info.device_type {
       wgpu::DeviceType::DiscreteGpu => DeviceKind::DiscreteGpu,
       wgpu::DeviceType::IntegratedGpu => DeviceKind::IntegratedGpu,
       wgpu::DeviceType::Cpu => DeviceKind::SoftwareGpu,
       wgpu::DeviceType::VirtualGpu | wgpu::DeviceType::Other => DeviceKind::OtherGpu,
     };
+
     let driver = [info.driver.trim(), info.driver_info.trim()];
     let driver = driver.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
     Self { name: info.name.clone(), api, kind, driver, kernels }
@@ -197,6 +200,7 @@ impl std::fmt::Display for Device {
       Api::CoreMl => "Core ML",
       Api::Cpu => return write!(f, "{} ({})", self.name, self.driver),
     };
+
     let kind = match self.kind {
       DeviceKind::DiscreteGpu => "discrete",
       DeviceKind::IntegratedGpu => "integrated",
@@ -204,6 +208,7 @@ impl std::fmt::Display for Device {
       DeviceKind::OtherGpu => "other",
       DeviceKind::NeuralEngine | DeviceKind::Cpu => return write!(f, "{} ({api})", self.name),
     };
+
     write!(f, "{} ({api}, {kind})", self.name)
   }
 }
@@ -274,6 +279,7 @@ impl Portable {
       true => module(device, &[include_str!("gemm.wgsl"), include_str!("gemm_cpu.wgsl")].concat()),
       false => module(device, include_str!("gemm.wgsl")),
     };
+
     let ops = module(device, include_str!("ops.wgsl"));
     let attention = module(device, include_str!("attention.wgsl"));
     let spatial = module(device, include_str!("spatial.wgsl"));
@@ -322,6 +328,7 @@ fn compile_fast(device: &wgpu::Device, f: usize) -> Option<FastPipelines> {
   // Error scopes are per thread.
   let scopes = [wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation]
     .map(|f| device.push_error_scope(f));
+
   let source = include_str!("gemm_fast.wgsl")
     .replace("F: u32 = 8u", &format!("F: u32 = {f}u"))
     .replace("8x8", &format!("{f}x{f}"));
@@ -332,6 +339,7 @@ fn compile_fast(device: &wgpu::Device, f: usize) -> Option<FastPipelines> {
       pipeline(device, &gemm, "gemm", &constants)
     })
     .collect();
+
   let kernels = (f == 8).then(|| {
     let ops = module(device, include_str!("ops_fast.wgsl"));
     let relative = module(device, include_str!("attention_fast.wgsl"));
@@ -347,6 +355,7 @@ fn compile_fast(device: &wgpu::Device, f: usize) -> Option<FastPipelines> {
     let flash = module(device, include_str!("flash_f16.wgsl"));
     [None, None, Some(pipeline(device, &flash, "flash", &[])), None]
   });
+
   let errors = scopes.into_iter().rev().filter_map(|s| pollster::block_on(s.pop())).count();
   (errors == 0).then_some((gemm, kernels))
 }
@@ -478,12 +487,15 @@ impl Gpu {
     if fast {
       features |= COOP;
     }
+
     if mappable {
       features |= wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
     }
+
     if tensor {
       features |= wgpu::Features::PASSTHROUGH_SHADERS;
     }
+
     let supported = adapter.limits();
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
       required_features: features,
@@ -523,6 +535,7 @@ impl Gpu {
         (_, Some(16), _) => [128, 32],
         _ => [128, 64],
       };
+
       (Portable::new(&device, tile), compiled.join().unwrap())
     });
     let weights = wgpu::BufferUsages::STORAGE
@@ -557,6 +570,7 @@ impl Gpu {
     if let (Some(size), Some(compiled)) = (size, compiled) {
       gpu.fast = gpu.probe(size, compiled);
     }
+
     gpu.fast.tensor = tensor;
     if gpu.fast.tensor.is_some() && !gpu.probe_tensor() {
       gpu.fast.tensor = None;
@@ -610,6 +624,7 @@ impl Gpu {
     if halves.as_ref().is_none_or(|h| h.size() < 2 * len as u64) {
       *halves = Some(self.buffer(len.div_ceil(2)));
     }
+
     halves.clone().unwrap()
   }
 
@@ -635,6 +650,7 @@ impl Gpu {
         if let Some(k) = k {
           p.run(k, &buffers.iter().collect::<Vec<_>>(), &[0; 8][..*params], [1, 1, 1]);
         }
+
         buffers.swap_remove(*out)
       })
       .collect();
@@ -643,6 +659,7 @@ impl Gpu {
     for (i, out) in outs.iter().enumerate() {
       encoder.copy_buffer_to_buffer(out, 0, &read, 8 * i as u64, 8);
     }
+
     self.queue.submit([encoder.finish()]);
     let (tx, rx) = mpsc::channel();
     read.slice(..).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
@@ -735,6 +752,7 @@ impl Gpu {
         }
       }
     }
+
     buffer
   }
 
@@ -774,6 +792,7 @@ impl Gpu {
     if weights.iter().any(|w| w.ty != w0.ty || w.len() / w.dims.last().unwrap() != k) {
       bail!("stacked weights differ in type or shape");
     }
+
     if !pad && !k.is_multiple_of(32) {
       bail!("linear layer {k}→{rows}: needs k % 32 == 0");
     }
@@ -790,6 +809,7 @@ impl Gpu {
         for (row, w) in padded.chunks_mut(kp).zip(w.iter().flat_map(|w| w.chunks(k))) {
           row[..k].copy_from_slice(w);
         }
+
         let mut f = self.fill(n * kp * 4, rows * kp * 4)?;
         f.slice(0..rows * kp * 4).copy_from_slice(bytemuck::cast_slice(&padded));
         (0, self.filled(f), None)
@@ -802,6 +822,7 @@ impl Gpu {
           w.read(PIECE, |i, piece| f.slice(at + i..at + i + piece.len()).copy_from_slice(piece))?;
           at += w.len() * width;
         }
+
         (ty, self.filled(f), None)
       }
       Type::Q8_0 => {
@@ -819,13 +840,16 @@ impl Gpu {
           })?;
           block += w.len() / 32;
         }
+
         (2, self.filled(dv), Some(self.filled(sv)))
       }
     };
+
     let dual = bias.len().saturating_sub(rows);
     if !bias.is_empty() && bias.len() < rows || dual > rows {
       bail!("linear layer {k}→{rows}: bias has {} values", bias.len());
     }
+
     let (own, second) = bias.split_at(bias.len() - dual);
     let mut padded = vec![0.0; n.max(cols + dual)];
     padded[..own.len()].copy_from_slice(own);
@@ -847,6 +871,7 @@ impl Gpu {
         true => &module(device, &source(include_str!("gemm.wgsl"))),
         false => &self.kernels.gemm_module,
       };
+
       let decode = module(device, &source(include_str!("decode.wgsl")));
       let ops = fast.then(|| module(device, &source(include_str!("ops.wgsl"))));
       Decoder {
@@ -880,6 +905,7 @@ impl Gpu {
       (false, 8) => (&self.fast.attention, 32, 64, 4),
       (false, _) => (&self.fast.attention, 4, 64, 4),
     };
+
     k.as_ref().filter(|_| (min..=max).contains(&head_dim) && head_dim.is_multiple_of(step))
   }
 
@@ -983,10 +1009,12 @@ impl Gpu {
       let tx = tx.clone();
       slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
     }
+
     self.device.poll(wgpu::PollType::wait_indefinitely())?;
     for _ in &slices {
       rx.recv().unwrap()?;
     }
+
     let data = bytemuck::cast_slice(&slices[0].get_mapped_range()?).to_vec();
     let done =
       bytemuck::cast_slice::<_, u32>(&slices[1].get_mapped_range()?).iter().all(|&m| m == call);
@@ -995,9 +1023,11 @@ impl Gpu {
     if let Some(failure) = self.failure.lock().unwrap_or_else(PoisonError::into_inner).take() {
       return Err(Error::Gpu(failure));
     }
+
     if !done {
       return Err(Error::Gpu("the driver did not finish the work (cancelled as too long?)".into()));
     }
+
     Ok(data)
   }
 }
@@ -1042,6 +1072,7 @@ fn swap_fns(source: &str, fns: &str) -> String {
     let end = start + out[start..].find("\n}").unwrap() + 2;
     out.replace_range(start..end, &format!("\nfn {}", &f[..f.find("\n}").unwrap() + 2]));
   }
+
   out
 }
 
@@ -1209,6 +1240,7 @@ impl Forced {
 fn compile_tensor(device: &wgpu::Device) -> Option<TensorGemm> {
   let scopes = [wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation]
     .map(|f| device.push_error_scope(f));
+
   let names = ["cast", "gemm_f32", "gemm_f16", "gemm_q8"];
   let entry_points = names.map(|n| wgpu::PassthroughShaderEntryPoint {
     name: n.into(),
@@ -1222,6 +1254,7 @@ fn compile_tensor(device: &wgpu::Device) -> Option<TensorGemm> {
   // SAFETY: the kernels index only inside the buffers `Pass::gemm` sizes for them, which sit in
   // the Metal slots their layouts below give them.
   let module = unsafe { device.create_shader_module_passthrough(desc) };
+
   // Passthrough modules have no reflection: storage buffers in order, the one at `out` writable.
   let pipeline = |entry: &str, bindings: u32, out: u32, immediates: u32| {
     let entries: Vec<_> = (0..bindings)
@@ -1254,6 +1287,7 @@ fn compile_tensor(device: &wgpu::Device) -> Option<TensorGemm> {
   };
   let cast = pipeline("cast", 2, 1, 4);
   let gemm = names[1..].iter().map(|n| pipeline(n, 5, 2, 24)).collect();
+
   let errors = scopes.into_iter().rev().filter_map(|s| pollster::block_on(s.pop())).count();
   (errors == 0).then_some(TensorGemm { cast, gemm })
 }
@@ -1327,6 +1361,7 @@ impl<'a> Pass<'a> {
     if self.gpu.fast.size == 8 {
       return;
     }
+
     self.mark(after);
     let (encoder, pass) = self.gpu.begin();
     drop(std::mem::replace(&mut self.pass, pass));
@@ -1362,6 +1397,7 @@ impl<'a> Pass<'a> {
         None => self.groups.push(group),
       }
     }
+
     let group = self.groups[self.next].2.clone();
     self.dispatch(kernel, &group, params, size);
     self.next += 1;
@@ -1405,6 +1441,7 @@ impl<'a> Pass<'a> {
       let size = [l.n / 64, m.div_ceil(128), 1];
       return self.run(&t.gemm[l.ty], &[&h, &l.bias, c, &l.weight, scales], &params, size);
     }
+
     let buffers = [a, &l.bias, c, &l.weight, scales];
     let f = gpu.fast.size;
     match (&gpu.fast.gemm, gpu.tile_rows(l.n, m)) {
@@ -1483,7 +1520,7 @@ impl<'a> Pass<'a> {
 
   /// Attention of one query per head, `q` `[heads · head_dim]`, over keys 0..n of an F16 cache of
   /// `cols` positions (see `pack`) into `o`, through `part` (`attend_len` floats).
-  #[allow(clippy::too_many_arguments)]
+  #[expect(clippy::too_many_arguments, reason = "the kernel's bindings and dims")]
   pub fn attend(
     &mut self,
     q: &Buffer,
@@ -1506,7 +1543,6 @@ impl<'a> Pass<'a> {
   /// floats, into the F16 cache `y` of `cols` positions at positions `col..`. The cache holds K
   /// transposed (pair i of position j at word i·cols + j), then V by position (word d/2·cols +
   /// j·d/2 + i).
-  #[allow(clippy::too_many_arguments)]
   pub fn pack(
     &mut self,
     x: &Buffer,
@@ -1534,7 +1570,7 @@ impl<'a> Pass<'a> {
 
   /// Conformer conv module between the pointwise convs: GLU, depthwise conv (odd `kernel`,
   /// centred) + bias, `norm`, SiLU. `h` is `[t][2·ch]`, `y` is `[t][ch]`.
-  #[allow(clippy::too_many_arguments)]
+  #[expect(clippy::too_many_arguments, reason = "the kernel's bindings and dims")]
   pub fn conv_glu(
     &mut self,
     h: &Buffer,
@@ -1563,7 +1599,7 @@ impl<'a> Pass<'a> {
   /// − i + t + 15]) / √head_dim`. `s` holds `scores_len` floats. Apple's fast path reads rows of
   /// `qk` and `v` up to `t` rounded up to 64, which must be finite, and with heads of 4·(2k + 1)
   /// dims 4 floats past the last row of `v`.
-  #[allow(clippy::too_many_arguments)]
+  #[expect(clippy::too_many_arguments, reason = "the kernel's bindings and dims")]
   pub fn attention(
     &mut self,
     qk: &Buffer,
@@ -1583,6 +1619,7 @@ impl<'a> Pass<'a> {
       (None, None) => (qk, [3 * ch, 3 * ch, 2 * ch, 0], 64),
       (None, Some(_)) => (qk, [4 * ch, 4 * ch, 2 * ch, 1], 16),
     };
+
     let scale = (1.0 / (head_dim as f32).sqrt()).to_bits();
     let params = [t as u32, ch, head_dim as u32, scale, a, b, c, d];
     let pos = pos.unwrap_or(qk);
@@ -1590,11 +1627,13 @@ impl<'a> Pass<'a> {
       let buffers: &[&Buffer] = if d == 1 { &[qk, v, pos, o] } else { &[qk, v, o] };
       return self.run(k, buffers, &params[..7 + d as usize], [t.div_ceil(queries), heads, 1]);
     }
+
     let (k, tiles) = (&self.gpu.kernels, t.div_ceil(16));
     if Gpu::portable_flash(head_dim, d == 1) {
       let (k, buffers) = if d == 1 { (&k.relative, [qk, pos, o]) } else { (&k.flash, [qk, v, o]) };
       return self.run(k, &buffers, &params[..7], [t.div_ceil(32), heads, 1]);
     }
+
     self.run(&k.scores, &[qk, pos, s], &params, [tiles, tiles, heads]);
     self.run(&k.softmax, &[s], &params[..1], [t, heads, 1]);
     self.run(&k.values, &[s, v, o], &params, [tiles, heads, 1]);
@@ -1606,7 +1645,7 @@ impl<'a> Pass<'a> {
   /// stride-2 conv from the one-channel image `x` `[t][f]` to ch channels that is never stored,
   /// and `y` gets `rows` rows of `[⌈f/4⌉][ch]`, the output rows from 2·t0 − 1 on, those from
   /// ⌈t/4⌉ on zero.
-  #[allow(clippy::too_many_arguments)]
+  #[expect(clippy::too_many_arguments, reason = "the kernel's bindings and dims")]
   pub fn depthwise(
     &mut self,
     x: &Buffer,
@@ -1705,6 +1744,7 @@ mod tests {
         let tensor = size == 8 && tensor_gpu(&adapter);
         assert_eq!(f.tensor.is_some(), tensor, "the tensor GEMM failed its probe");
       }
+
       [Gpu::new(false, None).unwrap(), fast]
     })
   }
@@ -1830,6 +1870,7 @@ mod tests {
       "windows" => &[Api::Vulkan, Api::Dx12],
       _ => &[Api::Vulkan],
     };
+
     if std::env::var_os("WGPU_BACKEND").is_none() {
       assert!(apis.contains(&device.api), "{device:?}");
     }
@@ -1895,6 +1936,7 @@ mod tests {
           f16::from_f32(d).to_le_bytes().into_iter().chain(q)
         })
         .collect();
+
       // Each weight is stored as two halves stacked along n, like q over k.
       let wd = [k, n / 2];
       for (ty, bytes) in [(Type::F32, f32s), (Type::F16, &f16s), (Type::Q8_0, &q8)] {
@@ -1905,12 +1947,14 @@ mod tests {
         let half = |x: &f32| f16::from_f32(*x).to_f32();
         let wf: Vec<f32> = [t("w1").to_f32().unwrap(), t("w2").to_f32().unwrap()].concat();
         let wf: Vec<f32> = wf.iter().map(half).collect();
+
         // With the bias, without (zeros), and with dual outputs.
         for b in [&bias[..], &[], &dual] {
           let width = if b.len() > n { cols + 64 } else { cols };
           for gpu in gpus() {
             let l = gpu.linear(&[t("w1"), t("w2")], b).unwrap();
             assert_eq!(l.width(), width);
+
             // 2100 rows take the fast path's 8F-row tiles.
             for m in [1, 37, 70, 2100] {
               let a = random(m * k, 3);
@@ -1919,6 +1963,7 @@ mod tests {
               // One row more than written: it must stay as it was.
               let c = random(m * width + 1, 4);
               let ab = up(gpu, &a);
+
               for e in EPILOGUES {
                 let dot =
                   |r: usize, j: usize| (0..k).map(|x| ar[r * k + x] * wf[j * k + x]).sum::<f32>();
@@ -1950,6 +1995,7 @@ mod tests {
     let x = random(rows * cols, 5);
     let (g, b) = (random(cols, 6), random(cols, 7));
     let rope = random(rows * hd, 8);
+
     let y = layer_norm(&x, &g, &b);
     let yr: Vec<f32> = (0..rows * cols)
       .map(|i| {
@@ -1958,6 +2004,7 @@ mod tests {
         if d < half { y[i] * cos - y[i + half] * sin } else { y[i] * cos + y[i - half] * sin }
       })
       .collect();
+
     for gpu in gpus() {
       let n = gpu.channels(&g, &b).unwrap();
       let (xb, rb) = (up(gpu, &x), up(gpu, &rope));
@@ -1989,6 +2036,7 @@ mod tests {
           if s < t_in && c < ch { x[s * ch + c] } else { 0.0 }
         })
         .collect();
+
       for gpu in gpus() {
         let xb = up(gpu, &x);
         let shape = [kernel, stride, pad];
@@ -2006,10 +2054,12 @@ mod tests {
     let half = |x: &f32| f16::from_f32(*x).to_f32();
     let mut a = random(m * 64, 3);
     a.chunks_mut(64).for_each(|row| row[k..].fill(0.0));
+
     for (ty, bytes) in weights(n, k).into_iter().take(2) {
       let file = Gguf::with_tensors(&[("w", &[k, n], ty, &bytes)]);
       let t = file.tensor("w", &[k, n]).unwrap();
       let wf: Vec<f32> = t.to_f32().unwrap().iter().map(half).collect();
+
       for gpu in gpus() {
         assert!(gpu.linear(std::slice::from_ref(&t), &[]).is_err());
         let l = gpu.conv(file.tensor("w", &[k, n]).unwrap(), &[]).unwrap();
@@ -2032,10 +2082,12 @@ mod tests {
       let bias = random(n, 2);
       let a = random(k, 3);
       let pos = random(2 * k, 6);
+
       for (ty, bytes) in weights(n, k) {
         let file = Gguf::with_tensors(&[("w", &[k, n], ty, &bytes)]);
         let t = file.tensor("w", &[k, n]).unwrap();
         let w = t.to_f32().unwrap();
+
         for gpu in gpus() {
           let l = gpu.linear(&[file.tensor("w", &[k, n]).unwrap()], &bias).unwrap();
           let ab = up(gpu, &a);
@@ -2053,6 +2105,7 @@ mod tests {
               .collect();
             assert_close(&run(gpu, &c, |p, out| p.gemv(&ab, &l, out, e, 3)), &want);
           }
+
           let pb = up(gpu, &pos);
           let ids = up(gpu, &[f32::from_bits(5), f32::from_bits(7)]);
           let want: Vec<f32> = (0..k).map(|i| w[7 * k + i] + pos[k + i] + bias[i]).collect();
@@ -2079,6 +2132,7 @@ mod tests {
         let (qb, xb) = (up(gpu, &q), up(gpu, &kv));
         let cache = gpu.buffer(keys * d);
         let part = gpu.buffer(attend_len(keys, heads, hd));
+
         for n in [1, 37, 256, 257, 1500, 2049, keys] {
           let mut want = vec![0.0; d];
           for h in 0..heads {
@@ -2097,6 +2151,7 @@ mod tests {
                 (0..n).map(|j| e[j] * half(kv[j * 2 * d + d + h * hd + c])).sum::<f32>() / sum;
             }
           }
+
           let got = run(gpu, &vec![0.0; d], |p, o| {
             p.pack(&xb, [0, 2 * d], &cache, keys, d, [keys, 0]);
             p.attend(&qb, &cache, &part, o, n, keys, heads, hd);
@@ -2105,10 +2160,12 @@ mod tests {
         }
       }
     }
+
     // Rows of K then V (d = 6) from x[3..], 13 floats apart, into a cache of 7 positions; one row
     // at position 4, or 2 rows at 5 and 6.
     let x = random(3 + 13 * 2, 7);
     let h = |x: f32| f16::from_f32(x).to_bits() as u32;
+
     for gpu in gpus() {
       let xb = up(gpu, &x);
       for (rows, col) in [(1, 4), (2, 5)] {
@@ -2122,6 +2179,7 @@ mod tests {
             want[3 * 7 + (col + j) * 3 + i] = pair(3 + i);
           }
         }
+
         let got: Vec<u32> = got.iter().map(|v| v.to_bits()).collect();
         assert_eq!(got, want, "pack {rows} rows");
       }
@@ -2148,6 +2206,7 @@ mod tests {
         ConvNorm::LayerNorm => layer_norm(&dw, &g, &b),
         ConvNorm::Affine => dw.iter().enumerate().map(|(i, x)| x * g[i % ch] + b[i % ch]).collect(),
       };
+
       let want: Vec<f32> = want.into_iter().map(silu).collect();
       for gpu in gpus() {
         let (n, dw, hb) =
@@ -2171,6 +2230,7 @@ mod tests {
       let qk: Vec<f32> = random(t.next_multiple_of(64) * 2 * d, 15).into_iter().map(half).collect();
       let v: Vec<f32> = random(t.next_multiple_of(64) * d + 4, 16).into_iter().map(half).collect();
       let scale = 1.0 / (hd as f32).sqrt();
+
       let mut want = vec![0.0; t * d];
       for h in 0..heads {
         for i in 0..t {
@@ -2188,6 +2248,7 @@ mod tests {
           }
         }
       }
+
       for gpu in gpus() {
         let (qb, vb) = (up(gpu, &qk), up(gpu, &v));
         let s = gpu.buffer(gpu.scores_len(t, heads, hd, false));
@@ -2209,6 +2270,7 @@ mod tests {
         (random(t.next_multiple_of(64) * 4 * d, 17), random((pos_rows(t) + 64) * d, 18));
       let scale = 1.0 / (hd as f32).sqrt();
       let dot = |a: &[f32], b: &[f32]| a[..hd].iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+
       let mut want = vec![0.0; t * d];
       for h in 0..heads {
         for i in 0..t {
@@ -2227,6 +2289,7 @@ mod tests {
           }
         }
       }
+
       for gpu in gpus() {
         let (qb, pb) = (up(gpu, &qkv), up(gpu, &pos));
         let s = gpu.buffer(gpu.scores_len(t, heads, hd, true));
@@ -2265,6 +2328,7 @@ mod tests {
     let x = random(t * f * ch, 26);
     let flat: Vec<f32> =
       (0..t * f * ch).map(|e| x[(e / (f * ch) * f + e % f) * ch + e % (f * ch) / f]).collect();
+
     // The whole image, and the first 28 rows: conv2's 8th output row is then masked to zero.
     for valid in [t, t - 1] {
       let first: Vec<f32> = (depthwise(&wide[..valid * f * ch], w0, b0, valid, f, ch).into_iter())
@@ -2274,6 +2338,7 @@ mod tests {
       second.resize(t2 * f2 * ch, 0.0);
       // Four output rows of conv5.
       let want = depthwise(&second, w5, b5, t2, f2, ch);
+
       for gpu in gpus() {
         let [c0, c2, c5] = [(w0, b0), (w2, b2), (w5, b5)].map(|(w, b)| gpu.channels(w, b).unwrap());
         let mb = up(gpu, &mel);
@@ -2288,6 +2353,7 @@ mod tests {
         assert_close(&got, &want);
       }
     }
+
     for gpu in gpus() {
       let xb = up(gpu, &x);
       assert_close(&run(gpu, &vec![0.0; flat.len()], |p, y| p.flatten(&xb, y, t, f, ch)), &flat);
@@ -2310,12 +2376,14 @@ mod tests {
           if i >= 2 * heads * hd || d >= rot {
             return x[e];
           }
+
           let t = &table[(pos + r) * rot..];
           // The pair's index, and whether d is its first; the other is `step` away.
           let (pair, first, step) = match neox {
             false => (d / 2, d % 2 == 0, 1),
             true => (d % (rot / 2), d < rot / 2, rot / 2),
           };
+
           let (c, s) = (t[pair], t[rot / 2 + pair]);
           if first { x[e] * c - x[e + step] * s } else { x[e - step] * s + x[e] * c }
         })
@@ -2339,14 +2407,17 @@ mod tests {
     let rstd = 1.0 / (var + 1e-5).sqrt();
     let norm: Vec<f32> =
       x.iter().enumerate().map(|(i, v)| (v - mean) * rstd * w[i % ch] + b[i % ch]).collect();
+
     // One row of 300 values and 300 gates, in place: the gates stay.
     let h = &x[..600];
     let glu: Vec<f32> =
       (0..600).map(|i| if i < 300 { h[i] * silu(h[300 + i]) } else { h[i] }).collect();
+
     // The largest value twice: the lower index wins.
     let mut logits = random(1000, 35);
     logits[700] = 2.0;
     logits[300] = 2.0;
+
     for gpu in gpus() {
       let c = gpu.channels(&w, &b).unwrap();
       assert_close(&run(gpu, &x, |p, xb| p.group_norm(xb, &c, t, ch, 1e-5)), &norm);

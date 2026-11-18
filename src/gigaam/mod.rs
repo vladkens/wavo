@@ -62,6 +62,7 @@ fn config(g: &Gguf) -> Result<Config> {
   g.check("stt.frontend.n_fft", &[frontend::N_FFT as u32])?;
   g.check("stt.frontend.win_length", &[frontend::N_FFT as u32])?;
   g.check("stt.frontend.hop_length", &[frontend::HOP as u32])?;
+
   let u = |key: &str| g.get::<u32>(&format!("stt.gigaam.{key}")).map(|v| v as usize);
   let cfg = conformer::Config::load(g, "gigaam", Attention::Rotary, true)?;
   let d = cfg.d;
@@ -74,6 +75,7 @@ fn config(g: &Gguf) -> Result<Config> {
     }
     _ => bail!("stt.gigaam.head_kind is {kind:?}, only \"rnnt\" and \"ctc\" are supported"),
   };
+
   Ok(Config {
     conformer: cfg,
     mels: g.get::<u32>("stt.frontend.num_mels")? as usize,
@@ -107,6 +109,7 @@ impl Gigaam {
     if tok.len() != classes || blank >= classes {
       bail!("vocabulary of {} tokens, {classes} classes, blank {blank}", tok.len());
     }
+
     let head = if cfg.rnnt {
       g.check("stt.gigaam.joint.activation", &["relu"])?;
       g.check("stt.gigaam.predictor.n_layers", &[1u32])?;
@@ -116,6 +119,7 @@ impl Gigaam {
     } else {
       Head::Ctc { blank }
     };
+
     let frontend = Frontend::new(g, cfg.mels)?;
     let backend = Backend::new(
       target,
@@ -141,15 +145,18 @@ impl Gigaam {
     if mel.is_empty() {
       return Ok(Transcript::default());
     }
+
     let enc = match &self.backend {
       Backend::Gpu(gpu) => gpu.1.run(&gpu.0, &mel)?,
       Backend::Ane(model) => ane::run(model, &mel, self.frontend.mels())?,
       Backend::Cpu(encoder) => encoder.run(&mel),
     };
+
     let ids = match &self.head {
       Head::Rnnt(decoder) => decoder.decode(&enc),
       Head::Ctc { blank } => decoder::ctc(&enc, self.tok.len(), *blank),
     };
+
     let (ids, frames): (Vec<usize>, Vec<u32>) =
       ids.into_iter().map(|(id, frame)| (id as usize, frame)).unzip();
     let pieces = self.tok.pieces(&ids);

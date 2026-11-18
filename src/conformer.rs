@@ -39,6 +39,7 @@ impl Config {
       "batch_norm" => ConvNorm::Affine,
       other => bail!("unsupported conv_norm_type {other:?}"),
     };
+
     let cfg = Self {
       layers: u("n_layers")?,
       d: u("d_model")?,
@@ -54,9 +55,11 @@ impl Config {
     if !d.is_multiple_of(heads) || d > 1024 || hd > 128 || !hd.is_multiple_of(2) {
       bail!("unsupported attention shape: d_model {d}, {heads} heads");
     }
+
     if cfg.kernel.is_multiple_of(2) {
       bail!("conv kernel {}: only odd kernels are supported", cfg.kernel);
     }
+
     Ok(cfg)
   }
 
@@ -123,6 +126,7 @@ pub fn linear(gpu: &Gpu, g: &Gguf, names: &[String], dims: &[usize], bias: bool)
   for p in names.iter().filter(|_| bias) {
     b.extend(g.tensor(&format!("{p}.bias"), &dims[dims.len() - 1..])?.to_f32()?);
   }
+
   gpu.linear(&w.collect::<Result<Vec<_>>>()?, &b)
 }
 
@@ -202,6 +206,7 @@ impl Block {
         }
       }
     };
+
     let conv_norm = match c.conv_norm {
       ConvNorm::LayerNorm => norm("conv.ln")?,
       ConvNorm::Affine => {
@@ -209,6 +214,7 @@ impl Block {
         gpu.channels(&scale, &shift)?
       }
     };
+
     let dw_b = if c.bias { f32s("conv.depthwise.bias", &[d])? } else { vec![0.0; d] };
     let dw = gpu.channels(&f32s("conv.depthwise.weight", &[c.kernel, 1, d])?, &dw_b)?;
     Ok(Self {
@@ -249,6 +255,7 @@ impl Block {
         p.attention(&b.qk, None, Some(&b.yr), &b.s, y, t, c.heads, hd);
       }
     }
+
     p.gemm(y, &self.out, x, t, Epilogue::Residual(1.0));
 
     p.layer_norm(x, &self.norm_conv, y, t, d, None);
