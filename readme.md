@@ -96,7 +96,7 @@ services:
     devices:
       - /dev/dri:/dev/dri # Intel or AMD GPU
     group_add:
-      - "109" # the host's group of the GPU: stat -c %g /dev/dri/renderD128
+      - "993" # yours: stat -c %g /dev/dri/renderD128 (without it, no GPU)
     # gpus: all         # NVIDIA, with its Container Toolkit, instead of devices (untested)
     volumes:
       - wavo:/home/wavo/.cache # the models
