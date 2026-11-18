@@ -1483,7 +1483,7 @@ impl<'a> Pass<'a> {
 
   /// Attention of one query per head, `q` `[heads · head_dim]`, over keys 0..n of an F16 cache of
   /// `cols` positions (see `pack`) into `o`, through `part` (`attend_len` floats).
-  #[allow(clippy::too_many_arguments)]
+  #[expect(clippy::too_many_arguments, reason = "the kernel's bindings and dims")]
   pub fn attend(
     &mut self,
     q: &Buffer,
@@ -1506,7 +1506,6 @@ impl<'a> Pass<'a> {
   /// floats, into the F16 cache `y` of `cols` positions at positions `col..`. The cache holds K
   /// transposed (pair i of position j at word i·cols + j), then V by position (word d/2·cols +
   /// j·d/2 + i).
-  #[allow(clippy::too_many_arguments)]
   pub fn pack(
     &mut self,
     x: &Buffer,
@@ -1534,7 +1533,7 @@ impl<'a> Pass<'a> {
 
   /// Conformer conv module between the pointwise convs: GLU, depthwise conv (odd `kernel`,
   /// centred) + bias, `norm`, SiLU. `h` is `[t][2·ch]`, `y` is `[t][ch]`.
-  #[allow(clippy::too_many_arguments)]
+  #[expect(clippy::too_many_arguments, reason = "the kernel's bindings and dims")]
   pub fn conv_glu(
     &mut self,
     h: &Buffer,
@@ -1563,7 +1562,7 @@ impl<'a> Pass<'a> {
   /// − i + t + 15]) / √head_dim`. `s` holds `scores_len` floats. Apple's fast path reads rows of
   /// `qk` and `v` up to `t` rounded up to 64, which must be finite, and with heads of 4·(2k + 1)
   /// dims 4 floats past the last row of `v`.
-  #[allow(clippy::too_many_arguments)]
+  #[expect(clippy::too_many_arguments, reason = "the kernel's bindings and dims")]
   pub fn attention(
     &mut self,
     qk: &Buffer,
@@ -1606,7 +1605,7 @@ impl<'a> Pass<'a> {
   /// stride-2 conv from the one-channel image `x` `[t][f]` to ch channels that is never stored,
   /// and `y` gets `rows` rows of `[⌈f/4⌉][ch]`, the output rows from 2·t0 − 1 on, those from
   /// ⌈t/4⌉ on zero.
-  #[allow(clippy::too_many_arguments)]
+  #[expect(clippy::too_many_arguments, reason = "the kernel's bindings and dims")]
   pub fn depthwise(
     &mut self,
     x: &Buffer,

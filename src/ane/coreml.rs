@@ -72,7 +72,7 @@ pub fn chip() -> String {
 /// a temporary folder.
 pub fn compile(package: &Path) -> Result<PathBuf> {
   autoreleasepool(|_| {
-    #[allow(deprecated)] // the replacement takes a completion block
+    #[expect(deprecated, reason = "the replacement takes a completion block")]
     let out = unsafe { MLModel::compileModelAtURL_error(&url(package)) };
     let out = out.map_err(|e| error("compiling the Core ML model", e))?;
     let path =
@@ -155,7 +155,7 @@ fn array(shape: &[usize], data: &[f32]) -> Result<Retained<MLMultiArray>> {
     )
   };
   let array = array.map_err(|e| error("Core ML input array", e))?;
-  #[allow(deprecated)] // the replacements take blocks
+  #[expect(deprecated, reason = "the replacements take blocks")]
   let ptr = unsafe { array.dataPointer() }.cast::<f16>();
   let out = unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr(), data.len()) };
   out.iter_mut().zip(data).for_each(|(y, &x)| *y = f16::from_f32(x));
@@ -169,7 +169,7 @@ fn read(array: &MLMultiArray) -> Vec<f32> {
     unsafe { (dims(array.shape()), dims(array.strides())) };
   let (rows, cols) = (shape[shape.len() - 2], shape[shape.len() - 1]);
   let row_stride = strides[strides.len() - 2];
-  #[allow(deprecated)]
+  #[expect(deprecated, reason = "the replacements take blocks")]
   let ptr = unsafe { array.dataPointer() };
   let len = (rows - 1) * row_stride + cols;
   let mut out = Vec::with_capacity(rows * cols);

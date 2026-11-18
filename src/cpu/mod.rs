@@ -50,7 +50,7 @@ fn vnni() -> &'static str {
     Some(x86::Vnni::Avx512) => ", AVX512-VNNI",
     None => "",
   };
-  #[allow(unreachable_code)]
+  #[cfg_attr(target_arch = "x86_64", expect(unreachable_code, reason = "x86_64 returns above"))]
   ""
 }
 

@@ -224,7 +224,7 @@ fn to_half(x: f32) -> f32 {
 /// the L2 cache into its `scratch` (made for so many panels) with `pack(scratch, index in the
 /// group, panel)`, then takes `tile(scratch, index in the group, first row, end of its rows)` over
 /// a range of rows, `MR` rows at a time.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the product, then the three steps of a job")]
 fn jobs<S>(
   l: &Linear,
   c: &mut [f32],
@@ -361,7 +361,7 @@ fn tile(a: [&[f32]; MR], b: &[f32], k: usize) -> [[f32; NR]; MR] {
 
   #[cfg(target_arch = "aarch64")]
   return neon::tile(a, b, k);
-  #[allow(unreachable_code)]
+  #[cfg_attr(target_arch = "aarch64", expect(unreachable_code, reason = "NEON returns above"))]
   {
     let mut acc = [[0.0; NR]; MR];
     for (kk, b) in b.as_chunks::<NR>().0.iter().take(k).enumerate() {
