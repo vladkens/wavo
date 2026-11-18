@@ -46,6 +46,9 @@ at a time: port it, match the reference exactly, make it fast, move on. Tick a p
       and `wavo run --diarize` on the GPU or the CPU, 1.5× parakeet.cpp's speed on Metal on an M5
       (#100); OpenAI's `diarized_json` in `wavo serve`.
       [Plan](plans/completed/20261110-diarization.md)
+- [x] **Docker image** `ghcr.io/vladkens/wavo`, x86_64 and arm64, pushed on main and on release:
+      Intel and AMD GPUs through `/dev/dri` on x86_64, else the CPU; on an N100 as fast as outside
+      it (#116).
 
 Open:
 
@@ -58,7 +61,7 @@ Open:
   rest of the [speed plan](plans/20261012-speed.md), the tier on AMD and Intel Arc, and the Linux
   plan's portable-encoder items. On Apple M5 and newer the GEMM runs on the Metal 4 tensor API:
   GigaAM, Parakeet and Whisper 1.5–1.9× faster there, ahead of transcribe.cpp on every model.
-- **Server, more:** a Docker image and the Wyoming protocol (Home Assistant).
+- **Server, more:** the Wyoming protocol (Home Assistant).
 - **Diarization, more:** the low-latency streaming presets, the Neural Engine (fixed shapes).
 - **Fast build.** The in-house FFT replaced `rustfft` (#15); left: wgpu features per target.
   [Plan](plans/20261010-fast-build.md)
