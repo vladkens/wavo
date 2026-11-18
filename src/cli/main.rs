@@ -215,6 +215,13 @@ fn ask(question: &str) -> bool {
 }
 
 fn load(path: &Path, backend: Backend) -> Result<wavo::Model> {
+  // A GPU this user may not open, as in a container without --group-add: once, not per load.
+  #[cfg(target_os = "linux")]
+  if backend != Backend::Cpu {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| debug::denied().into_iter().for_each(|w| eprintln!("warning: {w}")));
+  }
+
   wavo::Model::load_with(path, backend).with_context(|| format!("loading {}", path.display()))
 }
 

@@ -79,7 +79,7 @@ A server without a GPU runs every model on the CPU, with the same text: 30s of R
 <details>
 <summary>Docker</summary>
 
-The image `ghcr.io/vladkens/wavo`, for x86_64 and arm64, has Mesa's Vulkan drivers for Intel and AMD GPUs. wavo runs as the user `wavo` (uid 1000), not root: `--device /dev/dri` with `--group-add` of the host's group of `/dev/dri/renderD128` passes the GPU; without one wavo runs on the CPU. Keep `/home/wavo/.cache` in a volume: it holds the models and the driver's compiled kernels, which otherwise take seconds at every start.
+The image `ghcr.io/vladkens/wavo`, for x86_64 and arm64, has Mesa's Vulkan drivers for Intel and AMD GPUs. wavo runs as the user `wavo` (uid 1000), not root: `--device /dev/dri` with `--group-add` of the host's group of `/dev/dri/renderD128` passes the GPU (without that group, wavo warns with its number and runs on the CPU); without a GPU wavo runs on the CPU. Keep `/home/wavo/.cache` in a volume: it holds the models and the driver's compiled kernels, which otherwise take seconds at every start.
 
 ```sh
 docker run --rm --device /dev/dri --group-add "$(stat -c %g /dev/dri/renderD128)" \
@@ -96,7 +96,7 @@ services:
     devices:
       - /dev/dri:/dev/dri # Intel or AMD GPU
     group_add:
-      - "993" # yours: stat -c %g /dev/dri/renderD128 (without it, no GPU)
+      - "993" # yours: stat -c %g /dev/dri/renderD128
     # gpus: all         # NVIDIA, with its Container Toolkit, instead of devices (untested)
     volumes:
       - wavo:/home/wavo/.cache # the models

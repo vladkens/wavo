@@ -392,19 +392,34 @@ fn system() -> System {
 /// Why Linux may hide the GPU: no render node, or none this user may open.
 #[cfg(target_os = "linux")]
 fn dri() -> Option<String> {
-  let nodes = std::fs::read_dir("/dev/dri").into_iter().flatten().flatten().map(|e| e.path());
-  let nodes: Vec<_> =
-    nodes.filter(|p| p.to_string_lossy().starts_with("/dev/dri/renderD")).collect();
-  let Some(first) = nodes.first() else {
+  if render_nodes().is_empty() {
     return Some(
       "no /dev/dri/renderD*: no GPU driver loaded, or a container without --device /dev/dri".into(),
     );
-  };
+  }
 
+  denied()
+}
+
+#[cfg(target_os = "linux")]
+fn render_nodes() -> Vec<std::path::PathBuf> {
+  let nodes = std::fs::read_dir("/dev/dri").into_iter().flatten().flatten().map(|e| e.path());
+  nodes.filter(|p| p.to_string_lossy().starts_with("/dev/dri/renderD")).collect()
+}
+
+/// GPU render nodes that this user may open none of, as in a container without `--group-add`:
+/// wavo then runs on the CPU. The fix, with the nodes' group.
+#[cfg(target_os = "linux")]
+pub fn denied() -> Option<String> {
+  use std::os::unix::fs::MetadataExt;
+  let nodes = render_nodes();
+  let first = nodes.first()?;
   let open = |p| std::fs::OpenOptions::new().read(true).write(true).open(p);
   let errors: Vec<_> = nodes.iter().map(open).filter_map(Result::err).collect();
   let err = errors.first().filter(|_| errors.len() == nodes.len())?;
-  let fix = "sudo usermod -aG render,video $USER, then log in again";
+  let gid = std::fs::metadata(first).map_or(0, |m| m.gid());
+  let fix =
+    format!("sudo usermod -aG render,video $USER, then log in again; in Docker, --group-add {gid}");
   Some(format!("can't open {}: {err}; {fix}", first.display()))
 }
 
