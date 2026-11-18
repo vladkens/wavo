@@ -1,9 +1,10 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! `wavo serve` end to end: started on a free port with a smoke model (`make models`), it must
 //! answer curl's uploads with the text `wavo run` prints, for the model it was started with and
-//! for one it loads on demand, and Bazarr's `POST /asr` with its subtitles, `POST /detect-language`
-//! and `GET /status`; with `--unload-after 0` it frees its model and an on-demand one after their
-//! requests, and loads its model again for `/asr`, `/detect-language` and transcriptions.
+//! for one it loads on demand, without one named as `wavo run` picks it, and Bazarr's `POST /asr`
+//! with its subtitles, `POST /detect-language` and `GET /status`; with `--unload-after 0` it frees
+//! its model and an on-demand one after their requests, and loads its model again for `/asr`,
+//! `/detect-language` and transcriptions.
 #![cfg(feature = "cli")]
 
 use std::io::{BufRead, BufReader};
@@ -74,9 +75,10 @@ fn transcribes_like_run() {
     assert_eq!(served, run, "{model}");
   }
 
+  // No wavo model named: the downloaded one for the language spoken, as wavo run picks it.
   let json = post(&[&file, "model=whisper-1"]);
-  let text = output(Command::new(WAVO).args(["run", "whisper-tiny"]).arg(&jfk));
-  assert_eq!(json, format!("{{\"text\": \"{}\"}}\n", text.trim_end()), "the default model");
+  let text = output(Command::new(WAVO).arg("run").arg(&jfk));
+  assert_eq!(json, format!("{{\"text\": \"{}\"}}\n", text.trim_end()), "the model for English");
 
   // As Bazarr sends it: the WAV's samples without the header.
   let wav = std::fs::read(&jfk).unwrap();
@@ -117,7 +119,7 @@ fn frees_idle_models() {
   let (file, audio_file) =
     (format!("file=@{}", jfk().display()), format!("audio_file=@{}", jfk().display()));
 
-  let first = post("/v1/audio/transcriptions", &[&file]);
+  let first = post("/v1/audio/transcriptions", &[&file, "model=whisper-tiny"]);
   assert!(freed(), "still loaded 5 s after the request: {}", health());
   let asr = post("/asr?output=txt", &[&audio_file]);
   assert_eq!(first, format!("{{\"text\": \"{}\"}}\n", asr.trim_end()), "/asr loaded it again");
@@ -128,5 +130,6 @@ fn frees_idle_models() {
   let moonshine = post("/v1/audio/transcriptions", &[&file, "model=moonshine-tiny"]);
   assert!(moonshine.contains("country"), "{moonshine}");
   assert!(freed(), "moonshine-tiny still loaded 5 s after its request: {}", health());
-  assert_eq!(post("/v1/audio/transcriptions", &[&file]), first, "loaded again");
+  let again = post("/v1/audio/transcriptions", &[&file, "model=whisper-tiny"]);
+  assert_eq!(again, first, "loaded again");
 }

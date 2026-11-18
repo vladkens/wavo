@@ -9,6 +9,7 @@ macro_rules! out {
 }
 
 mod audio;
+mod auto;
 mod debug;
 mod http;
 mod lid;
@@ -32,20 +33,23 @@ const USAGE: &str = "\
 Usage: wavo COMMAND ...
 
 Commands:
-  run [MODEL] AUDIO [OPTIONS]  transcribe AUDIO with MODEL (parakeet-ultra by default)
+  run [MODEL] AUDIO [OPTIONS]  transcribe AUDIO with MODEL (by default the downloaded one
+                               for the language spoken)
   pull MODEL...                download models
   list                         list downloaded models
   rm MODEL                     delete a downloaded model
   bench MODEL AUDIO [-n N]     time the model load, the first call and N more calls (10);
                                takes --backend and --device too
-  serve [MODEL...] [OPTIONS]   serve the models (parakeet-ultra by default; the first
-                               answers unknown model names) over OpenAI's transcription API
+  serve [MODEL...] [OPTIONS]   serve the models (parakeet-ultra by default; unknown model
+                               names get the downloaded one for the language) over OpenAI's
+                               transcription API
   devices                      list the GPUs, numbered for --device
   debug                        print the system, its GPUs and the models, for a bug report
 
 Quick start:
-  wavo AUDIO [OPTIONS]         the same as wavo run AUDIO: transcribe with parakeet-ultra,
-                               offering to download it first if it is missing
+  wavo AUDIO [OPTIONS]         the same as wavo run AUDIO: transcribe with the downloaded
+                               model for the language spoken; with none downloaded, with
+                               parakeet-ultra, offering to download it first
 
 Run options:
   --json                       print the text, its language and its tokens with start times
@@ -328,8 +332,8 @@ fn run(args: &[&str]) -> Result<()> {
     [arg] if hub::lookup(arg).is_ok() && !Path::new(arg).exists() => {
       bail!("no audio file given: wavo run {arg} AUDIO")
     }
-    [audio] => (models::DEFAULT, audio),
-    [model, audio] if !audio_like(model) => (model, audio),
+    [audio] => (None, audio),
+    [model, audio] if !audio_like(model) => (Some(model), audio),
     [audio, model] if !audio_like(model) => {
       bail!("the model comes first: wavo run {model} {audio}")
     }
@@ -345,6 +349,17 @@ fn run(args: &[&str]) -> Result<()> {
     meta => meta.with_context(|| format!("reading {audio}"))?,
   };
   ensure!(!meta.is_dir(), "{audio}: a folder, not an audio file");
+  // Without a model named, the downloaded one for the language spoken; with none, the default.
+  let model = match model {
+    Some(model) => model,
+    None => {
+      let pcm = audio::read(audio)?;
+      let detector = |m: &hub::ModelInfo| load(&model_path(m.name, Download::Never, on)?, on);
+      let language = options.language.as_deref();
+      let chosen = auto::choose(&pcm, language, on, diarize, detector, |x| x)?;
+      chosen.inspect(|m| eprintln!("using {}", m.name)).map_or(models::DEFAULT, |m| m.name)
+    }
+  };
   // The family, from the name or a .gguf file's header, so that wrong options fail before a
   // download is offered.
   let arch = match hub::lookup(model) {
