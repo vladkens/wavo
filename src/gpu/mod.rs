@@ -10,7 +10,10 @@ use wgpu::BindGroup;
 pub use wgpu::Buffer;
 
 use crate::error::{Error, Result, bail};
-use crate::gguf::{Tensor, Type};
+use crate::gguf::{Tensor, Type, q4_0_packed, q4_1_packed, q5_1_packed, q5_packed};
+
+/// Pipeline order: F32, F16, Q8_0, Q5_0, Q4_0, Q4_1, Q5_1.
+const WEIGHT_TYPES: usize = 7;
 
 type Pipeline = wgpu::ComputePipeline;
 
@@ -235,6 +238,55 @@ pub struct Gpu {
   failure: Arc<Mutex<Option<String>>>,
   /// The tensor GEMM's input as f16, grown to the largest so far (bind groups keep older ones).
   halves: Mutex<Option<Buffer>>,
+  /// Linear uploads, when a test asked for them before this device was created.
+  #[cfg(all(test, feature = "hub"))]
+  packed: Option<Arc<Mutex<Vec<WeightBytes>>>>,
+}
+
+/// One linear upload. `weight` and `scales` are the resident buffer sizes, including rows padded
+/// to a multiple of 64.
+#[cfg(all(test, feature = "hub"))]
+pub(crate) struct WeightBytes {
+  /// Rows stored, before that pad.
+  pub rows: usize,
+  /// Rows allocated.
+  pub n: usize,
+  /// Weights in a row.
+  pub k: usize,
+  /// GEMM index: 0 F32, 1 F16, 2 Q8_0, 3 Q5_0, 4 Q4_0, 5 Q4_1, 6 Q5_1.
+  pub ty: usize,
+  /// Bytes of the weight buffer.
+  pub weight: u64,
+  /// Bytes of the scale buffer, 0 when the type has none.
+  pub scales: u64,
+}
+
+#[cfg(all(test, feature = "hub"))]
+thread_local! {
+  static PACK_NEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The next device records each linear upload into [`Gpu::weight_bytes`].
+#[cfg(all(test, feature = "hub"))]
+pub(crate) fn record_weights() -> WeightGuard {
+  PACK_NEXT.with(|c| c.set(true));
+  WeightGuard
+}
+
+/// Clears [`record_weights`] if the device was never created.
+#[cfg(all(test, feature = "hub"))]
+pub(crate) struct WeightGuard;
+
+#[cfg(all(test, feature = "hub"))]
+impl Drop for WeightGuard {
+  fn drop(&mut self) {
+    PACK_NEXT.with(|c| c.set(false));
+  }
+}
+
+#[cfg(all(test, feature = "hub"))]
+fn armed_weights() -> Option<Arc<Mutex<Vec<WeightBytes>>>> {
+  PACK_NEXT.with(|c| c.take().then(|| Arc::new(Mutex::new(Vec::new()))))
 }
 
 /// The portable kernels, which every adapter runs; `Fast` replaces some of them.
@@ -278,7 +330,7 @@ impl Portable {
     let attention = module(device, include_str!("attention.wgsl"));
     let spatial = module(device, include_str!("spatial.wgsl"));
     Self {
-      gemm: (0..3)
+      gemm: (0..WEIGHT_TYPES)
         .map(|ty| match cpu {
           true => pipeline(device, &gemm, "gemm64", &[("WTYPE", ty as f64)]),
           false => {
@@ -326,7 +378,7 @@ fn compile_fast(device: &wgpu::Device, f: usize) -> Option<FastPipelines> {
     .replace("F: u32 = 8u", &format!("F: u32 = {f}u"))
     .replace("8x8", &format!("{f}x{f}"));
   let gemm = module(device, &source);
-  let gemm: Vec<_> = (0..6)
+  let gemm: Vec<_> = (0..WEIGHT_TYPES * 2)
     .map(|i| {
       let constants = [("WTYPE", (i / 2) as f64), ("ROWS", ((4 * f) << (i % 2)) as f64)];
       pipeline(device, &gemm, "gemm", &constants)
@@ -388,16 +440,22 @@ struct TensorGemm {
 }
 
 /// A linear layer `y = x·Wᵀ + b` with `W` row-major `[n][k]`, kept in its GGUF type. Q8_0 is
-/// stored as int8 data (4 per u32, row-major) plus one f16 scale per 32-weight block.
+/// int8 data (4 per u32) plus one f16 scale per 32 weights. Q5_0 and Q5_1 are 5-bit codes in
+/// weight order, 24 bytes per 32. Q4_0 and Q4_1 are nibbles in weight order, 16 bytes per 32.
+/// Q8_0, Q5_0 and Q4_0 share one f16 scale per block. Q4_1 and Q5_1 store an f16 minimum beside it.
 pub struct Linear {
   /// Rows of `W`, padded to a multiple of 64 for the tile reads.
   n: usize,
   /// Output columns: the rows of `W` when a multiple of 32, else `n`.
   cols: usize,
+  /// GEMM inner size: the stored row rounded up to a multiple of 32.
   k: usize,
+  /// Stored Q4 or Q5 row width when it is shorter than `k`. 0 when the stored row is already
+  /// `k` wide.
+  src_k: usize,
   /// Outputs written a second time after the `cols` others, with their own bias.
   dual: usize,
-  /// GEMM pipeline index: 0: F32, 1: F16, 2: Q8_0
+  /// GEMM pipeline index: 0: F32, 1: F16, 2: Q8_0, 3: Q5_0, 4: Q4_0, 5: Q4_1, 6: Q5_1.
   ty: usize,
   weight: Buffer,
   scales: Option<Buffer>,
@@ -553,6 +611,8 @@ impl Gpu {
       busy: Mutex::new(()),
       failure,
       halves: Mutex::new(None),
+      #[cfg(all(test, feature = "hub"))]
+      packed: armed_weights(),
     };
     if let (Some(size), Some(compiled)) = (size, compiled) {
       gpu.fast = gpu.probe(size, compiled);
@@ -596,7 +656,7 @@ impl Gpu {
     else {
       return false;
     };
-    let l = Linear { n, cols: n, k, dual: 0, ty: 1, weight, scales: None, bias };
+    let l = Linear { n, cols: n, k, src_k: 0, dual: 0, ty: 1, weight, scales: None, bias };
     let (c, read) = (self.buffer(m * n), self.readback(m * n));
     let got =
       self.run(&mut Vec::new(), &c, &read, m * n, |p| p.gemm(&a, &l, &c, m, Epilogue::Bias));
@@ -618,8 +678,11 @@ impl Gpu {
   /// The probes run in one submission; a device error turns them all off.
   fn probe(&self, size: usize, compiled: FastPipelines) -> Fast {
     let (gemm, [layer_norm, conv_glu, attention, relative]) = compiled;
-    // Per kernel: bindings, the output's, params and subgroups.
-    let mut probes: Vec<_> = gemm.into_iter().map(|k| (Some(k), 5, 2, 6, 4.0)).collect();
+    let n_gemm = gemm.len();
+    // Per kernel: bindings, the output's, params and subgroups. The fast GEMM
+    // shader's immediate struct is eight words; Q4 and Q5 read `src_k`, and wgpu
+    // rejects a dispatch that leaves a read slot unset.
+    let mut probes: Vec<_> = gemm.into_iter().map(|k| (Some(k), 5, 2, 8, 4.0)).collect();
     probes.extend([
       (layer_norm, 6, 3, 4, 4.0),
       (conv_glu, 6, 5, 6, 4.0),
@@ -655,8 +718,8 @@ impl Gpu {
       k.filter(|_| got.get(2 * i..2 * i + 2) == Some(&[32.0, subgroups][..]))
     });
     let mut next = || kept.next().flatten();
-    // All six GEMMs are taken before any is checked, so the kernels after them stay in place.
-    let gemm: Vec<_> = (0..6).map(|_| next()).collect();
+    // Every GEMM is taken before any is checked, so the kernels after them stay in place.
+    let gemm: Vec<_> = (0..n_gemm).map(|_| next()).collect();
     let gemm: Option<Vec<_>> = gemm.into_iter().collect();
     let (layer_norm, conv_glu, attention, relative) = (next(), next(), next(), next());
     Fast {
@@ -760,9 +823,11 @@ impl Gpu {
   }
 
   /// A conv1d weight `[kernel, ch, out]` as a linear layer over the columns of `Pass::im2col`,
-  /// whose rows are padded with zeros to a multiple of 32, the GEMM's k step. W's rows get the
-  /// same zero columns (an 80-mel conv: 240 → 256) in F32, which is exact as the GEMM rounds W to
-  /// f16 either way.
+  /// whose rows are padded with zeros to a multiple of 32, the GEMM's k step. F32, F16, and Q8_0
+  /// rows gain those zero columns in F32 (an 80-mel conv: 240 → 256), which is exact as the GEMM
+  /// rounds W to f16 either way. Q4 and Q5 stay packed: the GEMM reads the file's blocks and
+  /// treats the extra columns as zero. A Q4 or Q5 row whose flat length is not a whole number of
+  /// blocks is rejected.
   pub fn conv(&self, weight: Tensor, bias: &[f32]) -> Result<Linear> {
     self.upload_linear(&[weight], bias, true)
   }
@@ -781,10 +846,19 @@ impl Gpu {
     let n = rows.next_multiple_of(64);
     let cols = if rows.is_multiple_of(32) { rows } else { n };
     let kp = k.next_multiple_of(32);
+    // Q4 and Q5 conv rows stay in file order. `src_k` is that width; the GEMM's `k` stays `kp`.
+    let packed =
+      w0.ty == Type::Q4_0 || w0.ty == Type::Q4_1 || w0.ty == Type::Q5_0 || w0.ty == Type::Q5_1;
+    let src_k = if kp != k && packed { k } else { 0 };
+    if src_k != 0 && !(rows * k).is_multiple_of(32) {
+      bail!("quantized conv {k}×{rows} is not a whole number of blocks");
+    }
+    // One spare block so a scalar lane can read the 4-wide word that holds the last codes.
+    let tail = usize::from(src_k != 0);
     // The file is streamed in pieces of 8192 Q8_0 blocks straight into the mapped buffers.
     const PIECE: usize = 34 << 13;
     let (ty, weight, scales) = match w0.ty {
-      _ if kp != k => {
+      _ if kp != k && src_k == 0 => {
         let mut padded = vec![0f32; rows * kp];
         let w = weights.iter().map(|w| w.to_f32()).collect::<Result<Vec<_>>>()?;
         for (row, w) in padded.chunks_mut(kp).zip(w.iter().flat_map(|w| w.chunks(k))) {
@@ -821,6 +895,86 @@ impl Gpu {
         }
         (2, self.filled(dv), Some(self.filled(sv)))
       }
+      Type::Q5_0 => {
+        // 24 bytes of codes per block, and the f16 scale. Pieces of 8192 blocks.
+        let (mut dv, mut sv) = (
+          self.fill(n * k / 32 * 24 + tail * 24, rows * k / 32 * 24)?,
+          self.fill(n * k / 16 + tail * 2, rows * k / 16)?,
+        );
+        let mut block = 0;
+        for w in weights {
+          w.read(22 << 13, |i, piece| {
+            let blocks = piece.as_chunks::<22>().0;
+            let (a, b) = (block + i / 22, block + i / 22 + blocks.len());
+            let d = dv.slice(a * 24..b * 24).into_chunks::<24>().0;
+            d.write_iter(blocks.iter().map(q5_packed));
+            let s = sv.slice(a * 2..b * 2).into_chunks::<2>().0;
+            s.write_iter(blocks.iter().map(|q| [q[0], q[1]]));
+          })?;
+          block += w.len() / 32;
+        }
+        (3, self.filled(dv), Some(self.filled(sv)))
+      }
+      Type::Q4_0 => {
+        // 16 bytes of nibbles per block, and the f16 scale. Pieces of 8192 blocks.
+        let (mut dv, mut sv) = (
+          self.fill(n * k / 32 * 16 + tail * 16, rows * k / 32 * 16)?,
+          self.fill(n * k / 16 + tail * 2, rows * k / 16)?,
+        );
+        let mut block = 0;
+        for w in weights {
+          w.read(18 << 13, |i, piece| {
+            let blocks = piece.as_chunks::<18>().0;
+            let (a, b) = (block + i / 18, block + i / 18 + blocks.len());
+            let d = dv.slice(a * 16..b * 16).into_chunks::<16>().0;
+            d.write_iter(blocks.iter().map(q4_0_packed));
+            let s = sv.slice(a * 2..b * 2).into_chunks::<2>().0;
+            s.write_iter(blocks.iter().map(|q| [q[0], q[1]]));
+          })?;
+          block += w.len() / 32;
+        }
+        (4, self.filled(dv), Some(self.filled(sv)))
+      }
+      Type::Q4_1 => {
+        // 16 bytes of nibbles per block, and the f16 scale beside the f16 minimum.
+        let (mut dv, mut sv) = (
+          self.fill(n * k / 32 * 16 + tail * 16, rows * k / 32 * 16)?,
+          self.fill(n * k / 8 + tail * 4, rows * k / 8)?,
+        );
+        let mut block = 0;
+        for w in weights {
+          w.read(20 << 13, |i, piece| {
+            let blocks = piece.as_chunks::<20>().0;
+            let (a, b) = (block + i / 20, block + i / 20 + blocks.len());
+            let d = dv.slice(a * 16..b * 16).into_chunks::<16>().0;
+            d.write_iter(blocks.iter().map(q4_1_packed));
+            let s = sv.slice(a * 4..b * 4).into_chunks::<4>().0;
+            s.write_iter(blocks.iter().map(|q| [q[0], q[1], q[2], q[3]]));
+          })?;
+          block += w.len() / 32;
+        }
+        (5, self.filled(dv), Some(self.filled(sv)))
+      }
+      Type::Q5_1 => {
+        // 24 bytes of codes per block, and the f16 scale beside the f16 minimum.
+        let (mut dv, mut sv) = (
+          self.fill(n * k / 32 * 24 + tail * 24, rows * k / 32 * 24)?,
+          self.fill(n * k / 8 + tail * 4, rows * k / 8)?,
+        );
+        let mut block = 0;
+        for w in weights {
+          w.read(24 << 13, |i, piece| {
+            let blocks = piece.as_chunks::<24>().0;
+            let (a, b) = (block + i / 24, block + i / 24 + blocks.len());
+            let d = dv.slice(a * 24..b * 24).into_chunks::<24>().0;
+            d.write_iter(blocks.iter().map(q5_1_packed));
+            let s = sv.slice(a * 4..b * 4).into_chunks::<4>().0;
+            s.write_iter(blocks.iter().map(|q| [q[0], q[1], q[2], q[3]]));
+          })?;
+          block += w.len() / 32;
+        }
+        (6, self.filled(dv), Some(self.filled(sv)))
+      }
     };
     let dual = bias.len().saturating_sub(rows);
     if !bias.is_empty() && bias.len() < rows || dual > rows {
@@ -830,7 +984,38 @@ impl Gpu {
     let mut padded = vec![0.0; n.max(cols + dual)];
     padded[..own.len()].copy_from_slice(own);
     padded[cols..cols + dual].copy_from_slice(second);
-    Ok(Linear { n, cols, k: kp, dual, ty, weight, scales, bias: self.upload(&padded)? })
+    let bias = self.upload(&padded)?;
+    #[cfg(all(test, feature = "hub"))]
+    self.note_weights(rows, n, k, ty, &weight, scales.as_ref());
+    Ok(Linear { n, cols, k: kp, src_k, dual, ty, weight, scales, bias })
+  }
+
+  #[cfg(all(test, feature = "hub"))]
+  fn note_weights(
+    &self,
+    rows: usize,
+    n: usize,
+    k: usize,
+    ty: usize,
+    weight: &Buffer,
+    scales: Option<&Buffer>,
+  ) {
+    let Some(slot) = &self.packed else { return };
+    slot.lock().unwrap_or_else(PoisonError::into_inner).push(WeightBytes {
+      rows,
+      n,
+      k,
+      ty,
+      weight: weight.size(),
+      scales: scales.map(Buffer::size).unwrap_or(0),
+    });
+  }
+
+  /// The linear uploads recorded for this device, then forgotten.
+  #[cfg(all(test, feature = "hub"))]
+  pub(crate) fn weight_bytes(&self) -> Vec<WeightBytes> {
+    let Some(slot) = &self.packed else { return Vec::new() };
+    std::mem::take(&mut slot.lock().unwrap_or_else(PoisonError::into_inner))
   }
 
   pub fn channels(&self, w: &[f32], b: &[f32]) -> Result<Channels> {
@@ -1209,7 +1394,8 @@ impl Forced {
 fn compile_tensor(device: &wgpu::Device) -> Option<TensorGemm> {
   let scopes = [wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation]
     .map(|f| device.push_error_scope(f));
-  let names = ["cast", "gemm_f32", "gemm_f16", "gemm_q8"];
+  let names =
+    ["cast", "gemm_f32", "gemm_f16", "gemm_q8", "gemm_q5", "gemm_q4", "gemm_q4_1", "gemm_q5_1"];
   let entry_points = names.map(|n| wgpu::PassthroughShaderEntryPoint {
     name: n.into(),
     workgroup_size: (if n == "cast" { 256 } else { 128 }, 1, 1),
@@ -1252,8 +1438,9 @@ fn compile_tensor(device: &wgpu::Device) -> Option<TensorGemm> {
       cache: None,
     })
   };
+  // `cast` takes its length. The GEMM takes m, n, k, mode, alpha, dual, offset, and src_k.
   let cast = pipeline("cast", 2, 1, 4);
-  let gemm = names[1..].iter().map(|n| pipeline(n, 5, 2, 24)).collect();
+  let gemm = names[1..].iter().map(|n| pipeline(n, 5, 2, 32)).collect();
   let errors = scopes.into_iter().rev().filter_map(|s| pollster::block_on(s.pop())).count();
   (errors == 0).then_some(TensorGemm { cast, gemm })
 }
@@ -1286,7 +1473,7 @@ fn pipeline(
 
 /// The `entry` specialized for each weight type.
 fn gemms(device: &wgpu::Device, module: &wgpu::ShaderModule, entry: &str) -> Vec<Pipeline> {
-  (0..3).map(|ty| pipeline(device, module, entry, &[("WTYPE", ty as f64)])).collect()
+  (0..WEIGHT_TYPES).map(|ty| pipeline(device, module, entry, &[("WTYPE", ty as f64)])).collect()
 }
 
 /// Records kernel dispatches into a compute pass.
@@ -1395,8 +1582,9 @@ impl<'a> Pass<'a> {
   pub fn gemm(&mut self, a: &Buffer, l: &Linear, c: &Buffer, m: usize, epilogue: Epilogue) {
     let gpu = self.gpu;
     let [mode, alpha] = epilogue.params();
-    let params = [m as u32, l.cols as u32, l.k as u32, mode, alpha, l.dual as u32];
-    // Only Q8_0 reads scales; other types bind the bias in their place.
+    let params =
+      [m as u32, l.cols as u32, l.k as u32, mode, alpha, l.dual as u32, 0, l.src_k as u32];
+    // Quantized types read scales; F32 and F16 bind the bias in their place.
     let scales = l.scales.as_ref().unwrap_or(&l.bias);
     if let Some(t) = &gpu.fast.tensor {
       // The tensor GEMM reads a as f16 from device memory (k is a multiple of 32 by `linear`).
@@ -1461,7 +1649,7 @@ impl<'a> Pass<'a> {
   /// `c[offset..]` = `epilogue(a·Wᵀ + b)` for one row `a`, W not rounded to f16.
   pub fn gemv(&mut self, a: &Buffer, l: &Linear, c: &Buffer, epilogue: Epilogue, offset: usize) {
     let [mode, alpha] = epilogue.params();
-    let params = [1, l.cols as u32, l.k as u32, mode, alpha, 0, offset as u32];
+    let params = [1, l.cols as u32, l.k as u32, mode, alpha, 0, offset as u32, l.src_k as u32];
     let buffers = [a, &l.bias, c, &l.weight, l.scales.as_ref().unwrap_or(&l.bias)];
     self.run(&self.gpu.decoder().gemv[l.ty], &buffers, &params, [l.cols / 32, 1, 1]);
   }
@@ -1476,7 +1664,7 @@ impl<'a> Pass<'a> {
     (ids, i): (&Buffer, usize),
     offset: usize,
   ) {
-    let params = [i as u32, l.n as u32, l.k as u32, 0, 0, 0, offset as u32];
+    let params = [i as u32, l.n as u32, l.k as u32, 0, 0, 0, offset as u32, l.src_k as u32];
     let buffers = [pos, &l.bias, c, &l.weight, l.scales.as_ref().unwrap_or(&l.bias), ids];
     self.run(&self.gpu.decoder().embed[l.ty], &buffers, &params, [l.k.div_ceil(256), 1, 1]);
   }
@@ -1685,7 +1873,7 @@ mod tests {
   use half::f16;
 
   use super::*;
-  use crate::gguf::Gguf;
+  use crate::gguf::{Gguf, quantize_q4_0, quantize_q4_1, quantize_q5_0, quantize_q5_1};
 
   /// The portable path, then the fast one (also portable where the adapter doesn't offer it).
   fn gpus() -> &'static [Gpu; 2] {
@@ -1796,8 +1984,9 @@ mod tests {
     Epilogue::Tanh,
   ];
 
-  /// A random [n][k] weight as F32, F16 and Q8_0 GGUF tensor data.
-  fn weights(n: usize, k: usize) -> [(Type, Vec<u8>); 3] {
+  /// A random [n][k] weight as each GGUF type the GEMM loads. The block-32 types are empty unless
+  /// `n * k` is a multiple of 32.
+  fn weights(n: usize, k: usize) -> [(Type, Vec<u8>); 7] {
     let w = random(n * k, 1);
     let f32s: Vec<u8> = bytemuck::cast_slice(&w).to_vec();
     let f16s: Vec<u8> = w.iter().flat_map(|x| f16::from_f32(*x).to_le_bytes()).collect();
@@ -1808,7 +1997,18 @@ mod tests {
         f16::from_f32(d).to_le_bytes().into_iter().chain(q)
       })
       .collect();
-    [(Type::F32, f32s), (Type::F16, f16s), (Type::Q8_0, q8)]
+    let quant = |quantize: fn(&[f32]) -> Vec<u8>| {
+      if (n * k).is_multiple_of(32) { quantize(&w) } else { Vec::new() }
+    };
+    [
+      (Type::F32, f32s),
+      (Type::F16, f16s),
+      (Type::Q8_0, q8),
+      (Type::Q5_0, quant(quantize_q5_0)),
+      (Type::Q4_0, quant(quantize_q4_0)),
+      (Type::Q4_1, quant(quantize_q4_1)),
+      (Type::Q5_1, quant(quantize_q5_1)),
+    ]
   }
 
   #[test]
@@ -1895,9 +2095,21 @@ mod tests {
           f16::from_f32(d).to_le_bytes().into_iter().chain(q)
         })
         .collect();
+      let q5 = quantize_q5_0(&w);
+      let q4 = quantize_q4_0(&w);
+      let q41 = quantize_q4_1(&w);
+      let q51 = quantize_q5_1(&w);
       // Each weight is stored as two halves stacked along n, like q over k.
       let wd = [k, n / 2];
-      for (ty, bytes) in [(Type::F32, f32s), (Type::F16, &f16s), (Type::Q8_0, &q8)] {
+      for (ty, bytes) in [
+        (Type::F32, f32s),
+        (Type::F16, &f16s),
+        (Type::Q8_0, &q8),
+        (Type::Q5_0, &q5),
+        (Type::Q4_0, &q4),
+        (Type::Q4_1, &q41),
+        (Type::Q5_1, &q51),
+      ] {
         let (w1, w2) = bytes.split_at(bytes.len() / 2);
         let file = Gguf::with_tensors(&[("w1", &wd, ty, w1), ("w2", &wd, ty, w2)]);
         let t = |name| file.tensor(name, &wd).unwrap();
@@ -2001,26 +2213,64 @@ mod tests {
   #[test]
   fn gemm_padded_k() {
     // k = 40 is padded to 64 at load; input rows are 64 wide with zeros after 40, as from im2col.
-    // A linear layer refuses it: its inputs are not padded.
-    let (n, k, m) = (64, 40, 37);
+    // Q4 and Q5 stay packed. F32, F16, and Q8_0 still gain zero columns in F32. A linear layer
+    // refuses the unaligned row: its inputs are not padded.
     let half = |x: &f32| f16::from_f32(*x).to_f32();
-    let mut a = random(m * 64, 3);
-    a.chunks_mut(64).for_each(|row| row[k..].fill(0.0));
-    for (ty, bytes) in weights(n, k).into_iter().take(2) {
-      let file = Gguf::with_tensors(&[("w", &[k, n], ty, &bytes)]);
-      let t = file.tensor("w", &[k, n]).unwrap();
-      let wf: Vec<f32> = t.to_f32().unwrap().iter().map(half).collect();
-      for gpu in gpus() {
-        assert!(gpu.linear(std::slice::from_ref(&t), &[]).is_err());
-        let l = gpu.conv(file.tensor("w", &[k, n]).unwrap(), &[]).unwrap();
-        let ar: Vec<f32> = a.iter().map(half).collect();
-        let want: Vec<f32> = (0..m * n)
-          .map(|i| (0..k).map(|x| ar[i / n * 64 + x] * wf[i % n * k + x]).sum())
-          .collect();
-        let ab = up(gpu, &a);
-        let got = run(gpu, &vec![0.0; m * n], |p, c| p.gemm(&ab, &l, c, m, Epilogue::Bias));
-        assert_close(&got, &want);
+    let run_shape = |rows: usize, k: usize, m: usize| {
+      let cols = if rows.is_multiple_of(32) { rows } else { rows.next_multiple_of(64) };
+      let kp = k.next_multiple_of(32);
+      let mut a = random(m * kp, 3);
+      a.chunks_mut(kp).for_each(|row| row[k..].fill(0.0));
+      for (ty, bytes) in weights(rows, k) {
+        let file = Gguf::with_tensors(&[("w", &[k, rows], ty, &bytes)]);
+        let t = file.tensor("w", &[k, rows]).unwrap();
+        let wf: Vec<f32> = t.to_f32().unwrap().iter().map(half).collect();
+        let packed = matches!(ty, Type::Q4_0 | Type::Q4_1 | Type::Q5_0 | Type::Q5_1);
+        for gpu in gpus() {
+          assert!(gpu.linear(std::slice::from_ref(&t), &[]).is_err());
+          let l = gpu.conv(file.tensor("w", &[k, rows]).unwrap(), &[]).unwrap();
+          assert_eq!(l.k, kp);
+          assert_eq!(l.src_k, if packed { k } else { 0 });
+          // F16 and Q8_0 take the same F32 pad as F32. Q4 and Q5 keep their pipeline index.
+          let expect_ty = match ty {
+            Type::F32 | Type::F16 | Type::Q8_0 => 0,
+            Type::Q5_0 => 3,
+            Type::Q4_0 => 4,
+            Type::Q4_1 => 5,
+            Type::Q5_1 => 6,
+          };
+          assert_eq!(l.ty, expect_ty, "{ty:?}");
+          assert_eq!(l.scales.is_some(), packed);
+          if packed {
+            let blocks = l.n * k / 32 + 1;
+            let data = blocks * if matches!(ty, Type::Q5_0 | Type::Q5_1) { 24 } else { 16 };
+            assert_eq!(l.weight.size(), data as u64, "{ty:?}");
+          }
+          // Every GEMM rounds a to f16, as kernel_mul_mm does. gemv does not.
+          let ar: Vec<f32> = a.iter().map(half).collect();
+          let want: Vec<f32> = (0..m * cols)
+            .map(|i| {
+              let (r, j) = (i / cols, i % cols);
+              if j >= rows { 0.0 } else { (0..k).map(|x| ar[r * kp + x] * wf[j * k + x]).sum() }
+            })
+            .collect();
+          let ab = up(gpu, &a);
+          let got = run(gpu, &vec![0.0; m * cols], |p, c| p.gemm(&ab, &l, c, m, Epilogue::Bias));
+          assert_close(&got, &want);
+        }
       }
+    };
+    // 64 rows, inner 40: every column of the quad past 40 is padding.
+    run_shape(64, 40, 37);
+    // 16 rows, inner 34: the quad at column 32 holds two stored codes and two padding lanes,
+    // and outputs past the 16 rows are the zero padding rows.
+    run_shape(16, 34, 5);
+    // One row of 40 is not a whole number of blocks.
+    let zeros = [0u8; 18];
+    let file = Gguf::with_tensors(&[("w", &[40, 1], Type::Q4_0, &zeros)]);
+    match gpus()[0].conv(file.tensor("w", &[40, 1]).unwrap(), &[]) {
+      Err(err) => assert!(err.to_string().contains("not a whole number of blocks"), "{err}"),
+      Ok(_) => panic!("a partial Q4_0 block was uploaded"),
     }
   }
 

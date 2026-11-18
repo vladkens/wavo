@@ -1,14 +1,15 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 // Linear layer c = epilogue(a·Wᵀ + bias): `a` is row-major [m][k] F32, W is [n][k] in its GGUF
-// type. A workgroup computes a ROWS×128 tile of c. K advances 32 per step (one Q8_0 block). W
-// has a multiple of 64 rows and k % 32 == 0; c's rows are n + dual
+// type. A workgroup computes a ROWS×128 tile of c. K advances 32 per step (one block of 32). W
+// has a multiple of 64 rows and k is a multiple of 32. A Q4 or Q5 conv whose stored row is
+// shorter sets `src_k`; columns from there to `k` are zero. c's rows are n + dual
 // wide, and outputs from n on (W's zero rows) are not written. W and `a` are rounded to f16, as
 // ggml-metal's `kernel_mul_mm` (`ggml/src/ggml-metal/kernels/mul_mm.metal`) does. Without the
 // rounding of W, near-ties (one CTC frame of e2e-ctc on ru-short) fall on the other side; without
 // the rounding of `a`, the ivrit he-long near-tie does. The module also holds `gemv`, for one row
 // of `a` (not rounded, as `mul_mv`), and `embed`.
 
-// Weight type, one pipeline each: 0: F32, 1: F16, 2: Q8_0.
+// Weight type, one pipeline each: 0: F32, 1: F16, 2: Q8_0, 3: Q5_0, 4: Q4_0, 5: Q4_1, 6: Q5_1.
 override WTYPE: u32;
 // Rows of the GEMM's tile: 64, or 32 (more workgroups).
 override ROWS: u32 = 64u;
@@ -26,6 +27,9 @@ struct Params {
   dual: u32,
   // gemv: c's first output; embed: the first float of the position's row in `a`.
   offset: u32,
+  // Q4 and Q5 conv rows shorter than `k`: the file's blocks use this stride, and columns from
+  // here to `k` are zero. 0 means the stored row is already `k` wide.
+  src_k: u32,
 }
 
 var<immediate> p: Params;
@@ -33,9 +37,11 @@ var<immediate> p: Params;
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read> bias: array<f32>;
 @group(0) @binding(2) var<storage, read_write> c: array<f32>;
-// F32 as bits, F16 as pairs, Q8_0 as 4 int8 per word.
+// F32 as bits, F16 as pairs, Q8_0 as 4 int8 per word, Q4 as nibbles (16 bytes per 32), Q5 as
+// 5-bit codes (24 bytes per 32).
 @group(0) @binding(3) var<storage, read> w: array<u32>;
-// Q8_0 block scales as f16 pairs (any buffer for other types).
+// Q8_0, Q5_0 and Q4_0: one f16 scale per block, two per word. Q4_1 and Q5_1: an f16 scale and an
+// f16 minimum, one pair per word. Any buffer for the other types.
 @group(0) @binding(4) var<storage, read> scales: array<u32>;
 // `a` for the GEMM's 16-byte loads.
 @group(0) @binding(0) var<storage, read> a4: array<vec4<f32>>;
@@ -53,6 +59,146 @@ fn to_half(x: f32) -> f32 {
 fn scale(block: u32) -> f32 {
   let s = unpack2x16float(scales[block / 2u]);
   return select(s.x, s.y, (block & 1u) == 1u);
+}
+
+// The u32 that holds four Q5 codes starting at weight x (a multiple of 4). Codes are packed
+// little-endian, five bits each, 24 bytes per 32. gemm_fast.wgsl has the same load.
+fn q5_word(x: u32) -> u32 {
+  let block = x / 32u;
+  let group = (x % 32u) / 4u;
+  let bit = group * 20u;
+  let byte = block * 24u + (bit >> 3u);
+  let i = byte >> 2u;
+  let s = (byte & 3u) * 8u;
+  var word = w[i];
+  if (s != 0u) {
+    word = (word >> s) | (w[i + 1u] << (32u - s));
+  }
+  return word >> (bit & 7u);
+}
+
+fn q5_codes4(x: u32) -> vec4<f32> {
+  let packed = q5_word(x);
+  return vec4(f32(packed & 31u), f32((packed >> 5u) & 31u), f32((packed >> 10u) & 31u), f32((packed >> 15u) & 31u));
+}
+
+fn q5_4(x: u32) -> vec4<f32> {
+  return (q5_codes4(x) - 16.0) * scale(x / 32u);
+}
+
+// Four Q4 codes at weight x (a multiple of 4). Nibbles are in weight order, 16 bytes per 32.
+fn q4_codes4(x: u32) -> vec4<f32> {
+  let block = x / 32u;
+  let local = x % 32u;
+  let word = w[block * 4u + local / 8u];
+  let bits = (word >> ((local % 8u) * 4u)) & 0xFFFFu;
+  return vec4(f32(bits & 15u), f32((bits >> 4u) & 15u), f32((bits >> 8u) & 15u), f32((bits >> 12u) & 15u));
+}
+
+fn q4_4(x: u32) -> vec4<f32> {
+  return (q4_codes4(x) - 8.0) * scale(x / 32u);
+}
+
+// f16 scale and f16 minimum of one Q4_1 or Q5_1 block.
+fn dm(block: u32) -> vec2<f32> {
+  return unpack2x16float(scales[block]);
+}
+
+fn q41_4(x: u32) -> vec4<f32> {
+  let s = dm(x / 32u);
+  return q4_codes4(x) * s.x + s.y;
+}
+
+fn q51_4(x: u32) -> vec4<f32> {
+  let s = dm(x / 32u);
+  return q5_codes4(x) * s.x + s.y;
+}
+
+// Stride of a stored Q4 or Q5 row. Padded conv columns are not stored.
+fn src_stride() -> u32 {
+  return select(p.k, p.src_k, p.src_k != 0u);
+}
+
+fn q4_one(e: u32) -> f32 {
+  return lane(q4_4(e & ~3u), e);
+}
+
+fn q5_one(e: u32) -> f32 {
+  return lane(q5_4(e & ~3u), e);
+}
+
+fn q41_one(e: u32) -> f32 {
+  return lane(q41_4(e & ~3u), e);
+}
+
+fn q51_one(e: u32) -> f32 {
+  return lane(q51_4(e & ~3u), e);
+}
+
+// Four Q4 weights at `col` of a stored row. A row that already fills `k` is one aligned load.
+fn q4_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) {
+    return q4_4(row * p.k + col);
+  }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q4_one(e), col < src),
+    select(0.0, q4_one(e + 1u), col + 1u < src),
+    select(0.0, q4_one(e + 2u), col + 2u < src),
+    select(0.0, q4_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn q5_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) {
+    return q5_4(row * p.k + col);
+  }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q5_one(e), col < src),
+    select(0.0, q5_one(e + 1u), col + 1u < src),
+    select(0.0, q5_one(e + 2u), col + 2u < src),
+    select(0.0, q5_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn q41_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) {
+    return q41_4(row * p.k + col);
+  }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q41_one(e), col < src),
+    select(0.0, q41_one(e + 1u), col + 1u < src),
+    select(0.0, q41_one(e + 2u), col + 2u < src),
+    select(0.0, q41_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn q51_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) {
+    return q51_4(row * p.k + col);
+  }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q51_one(e), col < src),
+    select(0.0, q51_one(e + 1u), col + 1u < src),
+    select(0.0, q51_one(e + 2u), col + 2u < src),
+    select(0.0, q51_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn lane(v: vec4<f32>, x: u32) -> f32 {
+  switch x & 3u {
+    case 0u: { return v.x; }
+    case 1u: { return v.y; }
+    case 2u: { return v.z; }
+    default: { return v.w; }
+  }
 }
 
 // The [ROWS][32] tile of a as [row][k quad], rows padded to 9 quads against bank conflicts; the
@@ -103,7 +249,7 @@ fn store(m: u32, n0: u32, acc: vec4<f32>) {
 }
 
 // The words of W[n][k..k + 4]; for Q8_0 one, the word of its block's scale and the block's
-// parity. Zeros from row p.n on.
+// parity. Q4 and Q5 return the four dequantized weights as bits. Zeros from row p.n on.
 fn w_words(n: u32, k: u32) -> vec4<u32> {
   if (n >= p.n) {
     return vec4(0u);
@@ -112,6 +258,10 @@ fn w_words(n: u32, k: u32) -> vec4<u32> {
   switch WTYPE {
     case 0u: { return vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u]); }
     case 1u: { return vec4(w[x / 2u], w[x / 2u + 1u], 0u, 0u); }
+    case 3u: { return bitcast<vec4<u32>>(q5_at(n, k)); }
+    case 4u: { return bitcast<vec4<u32>>(q4_at(n, k)); }
+    case 5u: { return bitcast<vec4<u32>>(q41_at(n, k)); }
+    case 6u: { return bitcast<vec4<u32>>(q51_at(n, k)); }
     default: { return vec4(w[x / 4u], scales[x / 64u], (x / 32u) & 1u, 0u); }
   }
 }
@@ -122,6 +272,7 @@ fn w_floats(v: vec4<u32>) -> vec4<f32> {
   switch WTYPE {
     case 0u: { x = bitcast<vec4<f32>>(v); }
     case 1u: { x = vec4(unpack2x16float(v.x), unpack2x16float(v.y)); }
+    case 3u, 4u, 5u, 6u: { x = bitcast<vec4<f32>>(v); }
     default: {
       let s = unpack2x16float(v.y);
       x = vec4<f32>(unpack4xI8(v.x)) * select(s.x, s.y, v.z == 1u);
@@ -242,7 +393,7 @@ fn gemm(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
 }
 
 // a[8j..8j + 8]·W[row][8j..8j + 8]. Q8_0 scales the int8 sum once per 8 weights, as ggml's
-// `mul_mv` does; W is not rounded.
+// `mul_mv` does; Q4 and Q5 dequantize each code. W is not rounded.
 fn dot8(row: u32, j: u32, a0: vec4<f32>, a1: vec4<f32>) -> f32 {
   let x = row * p.k + 8u * j;
   switch WTYPE {
@@ -256,6 +407,10 @@ fn dot8(row: u32, j: u32, a0: vec4<f32>, a1: vec4<f32>) -> f32 {
       let w0 = vec4(unpack2x16float(w[h]), unpack2x16float(w[h + 1u]));
       return dot(w0, a0) + dot(vec4(unpack2x16float(w[h + 2u]), unpack2x16float(w[h + 3u])), a1);
     }
+    case 3u: { return dot(q5_at(row, 8u * j), a0) + dot(q5_at(row, 8u * j + 4u), a1); }
+    case 4u: { return dot(q4_at(row, 8u * j), a0) + dot(q4_at(row, 8u * j + 4u), a1); }
+    case 5u: { return dot(q41_at(row, 8u * j), a0) + dot(q41_at(row, 8u * j + 4u), a1); }
+    case 6u: { return dot(q51_at(row, 8u * j), a0) + dot(q51_at(row, 8u * j + 4u), a1); }
     default: {
       let q = x / 4u;
       let d = dot(vec4<f32>(unpack4xI8(w[q])), a0) + dot(vec4<f32>(unpack4xI8(w[q + 1u])), a1);
@@ -316,12 +471,21 @@ fn embed(@builtin(global_invocation_id) id: vec3<u32>) {
   if (i >= p.k) {
     return;
   }
-  let x = ids[p.m] * p.k + i;
+  let src = src_stride();
+  let x = ids[p.m] * src + i;
   var v: f32;
-  switch WTYPE {
-    case 0u: { v = bitcast<f32>(w[x]); }
-    case 1u: { v = unpack2x16float(w[x / 2u])[x % 2u]; }
-    default: { v = f32(unpack4xI8(w[x / 4u])[x % 4u]) * scale(x / 32u); }
+  if (p.src_k != 0u && i >= p.src_k) {
+    v = 0.0;
+  } else {
+    switch WTYPE {
+      case 0u: { v = bitcast<f32>(w[x]); }
+      case 1u: { v = unpack2x16float(w[x / 2u])[x % 2u]; }
+      case 3u: { v = q5_one(x); }
+      case 4u: { v = q4_one(x); }
+      case 5u: { v = q41_one(x); }
+      case 6u: { v = q51_one(x); }
+      default: { v = f32(unpack4xI8(w[x / 4u])[x % 4u]) * scale(x / 32u); }
+    }
   }
   c[i] = v + a[p.offset + i] + bias[i];
 }

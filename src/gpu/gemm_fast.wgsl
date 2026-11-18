@@ -11,6 +11,7 @@
 enable f16;
 enable wgpu_cooperative_matrix;
 
+// 0: F32, 1: F16, 2: Q8_0, 3: Q5_0, 4: Q4_0, 5: Q4_1, 6: Q5_1.
 override WTYPE: u32;
 const F: u32 = 8u;
 // 4F or 8F, and the K step.
@@ -31,6 +32,9 @@ struct Params {
   alpha: f32,
   dual: u32,
   offset: u32,
+  // Q4 and Q5 conv rows shorter than `k`: the file's blocks use this stride, and columns from
+  // here to `k` are zero. 0 means the stored row is already `k` wide.
+  src_k: u32,
 }
 
 var<immediate> p: Params;
@@ -39,7 +43,7 @@ var<immediate> p: Params;
 @group(0) @binding(1) var<storage, read> bias: array<f32>;
 @group(0) @binding(2) var<storage, read_write> c: array<f32>;
 @group(0) @binding(3) var<storage, read> w: array<u32>;
-// Q8_0 block scales as f16 pairs.
+// Q8_0, Q5_0 and Q4_0: one f16 scale per block, two per word. Q4_1 and Q5_1: scale and minimum.
 @group(0) @binding(4) var<storage, read> scales: array<u32>;
 
 alias AM = coop_mat8x8<f16, A>;
@@ -63,6 +67,123 @@ fn gelu(x: f32) -> f32 {
 fn scale(block: u32) -> f32 {
   let s = unpack2x16float(scales[block / 2u]);
   return select(s.x, s.y, (block & 1u) == 1u);
+}
+
+// Same load as gemm.wgsl's q5_word and q5_4. This module is not concatenated with that one.
+fn q5_word(x: u32) -> u32 {
+  let block = x / 32u;
+  let group = (x % 32u) / 4u;
+  let bit = group * 20u;
+  let byte = block * 24u + (bit >> 3u);
+  let i = byte >> 2u;
+  let s = (byte & 3u) * 8u;
+  var word = w[i];
+  if (s != 0u) {
+    word = (word >> s) | (w[i + 1u] << (32u - s));
+  }
+  return word >> (bit & 7u);
+}
+
+fn q5_codes4(x: u32) -> vec4<f32> {
+  let packed = q5_word(x);
+  return vec4(f32(packed & 31u), f32((packed >> 5u) & 31u), f32((packed >> 10u) & 31u), f32((packed >> 15u) & 31u));
+}
+
+fn q5_4(x: u32) -> vec4<f32> {
+  return (q5_codes4(x) - 16.0) * scale(x / 32u);
+}
+
+// Same Q4 load as gemm.wgsl. This module is not concatenated with that one.
+fn q4_codes4(x: u32) -> vec4<f32> {
+  let block = x / 32u;
+  let local = x % 32u;
+  let word = w[block * 4u + local / 8u];
+  let bits = (word >> ((local % 8u) * 4u)) & 0xFFFFu;
+  return vec4(f32(bits & 15u), f32((bits >> 4u) & 15u), f32((bits >> 8u) & 15u), f32((bits >> 12u) & 15u));
+}
+
+fn q4_4(x: u32) -> vec4<f32> {
+  return (q4_codes4(x) - 8.0) * scale(x / 32u);
+}
+
+fn dm(block: u32) -> vec2<f32> {
+  return unpack2x16float(scales[block]);
+}
+
+fn q41_4(x: u32) -> vec4<f32> {
+  let s = dm(x / 32u);
+  return q4_codes4(x) * s.x + s.y;
+}
+
+fn q51_4(x: u32) -> vec4<f32> {
+  let s = dm(x / 32u);
+  return q5_codes4(x) * s.x + s.y;
+}
+
+fn src_stride() -> u32 {
+  return select(p.k, p.src_k, p.src_k != 0u);
+}
+
+fn lane(v: vec4<f32>, x: u32) -> f32 {
+  switch x & 3u {
+    case 0u: { return v.x; }
+    case 1u: { return v.y; }
+    case 2u: { return v.z; }
+    default: { return v.w; }
+  }
+}
+
+fn q4_one(e: u32) -> f32 { return lane(q4_4(e & ~3u), e); }
+fn q5_one(e: u32) -> f32 { return lane(q5_4(e & ~3u), e); }
+fn q41_one(e: u32) -> f32 { return lane(q41_4(e & ~3u), e); }
+fn q51_one(e: u32) -> f32 { return lane(q51_4(e & ~3u), e); }
+
+fn q4_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) { return q4_4(row * p.k + col); }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q4_one(e), col < src),
+    select(0.0, q4_one(e + 1u), col + 1u < src),
+    select(0.0, q4_one(e + 2u), col + 2u < src),
+    select(0.0, q4_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn q5_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) { return q5_4(row * p.k + col); }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q5_one(e), col < src),
+    select(0.0, q5_one(e + 1u), col + 1u < src),
+    select(0.0, q5_one(e + 2u), col + 2u < src),
+    select(0.0, q5_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn q41_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) { return q41_4(row * p.k + col); }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q41_one(e), col < src),
+    select(0.0, q41_one(e + 1u), col + 1u < src),
+    select(0.0, q41_one(e + 2u), col + 2u < src),
+    select(0.0, q41_one(e + 3u), col + 3u < src),
+  );
+}
+
+fn q51_at(row: u32, col: u32) -> vec4<f32> {
+  if (p.src_k == 0u) { return q51_4(row * p.k + col); }
+  let src = src_stride();
+  let e = row * src + col;
+  return vec4<f32>(
+    select(0.0, q51_one(e), col < src),
+    select(0.0, q51_one(e + 1u), col + 1u < src),
+    select(0.0, q51_one(e + 2u), col + 2u < src),
+    select(0.0, q51_one(e + 3u), col + 3u < src),
+  );
 }
 
 // Stages a[m0 + i / (KS / 4)][k0 + i % (KS / 4) · 4 ..+4].
@@ -90,6 +211,10 @@ fn stage_w(n0: u32, k0: u32, i: u32) {
     switch WTYPE {
       case 0u: { v = bitcast<vec4<f32>>(vec4(w[x], w[x + 1u], w[x + 2u], w[x + 3u])); }
       case 1u: { v = vec4(unpack2x16float(w[x / 2u]), unpack2x16float(w[x / 2u + 1u])); }
+      case 3u: { v = q5_at(n0 + r, k0 + kk); }
+      case 4u: { v = q4_at(n0 + r, k0 + kk); }
+      case 5u: { v = q41_at(n0 + r, k0 + kk); }
+      case 6u: { v = q51_at(n0 + r, k0 + kk); }
       default: { v = vec4<f32>(unpack4xI8(w[x / 4u])) * scale(x / 32u); }
     }
   }
