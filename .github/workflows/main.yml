@@ -37,6 +37,7 @@ jobs:
       - run: rustup toolchain install nightly --profile minimal --component rustfmt
       - run: make build
       - run: make models > "$RUNNER_TEMP/models.log" 2>&1 & # downloads in the background
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: make check
       - run: make samples
       - run: make models # waits for those downloads, or retries a failed one
