@@ -1,7 +1,8 @@
 // Copyright (c) vladkens | MIT License | https://github.com/vladkens/wavo
 //! The Neural Engine backend (macOS): a family's encoder written from its GGUF as a Core ML
-//! program with one fixed 15 s window, compiled once by `prepare` and run through Core ML. The
-//! frontend and the decoder stay on the CPU.
+//! program with one fixed 15 s window, compiled once by `prepare` and run through Core ML, longer
+//! audio in overlapping windows (Parakeet) or cut into pieces (GigaAM). The frontend and the
+//! decoder stay on the CPU.
 //!
 //! Compiled models live in `~/Library/Caches/wavo/`, outside the Hugging Face cache:
 //!
@@ -30,7 +31,7 @@ mod proto;
 
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, Range};
 use std::path::{Path, PathBuf};
 use std::sync::{Once, OnceLock};
 use std::time::{Duration, UNIX_EPOCH};
@@ -43,8 +44,8 @@ use crate::gguf::Gguf;
 use crate::gpu::Gpu;
 use crate::{Api, Device, DeviceKind, Error, Kernels, PrepareStep, Result};
 
-/// The audio window of every program, in samples (15 s): most dictation is shorter, and longer
-/// audio is split at pauses into pieces of up to this.
+/// The audio window of every program, in samples (15 s): most dictation is shorter. A longer
+/// window costs every clip: a 30 s one takes 2.6 times as long on a 3 s clip.
 pub const WINDOW: usize = 15 * 16000;
 /// Bumped whenever a program changes, so models compiled by an older wavo are rebuilt.
 const GRAPH: u32 = 2;
@@ -455,6 +456,35 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
   Ok(())
 }
 
+/// The windows of `t` encoder frames over `n` of them: each window's first frame and the frames it
+/// gives, which follow each other from 0 to `n`. Spread evenly, they overlap by at least twice
+/// `context`, and each gives the frames nearest its middle, so every frame given has at least
+/// `context` frames of its window on each side, but at the ends of the audio. The last window
+/// starts at `n − t + 1`, so its input fits the window whatever the subsampling rounds. One window
+/// when `n` is under `t`: at `t` the input may pass the window by a few rows.
+///
+/// Cutting at pauses instead gives each piece no context past its cut, and its own decoder: the
+/// model then ends sentences at the cuts and spells out numbers it writes as digits in one pass.
+pub fn windows(n: usize, t: usize, context: usize) -> Vec<(usize, Range<usize>)> {
+  if n < t {
+    return vec![(0, 0..n)];
+  }
+
+  let last = n - (t - 1);
+  let count = last.div_ceil(t - 2 * context) + 1;
+  let starts: Vec<usize> = (0..count).map(|i| i * last / (count - 1)).collect();
+  let mut from = 0;
+  (starts.iter().enumerate())
+    .map(|(i, &start)| {
+      // To the middle of the overlap with the next window.
+      let to = starts.get(i + 1).map_or(n, |&next| (start + t + next) / 2);
+      let keep = from..to;
+      from = to;
+      (start, keep)
+    })
+    .collect()
+}
+
 /// 1 for the first `valid` of `len` frames, 0 for the padding.
 pub fn mask(len: usize, valid: usize) -> Vec<f32> {
   (0..len).map(|i| (i < valid) as u32 as f32).collect()
@@ -474,6 +504,33 @@ mod tests {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
+  }
+
+  #[test]
+  fn windows_cover_the_audio_with_context() {
+    assert_eq!(windows(100, 188, 25), [(0, 0..100)]);
+    for (t, context) in [(188, 25), (375, 50), (188, 0)] {
+      for n in t..t * 12 {
+        let w = windows(n, t, context);
+        assert!(w.len() >= 2, "{n}: {w:?}");
+        let mut from = 0;
+        for (i, (start, keep)) in w.iter().enumerate() {
+          assert_eq!(keep.start, from, "{n}: contiguous {w:?}");
+          assert!(keep.start < keep.end && *start <= keep.start, "{n}: {w:?}");
+          assert!(start + t >= keep.end && *start + t - 1 <= n, "{n}: in the window {w:?}");
+          if i > 0 {
+            assert!(keep.start - start >= context, "{n}: context before {w:?}");
+          }
+          if i + 1 < w.len() {
+            assert!(start + t - keep.end >= context, "{n}: context after {w:?}");
+          }
+          from = keep.end;
+        }
+        assert_eq!(from, n);
+        // No more windows than an even spread at the shortest step needs.
+        assert_eq!(w.len(), (n - t + 1).div_ceil(t - 2 * context) + 1, "{n}");
+      }
+    }
   }
 
   #[test]
